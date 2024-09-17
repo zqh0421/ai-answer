@@ -20,6 +20,7 @@ export default function Home() {
         setApiResult(result);
         setLoading(false);
       } catch (error) {
+        console.error(error);
         setLoading(false);
       }
     };
