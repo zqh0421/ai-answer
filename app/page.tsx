@@ -20,7 +20,6 @@ export default function Home() {
         setApiResult(result);
         setLoading(false);
       } catch (error) {
-        setError(error.message);
         setLoading(false);
       }
     };
