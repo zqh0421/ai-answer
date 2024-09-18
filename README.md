@@ -1,17 +1,44 @@
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
+
+
 ## Getting Started
 
-First, run the development server:
+### Create virtual environment
 
 ```bash
-npm run dev
+pnpm venv
 # or
-yarn dev
-# or
+python3 -m venv venv
+# for Mac
+source venv/bin/activate
+# for Windows
+venv\Scripts\activate
+```
+
+### Install dependencies
+
+```bash
+pip install -r requirements.txt
+pnpm install
+```
+
+### Run the development server:
+
+```bash
 pnpm dev
-# or
-bun dev
+```
+
+## Additional Commands for Convenience
+
+### Virtual environment
+
+```bash
+uvicorn app.index:app --reload
+
+pip freeze > requirements.txt
+
+deactivate
 ```
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
