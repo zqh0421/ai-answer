@@ -7,7 +7,7 @@ This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-
 ### Create virtual environment
 
 ```bash
-python3 -m venv venv
+pnpm venv
 # for Mac
 source venv/bin/activate
 # for Windows
