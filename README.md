@@ -8,6 +8,8 @@ This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-
 
 ```bash
 pnpm venv
+# or
+python3 -m venv venv
 # for Mac
 source venv/bin/activate
 # for Windows
