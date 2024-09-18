@@ -34,7 +34,7 @@ pnpm dev
 ### Virtual environment
 
 ```bash
-uvicorn app.main:app --reload
+uvicorn app.index:app --reload
 
 pip freeze > requirements.txt
 
