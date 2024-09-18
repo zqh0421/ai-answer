@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "venv": "python3 -m venv venv",
+    "venv": "python3 -m venv venv && source venv/bin/activate",
     "fastapi-dev": "pip3 install -r requirements.txt && python3 -m uvicorn api.main:app --reload",
     "next-dev": "pnpm install && next dev",
     "dev": "concurrently \"pnpm run next-dev\" \"pnpm run fastapi-dev\"",
@@ -12,6 +12,7 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "autoprefixer": "^10.4.20",
     "axios": "^1.7.7",
     "concurrently": "^9.0.1",
     "next": "14.2.12",
