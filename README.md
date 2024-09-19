@@ -35,9 +35,11 @@ pnpm dev
 
 ```bash
 uvicorn app.index:app --reload
-
+```
+```bash
 pip freeze > requirements.txt
-
+```
+```bash
 deactivate
 ```
 

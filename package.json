@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "autoprefixer": "^10.4.20",
+    "axios": "^1.7.7",
     "concurrently": "^9.0.1",
     "next": "14.2.12",
     "react": "^18",
