@@ -1,13 +1,24 @@
-from fastapi import FastAPI
-
+from fastapi import FastAPI, Depends
+from pydantic import BaseModel
+from .chat import judge_answer
+import os
+from openai import OpenAI
+from dotenv import load_dotenv
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from functools import lru_cache
+from typing_extensions import Annotated
+from .config import Settings, get_settings
 app = FastAPI()
 
-@app.get("/api/hello")
-async def read_hello():
-    return {"message": "Hello from FastAPI!"}
+class AskModel(BaseModel):
+    question: str
+    answer: str
 
-app = FastAPI()
+@app.get("/api/test")
+def test():
+    return {"message": "Backend Connected!"}
 
-@app.get("/api/python")
-def hello_world():
-    return {"message": "Hello World"}
+@app.post("/api/ask")
+def ask(askModel: AskModel, settings: Annotated[Settings, Depends(get_settings)]):
+    result = judge_answer(askModel.question, askModel.answer, settings)
+    return {"result": f"{result}"}

@@ -7,18 +7,22 @@ import axios from "axios";
 import TestDrawer from './components/TestDrawer';
 
 export default function Home() {
+  const base_question = "What is learning science?"
+  const base_wrong_answer = "Learning is about engineering."
+  const base_correct_answer = "Learning science is an interdisciplinary field that encompasses educational psychology, cognitive science, computer science, and anthropology. It focuses on understanding the theoretical aspects of learning, designing and implementing learning innovations, and improving instructional methodologies."
   const [message, setMessage] = useState("Loading...");
   const [isDrawerOpen, setIsDrawerOpen] = useState(true); // Drawer state
   const [file, setFile] = useState(null); // For File Upload
-  const [question, setQuestion] = useState(""); // For Question Input
-  const [answer, setAnswer] = useState(""); // For Answer Display
+  const [question, setQuestion] = useState(base_question); // For Question Input
+  const [answer, setAnswer] = useState(base_wrong_answer); // For Answer Input
+  const [result, setResult] = useState("result"); // For Result Display
 
   useEffect(() => {
     // Fetch API data
     axios
-      .get("/api/python")
+      .get("/api/test")
       .then((response) => {
-        setMessage(response.data.message); // Assuming FastAPI returns { "message": "Hello World" }
+        setMessage(response.data.message); // Assuming FastAPI returns { "message": "Backend Connected" }
         setIsDrawerOpen(false);
       })
       .catch((error) => {
@@ -36,12 +40,24 @@ export default function Home() {
   const { getRootProps, getInputProps } = useDropzone({ onDrop });
 
   // Submit Question Handling
-  const handleQuestionSubmit = async () => {
-    try {
-      const response = await axios.post("/api/ask", { question });
-      setAnswer(response.data.answer);
-    } catch (error) {
-      console.error("Error fetching the answer:", error);
+  const handleSubmit = async () => {
+    if (!answer || !question) return;
+
+    // Fetch API data
+    axios
+      .post("/api/ask", { question, answer })
+      .then((response) => {
+        setResult(response.data.result);
+      })
+      .catch((error) => {
+        console.error("Error fetching the result:", error);
+      });
+  };
+
+  // Handle Enter key press for submitting the question
+  const handleKeyUp = (event) => {
+    if (event.keyCode === 13) {
+      handleSubmit();
     }
   };
 
@@ -50,7 +66,7 @@ export default function Home() {
   const closeDrawer = () => setIsDrawerOpen(false);
 
   return (
-    <main className="flex min-h-screen flex-col items-center justify-between p-24">
+    <main className="flex flex-col items-center justify-between p-24">
       {/* Button to open the drawer */}
       <button
         className="mb-6 p-2 bg-blue-500 text-white rounded-lg"
@@ -78,26 +94,41 @@ export default function Home() {
           onChange={(e) => setQuestion(e.target.value)}
           placeholder="Enter your question"
           className="border rounded p-2"
+          onKeyUp={handleKeyUp}
         />
-        <button
-          onClick={handleQuestionSubmit}
-          className="ml-2 p-2 bg-blue-500 text-white rounded-lg"
-        >
-          Submit Question
-        </button>
       </div>
 
-      {/* Answer Presenting Area */}
+      {/* Answer Input Area */}
+      <div className="mt-4">
+        <input
+          type="text"
+          value={answer}
+          onChange={(e) => setAnswer(e.target.value)}
+          placeholder="Enter your question"
+          className="border rounded p-2"
+          onKeyUp={handleKeyUp}
+        />
+      </div>
+
+
+      <button
+          onClick={handleSubmit}
+          className="ml-2 p-2 bg-blue-500 text-white rounded-lg"
+        >
+          Submit
+        </button>
+
+      {/* Result Presenting Area */}
       <motion.div
         className="mt-10 p-4 bg-gray-100 rounded-lg"
         initial={{ opacity: 0, y: 50 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.8 }}
       >
-        {answer && (
+        {result && (
           <>
             <h3 className="text-xl font-semibold">Answer:</h3>
-            <p>{answer}</p>
+            <p>{result}</p>
           </>
         )}
       </motion.div>
