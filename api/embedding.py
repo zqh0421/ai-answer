@@ -19,13 +19,9 @@ def create_embedding(text, settings: Annotated[Settings, Depends(get_settings)],
 
     return result
 
-def combine_embedding(q_vector, a_vector, r_vector):
-    # Concatenate, but ensure all vectors are the same size as content vectors
-    dimension = 1536
-    q_dimension = math.floor(dimension * 0.5)
-    a_dimension = math.floor(dimension * 0.4)
-    r_dimension = dimension - a_dimension - q_dimension
-    combined_vector = q_vector[:q_dimension] + a_vector[:a_dimension] + r_vector[:r_dimension]
+def combine_embedding(q_vector, a_vector, r_vector, weights = [0.5, 0.4, 0.1]):
+    q_weight, a_weight, r_weight = weights
+    combined_vector = q_weight * np.array(q_vector) + a_weight * np.array(a_vector) + r_weight * np.array(r_vector)
     return combined_vector
 
 def embed_slide(contents, settings: Annotated[Settings, Depends(get_settings)], ):
