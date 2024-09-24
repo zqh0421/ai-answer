@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useDropzone } from "react-dropzone";
+import { FileWithPath, useDropzone } from "react-dropzone";
 import { motion } from "framer-motion";
 import axios from "axios";
 import TestDrawer from './components/TestDrawer';
@@ -9,10 +9,10 @@ import TestDrawer from './components/TestDrawer';
 export default function Home() {
   const base_question = "What is learning science?"
   const base_wrong_answer = "Learning is about engineering."
-  const base_correct_answer = "Learning science is an interdisciplinary field that encompasses educational psychology, cognitive science, computer science, and anthropology. It focuses on understanding the theoretical aspects of learning, designing and implementing learning innovations, and improving instructional methodologies."
+  // const base_correct_answer = "Learning science is an interdisciplinary field that encompasses educational psychology, cognitive science, computer science, and anthropology. It focuses on understanding the theoretical aspects of learning, designing and implementing learning innovations, and improving instructional methodologies."
   const [message, setMessage] = useState("Loading...");
   const [isDrawerOpen, setIsDrawerOpen] = useState(true); // Drawer state
-  const [file, setFile] = useState(null); // For File Upload
+  const [file, setFile] = useState<FileWithPath | null>(null); // For File Upload
   const [question, setQuestion] = useState(base_question); // For Question Input
   const [answer, setAnswer] = useState(base_wrong_answer); // For Answer Input
   const [result, setResult] = useState("result"); // For Result Display
@@ -32,12 +32,22 @@ export default function Home() {
   }, []);
 
   // File Upload Handling
-  const onDrop = (acceptedFiles) => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const onDrop = (acceptedFiles: FileWithPath[]) => {
     setFile(acceptedFiles[0]);
     console.log("Uploaded file: ", acceptedFiles[0]);
   };
 
   const { getRootProps, getInputProps } = useDropzone({ onDrop });
+
+  const handleResult = async (result: string) => {
+    try {
+      const response = await axios.post("/api/embed", { text: result }); // 修正为 `text`，确保 payload 字段名和后端一致
+      setResult(response.data.result);
+    } catch (error) {
+      console.error("Error fetching the result:", error);
+    }
+  };
 
   // Submit Question Handling
   const handleSubmit = async () => {
@@ -48,6 +58,7 @@ export default function Home() {
       .post("/api/ask", { question, answer })
       .then((response) => {
         setResult(response.data.result);
+        handleResult(response.data.result);
       })
       .catch((error) => {
         console.error("Error fetching the result:", error);
@@ -55,7 +66,7 @@ export default function Home() {
   };
 
   // Handle Enter key press for submitting the question
-  const handleKeyUp = (event) => {
+  const handleKeyUp = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (event.keyCode === 13) {
       handleSubmit();
     }

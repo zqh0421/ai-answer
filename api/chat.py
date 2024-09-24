@@ -1,6 +1,5 @@
 from fastapi import FastAPI, Depends
 from pydantic import BaseModel
-import os
 from openai import OpenAI
 from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
