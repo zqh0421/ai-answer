@@ -1,21 +1,28 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { FileWithPath, useDropzone } from "react-dropzone";
+// import { FileWithPath, useDropzone } from "react-dropzone";
 import { motion } from "framer-motion";
 import axios from "axios";
 import TestDrawer from './components/TestDrawer';
 
+interface Reference {
+  content: string,
+  page_number: number
+}
+
 export default function Home() {
-  const base_question = "What is learning science?"
+  // const base_question = "What is learning science?"
+  const base_question = "What is Learning Objectives of E-Learning Design Principles & Methods about?"
   const base_wrong_answer = "Learning is about engineering."
   // const base_correct_answer = "Learning science is an interdisciplinary field that encompasses educational psychology, cognitive science, computer science, and anthropology. It focuses on understanding the theoretical aspects of learning, designing and implementing learning innovations, and improving instructional methodologies."
   const [message, setMessage] = useState("Loading...");
   const [isDrawerOpen, setIsDrawerOpen] = useState(true); // Drawer state
-  const [file, setFile] = useState<FileWithPath | null>(null); // For File Upload
+  // const [file, setFile] = useState<FileWithPath | null>(null); // For File Upload
   const [question, setQuestion] = useState(base_question); // For Question Input
   const [answer, setAnswer] = useState(base_wrong_answer); // For Answer Input
-  const [result, setResult] = useState("result"); // For Result Display
+  const [result, setResult] = useState(""); // For Result Display
+  const [reference, setReference] = useState<Reference>(); // For Reference Display
 
   useEffect(() => {
     // Fetch API data
@@ -31,23 +38,36 @@ export default function Home() {
       });
   }, []);
 
-  // File Upload Handling
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const onDrop = (acceptedFiles: FileWithPath[]) => {
-    setFile(acceptedFiles[0]);
-    console.log("Uploaded file: ", acceptedFiles[0]);
-  };
+  // // File Upload Handling
+  // // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // const onDrop = (acceptedFiles: FileWithPath[]) => {
+  //   setFile(acceptedFiles[0]);
+  //   console.log("Uploaded file: ", acceptedFiles[0]);
+  // };
 
-  const { getRootProps, getInputProps } = useDropzone({ onDrop });
+  // const { getRootProps, getInputProps } = useDropzone({ onDrop });
 
-  const handleResult = async (result: string) => {
+  const handleRetrieve = async () => {
     try {
-      const response = await axios.post("/api/embed", { text: result }); // 修正为 `text`，确保 payload 字段名和后端一致
-      setResult(response.data.result);
+      const response = await axios.post(
+        "/api/embed",
+        { 
+          question: question,
+          answer: answer,
+          result: result
+        }
+      );
+      setReference(response.data.result);
     } catch (error) {
       console.error("Error fetching the result:", error);
     }
-  };
+  }
+
+  useEffect(() => {
+    if (result) {
+      handleRetrieve();
+    }
+  }, [result]);
 
   // Submit Question Handling
   const handleSubmit = async () => {
@@ -58,7 +78,6 @@ export default function Home() {
       .post("/api/ask", { question, answer })
       .then((response) => {
         setResult(response.data.result);
-        handleResult(response.data.result);
       })
       .catch((error) => {
         console.error("Error fetching the result:", error);
@@ -91,11 +110,11 @@ export default function Home() {
 
 
       {/* File Upload Area */}
-      <div {...getRootProps()} className="border-2 border-dashed p-6 w-64 text-center cursor-pointer">
+      {/* <div {...getRootProps()} className="border-2 border-dashed p-6 w-64 text-center cursor-pointer">
         <input {...getInputProps()} />
         <p>Drag & drop a PDF file here, or click to select one</p>
         {file && <p>Uploaded: {file.name}</p>}
-      </div>
+      </div> */}
 
       {/* Question Input Area */}
       <div className="mt-4">
@@ -138,16 +157,26 @@ export default function Home() {
       >
         {result && (
           <>
-            <h3 className="text-xl font-semibold">Answer:</h3>
+            <h3 className="text-xl font-semibold">Feedback:</h3>
             <p>{result}</p>
           </>
         )}
       </motion.div>
 
-      {/* Modal for Slide View */}
-      <button onClick={openDrawer} className="mt-6 p-2 bg-green-500 text-white rounded-lg">
-        View Related Slide
-      </button>
+      {/* Reference Presenting Area */}
+      <motion.div
+        className="mt-10 p-4 bg-gray-100 rounded-lg"
+        initial={{ opacity: 0, y: 50 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.8 }}
+      >
+        {reference?.content && (
+          <>
+            <h3 className="text-xl font-semibold">Reference:</h3>
+            <p>{reference.content} (page {reference.page_number})</p>
+          </>
+        )}
+      </motion.div>
     </main>
   );
 }
