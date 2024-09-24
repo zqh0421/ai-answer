@@ -123,7 +123,7 @@ export default function Home() {
           value={question}
           onChange={(e) => setQuestion(e.target.value)}
           placeholder="Enter your question"
-          className="border rounded p-2"
+          className="border rounded p-2 w-[400px]"
           onKeyUp={handleKeyUp}
         />
       </div>
@@ -134,8 +134,8 @@ export default function Home() {
           type="text"
           value={answer}
           onChange={(e) => setAnswer(e.target.value)}
-          placeholder="Enter your question"
-          className="border rounded p-2"
+          placeholder="Enter your answer"
+          className="border rounded p-2 w-[400px]"
           onKeyUp={handleKeyUp}
         />
       </div>
