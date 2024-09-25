@@ -25,7 +25,6 @@ langchain-text-splitters==0.3.0
 langsmith==0.1.125
 marshmallow==3.22.0
 multidict==6.1.0
-numpy==1.26.4
 openai==1.47.1
 orjson==3.10.7
 pillow==10.4.0
@@ -41,8 +40,6 @@ pyproject_hooks==1.1.0
 python-dotenv==1.0.1
 pytz==2024.2
 regex==2024.9.11
-scikit-learn==1.5.2
-scipy==1.14.1
 SQLAlchemy==2.0.35
 starlette==0.27.0
 tenacity==8.5.0
