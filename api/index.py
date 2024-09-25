@@ -1,9 +1,6 @@
 import os
-import random
 from openai import OpenAI
-from dotenv import load_dotenv
 from pydantic import BaseModel
-from functools import lru_cache
 from fastapi import FastAPI, Depends
 from typing_extensions import Annotated
 from langchain_community.document_loaders import PyPDFLoader
@@ -60,9 +57,6 @@ def embed(embedModel: EmbedModel, settings: Annotated[Settings, Depends(get_sett
 
     # Get slide vectors
     content_vectors = embed_slide(contents, settings)
-
-    page_number = random.randint(0, len(contents) -1)
-    best_match_content = contents[page_number]
 
     # Retrieve the most relevant reference based on cosine similarity
     page_number, best_match_content = retrieve_reference(text_vector, content_vectors, contents)

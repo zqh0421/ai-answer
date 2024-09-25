@@ -3,7 +3,6 @@ from fastapi import Depends
 from .config import Settings, get_settings
 from typing_extensions import Annotated
 import numpy as np
-import math
 from sklearn.metrics.pairwise import cosine_similarity
 
 def create_embedding(text, settings: Annotated[Settings, Depends(get_settings)], print_stream=False):
