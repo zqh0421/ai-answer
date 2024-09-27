@@ -24,7 +24,7 @@ COPY --from=node-builder . .
 RUN ls -la /app
 
 # # Build the Next.js app
-# RUN pnpm build
+RUN pnpm build
 
 # Expose the ports that the project runs on
 EXPOSE 3000 8000
