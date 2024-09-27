@@ -23,6 +23,32 @@ export default function Home() {
   const [answer, setAnswer] = useState(base_wrong_answer); // For Answer Input
   const [result, setResult] = useState(""); // For Result Display
   const [reference, setReference] = useState<Reference>(); // For Reference Display
+  const [imageSrc, setImageSrc] = useState<string | null>(null);
+
+  const handlePdfImage = async () => {
+    try {
+      const response = await axios.post(
+        "/api/pdf-to-image",
+        { 
+          page: reference?.page_number
+        },
+        {
+          responseType: 'blob'
+        }
+      );
+      const imageBlob = response.data;  // Axios 将响应的 blob 数据放在 data 字段
+      const imageUrl = URL.createObjectURL(imageBlob);  // 创建 URL
+      setImageSrc(imageUrl);  // 将生成的 URL 设置为图片的 src
+    } catch (error) {
+      console.error('Error fetching image:', error);  // 显示正确的错误消息
+    }
+  };
+
+  useEffect(() => {
+    if (reference?.page_number) {
+      handlePdfImage();
+    }
+  }, [reference?.page_number]);
 
   useEffect(() => {
     // Fetch API data
@@ -177,6 +203,7 @@ export default function Home() {
           </>
         )}
       </motion.div>
+      {imageSrc && <img src={imageSrc} alt="PDF Page" />}
     </main>
   );
 }

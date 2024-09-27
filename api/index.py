@@ -1,7 +1,7 @@
 import os
 from openai import OpenAI
 from pydantic import BaseModel
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, HTTPException
 from typing_extensions import Annotated
 from langchain_community.document_loaders import PyPDFLoader
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -9,6 +9,9 @@ import numpy as np
 from .chat import judge_answer
 from .config import Settings, get_settings
 from .embedding import create_embedding, embed_slide, combine_embedding, retrieve_reference
+from pdf2image import convert_from_path
+from io import BytesIO
+from fastapi.responses import StreamingResponse
 
 app = FastAPI()
 
@@ -20,6 +23,9 @@ class EmbedModel(BaseModel):
     question: str
     answer: str
     result: str
+
+class ConvertModel(BaseModel):
+    page: int
 
 @app.get("/api/test")
 def test():
@@ -74,4 +80,32 @@ def embed(embedModel: EmbedModel, settings: Annotated[Settings, Depends(get_sett
             "page_number": page_number
         }
     }
+
+@app.post("/api/pdf-to-image")
+async def pdf_to_image(convertModel: ConvertModel):
+     # Get content of slide PDF file by page
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    file_path = os.path.join(current_dir, '..', 'public', 'E-Learning.pdf')
+
+    if not os.path.isfile(file_path):
+        raise FileNotFoundError(f"The file {file_path} does not exist.")
+
+
+    page = convertModel.page + 1
+    try:
+        # 将 PDF 文件转换为图像
+        images = convert_from_path(file_path, first_page=page, last_page=page)
+        if not images:
+            raise HTTPException(status_code=404, detail="Page not found")
+        # 将图像转换为字节流
+        img_byte_arr = BytesIO()
+        images[0].save(img_byte_arr, format='PNG')
+        img_byte_arr.seek(0)
+        
+        # 返回图像响应
+        return StreamingResponse(img_byte_arr, media_type="image/png")
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing PDF: {e}")
+
 
