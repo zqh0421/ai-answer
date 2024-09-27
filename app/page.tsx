@@ -188,7 +188,8 @@ export default function Home() {
           transition={{ duration: 0.5 }}
         >
           {/* Question Input Area */}
-          <motion.div className="mt-4">
+          <motion.div className="mt-4" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.8 }}>
+            <h3 className="text-l font-semibold">Open-Ended Question</h3> {/* Question 标题 */}
             <textarea
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
@@ -200,7 +201,8 @@ export default function Home() {
           </motion.div>
 
           {/* Answer Input Area */}
-          <motion.div className="mt-4">
+          <motion.div className="mt-4" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.8 }}>
+            <h3 className="text-l font-semibold">Answer</h3> {/* Answer 标题 */}
             <textarea
               value={answer}
               onChange={(e) => setAnswer(e.target.value)}
@@ -210,7 +212,6 @@ export default function Home() {
               onInput={handleInputResize}
             />
           </motion.div>
-
           {/* Submit Button */}
           <motion.button
             onClick={handleSubmit}
