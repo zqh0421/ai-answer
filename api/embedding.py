@@ -12,7 +12,10 @@ def create_embedding(text, settings: Annotated[Settings, Depends(get_settings)],
         raise ValueError("OPENAI_API_KEY is not set in the environment variables")
 
     # Initialize the embedding model
-    embeddings_model = OpenAIEmbeddings(api_key=api_key)
+    embeddings_model = OpenAIEmbeddings(
+        api_key=api_key,
+        model="text-embedding-ada-002"
+    )
 
     result = embeddings_model.embed_query(text)
 
@@ -30,7 +33,10 @@ def embed_slide(contents, settings: Annotated[Settings, Depends(get_settings)], 
         raise ValueError("OPENAI_API_KEY is not set in the environment variables")
 
     # Initialize the embedding model
-    embeddings_model = OpenAIEmbeddings(api_key=api_key)
+    embeddings_model = OpenAIEmbeddings(
+        api_key=api_key,
+        model="text-embedding-ada-002"
+    )
 
     embeddings = embeddings_model.embed_documents(
         contents

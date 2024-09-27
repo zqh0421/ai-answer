@@ -22,11 +22,11 @@ def judge_answer(question, answer, settings: Annotated[Settings, Depends(get_set
         messages=[
             {
                 "role":"system",
-                "content": "You are a helpful assistant that verifies answers to questions."
+                "content": "You are a helpful assistant that verifies answers to questions.  Please respond with yes or no about whther the answer is correct, and provide short explanations using 2-3 sentences."
             },
             {
                 "role": "user",
-                "content": f"Question: {question}\nAnswer: {answer}\nIs the answer correct? Please respond with yes or no, and provide short explanations using 2-3 sentences."
+                "content": f"Question: {question}\nAnswer: {answer}\n"
             }
         ],
         stream=True,
