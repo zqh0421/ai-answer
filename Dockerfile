@@ -29,6 +29,7 @@ RUN apt-get update && apt-get install -y poppler-utils
 RUN pnpm build
 
 # Expose the ports that the project runs on
+ENV PORT 3000
 EXPOSE 3000 8000
 
 # Start the Next.js app
