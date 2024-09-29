@@ -23,6 +23,8 @@ FROM python:3.12.6 AS python-builder
 COPY --from=node-builder . .
 RUN ls -la /app
 
+RUN apt-get update && apt-get install -y poppler-utils
+
 # # Build the Next.js app
 RUN pnpm build
 

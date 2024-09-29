@@ -59,7 +59,7 @@ export default function Home() {
       });
   }, []);
 
-  function handleInputResize(e) {
+  function handleInputResize(e: React.ChangeEvent<HTMLTextAreaElement>) {
     e.target.style.height = "auto";
     e.target.style.height = `${e.target.scrollHeight}px`;
   }
@@ -87,6 +87,7 @@ export default function Home() {
     if (result) {
       handleRetrieve();
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [result]);
 
   const handleSubmit = async () => {
@@ -107,11 +108,11 @@ export default function Home() {
       });
   };
 
-  const handleKeyUp = (event: React.KeyboardEvent<HTMLInputElement>) => {
-    if (event.keyCode === 13) {
-      handleSubmit();
-    }
-  };
+  // const handleKeyUp = (event: React.KeyboardEvent<HTMLInputElement>) => {
+  //   if (event.keyCode === 13) {
+  //     handleSubmit();
+  //   }
+  // };
 
   const closeDrawer = () => setIsDrawerOpen(false);
 
