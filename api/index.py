@@ -1,10 +1,9 @@
 from fastapi import FastAPI, Depends
 from typing_extensions import Annotated
-from .chat import judge_answer
-from .config import Settings, get_settings
 
+from .config import Settings, get_settings
 from .models import AskModel, EmbedModel, ConvertModel
-from .controllers import embedController, convertController
+from .controllers import askController, embedController, convertController
 
 app = FastAPI()
 
@@ -16,7 +15,7 @@ def test():
 
 @app.post("/api/ask")
 def ask(askModel: AskModel, settings: Annotated[Settings, Depends(get_settings)]):
-    result = judge_answer(askModel.question, askModel.answer, settings)
+    result = askController(askModel.question, askModel.answer, settings)
     return {"result": f"{result}"}
 
 @app.post("/api/embed")

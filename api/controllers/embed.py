@@ -4,7 +4,7 @@ from fastapi import Depends
 from langchain_community.document_loaders import PyPDFLoader
 from ..models import EmbedModel
 from ..config import Settings, get_settings
-from ..embedding import create_embedding, embed_slide, combine_embedding, retrieve_reference
+from ..utils import create_embedding, embed_slide, combine_embedding, retrieve_reference
 
 def embedController(embedModel: EmbedModel, settings: Annotated[Settings, Depends(get_settings)]):
     # Create query
