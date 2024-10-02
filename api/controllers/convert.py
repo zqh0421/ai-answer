@@ -6,14 +6,14 @@ from io import BytesIO
 from fastapi.responses import StreamingResponse
 from ..models import ConvertModel
 
-async def pdf_to_image(convertModel: ConvertModel):
-     # Get content of slide PDF file by page
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    file_path = os.path.join(current_dir, '..', 'public', 'E-Learning.pdf')
+async def convertController(convertModel: ConvertModel):
+    # Get content of slide PDF file by page
+    root_dir = os.path.dirname(os.path.abspath(__package__))
+    file_path = os.path.join(root_dir, 'public', 'E-Learning.pdf')
+    print(file_path)
 
     if not os.path.isfile(file_path):
         raise FileNotFoundError(f"The file {file_path} does not exist.")
-
 
     page = convertModel.page + 1
     try:
@@ -25,13 +25,8 @@ async def pdf_to_image(convertModel: ConvertModel):
         img_byte_arr = BytesIO()
         images[0].save(img_byte_arr, format='PNG')
         img_byte_arr.seek(0)
-        
         # return image stream
         return StreamingResponse(img_byte_arr, media_type="image/png")
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error processing PDF: {e}")
-
-def convertController(convertModel: ConvertModel):
-  result = pdf_to_image(convertModel)
-  return result

@@ -1,6 +1,7 @@
 import os
 from typing_extensions import Annotated
 from fastapi import Depends
+from langchain_community.document_loaders import PyPDFLoader
 from ..models import EmbedModel
 from ..config import Settings, get_settings
 from ..embedding import create_embedding, embed_slide, combine_embedding, retrieve_reference
@@ -13,8 +14,8 @@ def embedController(embedModel: EmbedModel, settings: Annotated[Settings, Depend
     text_vector = combine_embedding(q_vector, a_vector, r_vector)
 
     # Get content of slide PDF file by page
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    file_path = os.path.join(current_dir, '..', 'public', 'E-Learning.pdf')
+    root_dir = os.path.dirname(os.path.abspath(__package__))
+    file_path = os.path.join(root_dir, 'public', 'E-Learning.pdf')
 
     if not os.path.isfile(file_path):
         raise FileNotFoundError(f"The file {file_path} does not exist.")

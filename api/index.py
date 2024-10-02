@@ -26,7 +26,7 @@ def embed(embedModel: EmbedModel, settings: Annotated[Settings, Depends(get_sett
 
 @app.post("/api/pdf-to-image")
 async def convert(convertModel: ConvertModel):
-    result = convertController(convertModel)
+    result = await convertController(convertModel)
     return result
 
 
