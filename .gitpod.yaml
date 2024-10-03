@@ -1,0 +1,17 @@
+ports:
+  - name: Website
+    port: 3000
+    onOpen: open-browser
+    visibility: public
+  - name: Server
+    port: 8000
+    onOpen: ignore
+    visibility: private
+
+tasks:
+    - name: Frontend
+      init: npm install -g pnpm && pnpm install
+      command: pnpm dev
+    - name: Backend
+      init: pip install -r requirements.txt && apt-get update && apt-get install -y poppler-utils
+      command: npm start-db

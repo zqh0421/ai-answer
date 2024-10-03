@@ -13,26 +13,26 @@
   },
   "dependencies": {
     "@headlessui/react": "^2.1.8",
-    "autoprefixer": "^10.4.20",
     "axios": "^1.7.7",
     "concurrently": "^9.0.1",
     "framer-motion": "^11.5.6",
     "next": "14.2.12",
     "react": "^18",
     "react-dom": "^18",
-    "react-dropzone": "^14.2.3",
-    "postcss": "^8",
-    "tailwindcss": "^3.4.12"
+    "react-dropzone": "^14.2.3"
   },
   "devDependencies": {
     "@types/node": "^20",
     "@types/react": "^18",
     "@types/react-dom": "^18",
+    "autoprefixer": "^10.4.20",
+    "axios": "^1.7.7",
     "eslint": "^8",
     "eslint-config-next": "14.2.12",
-    "typescript": "^5",
+    "framer-motion": "^11.5.6",
+    "postcss": "^8.4.47",
     "react": "^18",
-    "axios": "^1.7.7",
-    "framer-motion": "^11.5.6"
+    "tailwindcss": "^3.4.12",
+    "typescript": "^5"
   }
 }

@@ -21,7 +21,9 @@ RUN ls -la /app
 # Use an official Node.js image as the base image
 FROM node:20.17.0 AS node-builder
 
-# WORKDIR /.
+WORKDIR /.
+
+ENV NODE_ENV="production"
 
 COPY --from=python-builder . .
 RUN ls -la /app
@@ -29,6 +31,8 @@ RUN ls -la /app
 # Install dependencies
 RUN npm install -g pnpm
 RUN pnpm install
+
+RUN pnpm add tailwindcss postcss autoprefixer
 
 # # Build the Next.js app
 RUN pnpm build
