@@ -3,8 +3,8 @@ FROM python:3.12.6 AS python-builder
 # Set working directory
 WORKDIR /.
 
-RUN python3 -m venv env
-RUN bash -c "source env/bin/activate"
+RUN python3 -m venv venv
+RUN bash -c "source venv/bin/activate"
 
 RUN apt-get update && apt-get install -y poppler-utils
 
