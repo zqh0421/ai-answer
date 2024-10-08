@@ -16,7 +16,8 @@
     "axios": "^1.7.7",
     "concurrently": "^9.0.1",
     "framer-motion": "^11.5.6",
-    "next": "14.2.12",
+    "next": "15.0.0-canary.179",
+    "next-auth": "5.0.0-beta.22",
     "react": "^18",
     "react-dom": "^18",
     "react-dropzone": "^14.2.3"

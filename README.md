@@ -2,7 +2,11 @@
 
 ## Getting Started
 
-### Recommended to start the project on GitPod.io[https://gitpod.io/workspaces]
+### IDE
+
+Recommended to start the project on [GitPod.io](https://gitpod.io/workspaces) or [GitHub CodeSpaces](https://github.com/codespaces/new).
+
+These two cloud-hosted IDEs both provide free usage credits per month.
 
 ### Create virtual environment
 
@@ -11,7 +15,7 @@ python3 -m venv venv
 # for Mac/Linux
 source venv/bin/activate
 # for Windows
-venv\Scripts\activate
+# venv\Scripts\activate
 ```
 
 ### Prepare enviroment variable(s)
@@ -23,7 +27,6 @@ venv\Scripts\activate
 
 ```bash
 pip install -r requirements.txt
-
 sudo apt-get update
 sudo apt-get install poppler-utils
 
@@ -57,7 +60,7 @@ The backend API entrance are defined in `/api/index.py`.
 
 The UI entrance is defined in `/app/page.tsx`.
 
-## Additional Commands for Convenience
+<!-- ## Additional Commands for Convenience
 
 ```bash
 uvicorn app.index:app --reload
@@ -67,4 +70,4 @@ pip freeze > requirements.txt
 ```
 ```bash
 deactivate
-```
+``` -->
