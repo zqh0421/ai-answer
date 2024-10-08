@@ -27,6 +27,7 @@ source venv/bin/activate
 
 ```bash
 pip install -r requirements.txt
+sudo apt-get update
 sudo apt-get install poppler-utils
 pnpm install
 ```
