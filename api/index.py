@@ -2,8 +2,8 @@ from fastapi import FastAPI, Depends
 from typing_extensions import Annotated
 
 from .config import Settings, get_settings
-from .models import AskModel, EmbedModel, ConvertModel
-from .controllers import askController, embedController, convertController
+from .models import AskModel, EmbedModel, ConvertModel, VisionModel, ConvertBatchModel
+from .controllers import askController, embedController, convertController, convertBatchController, visionController, encode_image
 
 app = FastAPI()
 
@@ -28,4 +28,17 @@ async def convert(convertModel: ConvertModel):
     result = await convertController(convertModel)
     return result
 
+# @app.post("api/encode-image")
+# def encode(encodeModel: EncodeModel):
+#     result = encode_image(emcodeModel)
+#     return result
 
+@app.post("api/openai-vision")
+def vision(visionModel: VisionModel):
+    result = visionController(visionModel)
+    return result
+
+@app.post("/api/pdf-to-img-rephrase")
+async def convert_batch(convertBatchModel: ConvertBatchModel, settings: Annotated[Settings, Depends(get_settings)]):
+    result = await convertBatchController(convertBatchModel, settings)
+    return result
