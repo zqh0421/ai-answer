@@ -1,9 +1,15 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { motion } from "framer-motion"; // 使用 framer-motion
+import { motion } from "framer-motion";
 import axios from "axios";
 import TestDrawer from './components/TestDrawer';
+import { Swiper, SwiperSlide } from 'swiper/react';
+import { Navigation, Pagination, Scrollbar, A11y } from 'swiper/modules';
+import 'swiper/css';
+import 'swiper/css/navigation';
+import 'swiper/css/pagination';
+import 'swiper/css/scrollbar';
 
 interface Reference {
   content: string,
@@ -20,6 +26,9 @@ export default function Home() {
   const [result, setResult] = useState(""); // For Result Display
   const [reference, setReference] = useState<Reference>(); // For Reference Display
   const [imageSrc, setImageSrc] = useState<string | null>(null);
+  const [images, setImages] = useState<string[] | null>(null);
+  const [totalCount, setTotalCount] = useState(-1);
+  const [loadedCount, setLoadedCount] = useState(-1);
 
   const [isImageLoading, setIsImageLoading] = useState(false);
   const [isReferenceLoading, setIsReferenceLoading] = useState(false);
@@ -29,7 +38,7 @@ export default function Home() {
     try {
       const response = await axios.post(
         "/api/pdf-to-image",
-        { 
+        {
           page: page_number
         },
         {
@@ -39,10 +48,10 @@ export default function Home() {
       const imageBlob = response.data;
       const imageUrl = URL.createObjectURL(imageBlob);
       setImageSrc(imageUrl);
-      setIsImageLoading(false);
+      return imageUrl;
     } catch (error) {
       console.error('Error fetching image:', error);
-      setIsImageLoading(false);
+      return null;
     }
   };
 
@@ -68,18 +77,40 @@ export default function Home() {
     try {
       const response = await axios.post(
         "/api/embed",
-        { 
+        {
           question: question,
           answer: answer,
           result: result
         }
       );
       setReference(response.data.result);
-      handlePdfImage(response.data.result.page_number);
+
+      let temp: string[] = [];
+      const page_number = response.data.result.page_number;
+      const startPage = Math.max(0, page_number - 2); // Ensure page number doesn't go below 0
+      const endPage = page_number + 2;
+      setTotalCount(endPage - startPage + 1);
+      setLoadedCount(0);
+
+      // Fetch the images for the current page and its surrounding pages
+      for (let i = startPage; i <= endPage; i++) {
+        const image: string | null = await handlePdfImage(i); // Await here to ensure it processes in order
+        if (image !== null) {
+          setLoadedCount(prevCount => prevCount + 1);
+          temp = [...temp, image];
+        }
+      }
+
+      // Set all fetched images to the state
+      setImages(temp);
+      setIsImageLoading(false);
+      console.log("images" + temp)
       setIsReferenceLoading(false);
+
     } catch (error) {
       console.error("Error fetching the result:", error);
       setIsReferenceLoading(false);
+      setIsImageLoading(false);
     }
   }
 
@@ -87,7 +118,7 @@ export default function Home() {
     if (result) {
       handleRetrieve();
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [result]);
 
   const handleSubmit = async () => {
@@ -95,7 +126,7 @@ export default function Home() {
     setIsFeedbackLoading(true);
     setIsImageLoading(true);
     setIsReferenceLoading(true);
-    
+
     axios
       .post("/api/ask", { question, answer })
       .then((response) => {
@@ -123,40 +154,79 @@ export default function Home() {
 
       <div className="grid grid-cols-4 gap-4">
         {/* 左侧 Feedback Area */}
-        <motion.div 
+        <motion.div
           className="col-span-3 flex flex-col"
           initial={{ opacity: 0, y: 50 }} // 初始位置
           animate={{ opacity: 1, y: 0 }} // 最终状态
           transition={{ duration: 0.8 }} // 动画持续时间
         >
-          {/* Slide Page Image */}
-          <motion.div 
-            className="mb-4 p-4 bg-gray-100 rounded-lg shadow-md h-[30vw] w-[60vw] flex justify-center items-center"
-            initial={{ opacity: 0 }} 
-            animate={{ opacity: imageSrc ? 1 : 0.5 }} 
+
+          {/* Slide Page Images with Swiper */}
+          <motion.div
+            className="mb-4 p-4 bg-gray-100 rounded-lg shadow-md h-[30vw] w-[60vw] flex justify-center items-center overflow-hidden"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: imageSrc ? 1 : 0.5 }}
             transition={{ duration: 0.8 }}
           >
-            {imageSrc && !isImageLoading ? (
-              <motion.img
-                src={imageSrc}
-                alt="PDF Page"
-                className="w-auto h-[90%] rounded-lg shadow-md"
-                initial={{ scale: 0.8 }}
-                animate={{ scale: 1 }}
-                transition={{ duration: 0.5 }}
-              />
+            {images?.length > 0 && !isImageLoading ? (
+              <Swiper
+                // install Swiper modules
+                modules={[Navigation, Pagination, Scrollbar, A11y]}
+                spaceBetween={50}
+                centeredSlides={true}
+                slidesPerView={3}
+                navigation
+                pagination={{ clickable: true }}
+                initialSlide={Math.floor(totalCount / 2)}
+                loop={true}
+                onSwiper={(swiper) => console.log(swiper)}
+                onSlideChange={(swiper) => {
+                  // To apply effects on the middle slide
+                  const allSlides = swiper.slides;
+                  allSlides.forEach((slide, index) => {
+                    // Scale the current center slide and reset the others
+                    if (index === swiper.activeIndex) {
+                      slide.style.transform = "scale(1.8)"; // Enlarge the active slide
+                      slide.style.zIndex = "999";
+                      slide.style.opacity = "1";
+                      slide.style.transition = "transform 0.5s ease, opacity 0.5s ease";
+                    } else {
+                      slide.style.transform = "scale(1)";
+                      slide.style.opacity = "0.8";
+                      slide.style.zIndex = "1";
+                      slide.style.transition = "transform 0.5s ease, opacity 0.5s ease";
+                    }
+                  });
+                }}
+                style={{ overflow: "visible", width: "60vw", padding: "2vw" }}
+              >
+                {images?.map((src, index) => (
+                  <SwiperSlide key={index}>
+                    <div className="flex justify-center items-center">
+                      <motion.img
+                        src={src}
+                        alt={`PDF Page ${index}`}
+                        className="w-auto h-[90%] rounded-lg shadow-md mb-4"
+                        initial={{ scale: 0.8 }}
+                        animate={{ scale: 1 }}
+                        transition={{ duration: 0.5 }}
+                      />
+                    </div>
+                  </SwiperSlide>
+                ))}
+              </Swiper>
             ) : (
               <motion.p>
-                {isImageLoading ? "Loading image..." : "No image available"}
+                {isImageLoading ? `Loading images...${totalCount>-1 ? `${loadedCount}/${totalCount}` : ``}` : "No images available"}
               </motion.p>
             )}
           </motion.div>
 
           {/* Feedback and Answer */}
-          <motion.div 
+          <motion.div
             className="p-4 bg-gray-100 rounded-lg shadow-md w-[60vw]"
-            initial={{ opacity: 0, y: 50 }} 
-            animate={{ opacity: 1, y: 0 }} 
+            initial={{ opacity: 0, y: 50 }}
+            animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.8 }}
           >
             {/* AI Feedback */}
@@ -168,12 +238,15 @@ export default function Home() {
                 <p>{isFeedbackLoading ? "Loading feedback..." : "No feedback yet"}</p>
               )}
             </motion.div>
-            
+
             {/* Reference Display */}
             <motion.div className="mt-4">
               <h3 className="text-xl font-semibold">Reference:</h3>
               {reference && !isReferenceLoading ? (
-                <p>{reference.content} (page {reference.page_number})</p>
+                <div>
+                  <p>{reference.content} (page {reference.page_number})</p>
+                  <p>For full slide: <a href="https://docs.google.com/presentation/d/15iFGnOZ9pp1UF7kPIcL6nY1MdS-YzXQ6wqgWzxugSXM/edit?usp=sharing" target="_blank" className="text-blue-500">E-Learning Overview</a></p>
+                </div>
               ) : (
                 <p>{isReferenceLoading ? "Loading reference..." : "No reference available"}</p>
               )}
@@ -182,15 +255,15 @@ export default function Home() {
         </motion.div>
 
         {/* 右侧 User Input Area */}
-        <motion.div 
+        <motion.div
           className="col-span-1 p-4 bg-white rounded-lg shadow-md"
-          initial={{ opacity: 0, x: 100 }} 
-          animate={{ opacity: 1, x: 0 }} 
+          initial={{ opacity: 0, x: 100 }}
+          animate={{ opacity: 1, x: 0 }}
           transition={{ duration: 0.5 }}
         >
           {/* Question Input Area */}
           <motion.div className="mt-4" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.8 }}>
-            <h3 className="text-l font-semibold">Open-Ended Question</h3> {/* Question 标题 */}
+            <h3 className="text-l font-semibold">Question</h3> {/* Question 标题 */}
             <textarea
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
@@ -218,7 +291,7 @@ export default function Home() {
             onClick={handleSubmit}
             className="mt-4 w-full p-2 bg-blue-500 text-white rounded-lg"
             whileHover={{
-              scale: 1.05, 
+              scale: 1.05,
               backgroundColor: "#1d40ae",
               color: "#fff"
             }}

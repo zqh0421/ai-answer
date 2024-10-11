@@ -1,14 +1,16 @@
 from fastapi import FastAPI, Depends, HTTPException
 from typing_extensions import Annotated
-
+from sqlalchemy.orm import Session
+from .schema import User
+from .database import SessionLocal
 from .config import Settings, get_settings
 from .models import AskModel, EmbedModel, ConvertModel, VisionModel, ConvertBatchModel
 from .controllers import askController, embedController, convertController, convertBatchController, visionController, encode_image
 
-from fastapi.security import OAuth2PasswordBearer
-from google.oauth2 import id_token
-from google.auth.transport import requests
-from pydantic import BaseModel
+# from fastapi.security import OAuth2PasswordBearer
+# from google.oauth2 import id_token
+# from google.auth.transport import requests
+# from pydantic import BaseModel
 
 app = FastAPI()
 
@@ -47,29 +49,47 @@ def vision(visionModel: VisionModel):
 async def convert_batch(convertBatchModel: ConvertBatchModel, settings: Annotated[Settings, Depends(get_settings)]):
     result = await convertBatchController(convertBatchModel, settings)
     return result
-# 用于Google OAuth2的配置
-CLIENT_ID = "YOUR_GOOGLE_CLIENT_ID"
-AUTHORIZED_EMAILS = ["authorized_user@example.com"]  # 你希望授权的用户邮箱
 
-# OAuth2 验证token
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
-
-class User(BaseModel):
-    email: str
-    name: str
-
-def verify_google_token(token: str):
+# 依赖注入函数，用于每次请求后关闭数据库连接
+def get_db():
+    db = SessionLocal()
     try:
-        idinfo = id_token.verify_oauth2_token(token, requests.Request(), CLIENT_ID)
-        email = idinfo.get('email')
-        if email not in AUTHORIZED_EMAILS:
-            raise HTTPException(status_code=403, detail="Email not authorized")
-        return User(email=email, name=idinfo.get('name'))
-    except Exception as e:
-        raise HTTPException(status_code=401, detail="Token verification failed")
+        yield db
+    finally:
+        db.close()
 
+# 增加用户
+# @app.post("/api/users/")
+# def create_user(name: str, email: str, db: Session = Depends(get_db)):
+#     db_user = db.query(User).filter(User.email == email).first()
+#     if db_user:
+#         raise HTTPException(status_code=400, detail="Email already registered")
+#     new_user = User(name=name, email=email)
+#     db.add(new_user)
+#     db.commit()
+#     db.refresh(new_user)
+#     return new_user
 
-@app.post("/login")
-async def login(token: str = Depends(oauth2_scheme)):
-    user = verify_google_token(token)
-    return {"message": f"Welcome {user.name}"}
+# # 查找用户
+# @app.get("/api/users/{user_id}")
+# def read_user(user_id: int, db: Session = Depends(get_db)):
+#     user = db.query(User).filter(User.id == user_id).first()
+#     if user is None:
+#         raise HTTPException(status_code=404, detail="User not found")
+#     return user
+
+# # 删除用户
+# @app.delete("/api/users/{user_id}")
+# def delete_user(user_id: int, db: Session = Depends(get_db)):
+#     user = db.query(User).filter(User.id == user_id).first()
+#     if user is None:
+#         raise HTTPException(status_code=404, detail="User not found")
+#     db.delete(user)
+#     db.commit()
+#     return {"detail": "User deleted"}
+
+# 根据邮箱验证用户
+@app.post("/api/admin-auth")
+def verify_user(email: str, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.email == email).first()
+    return {"name": user.name, "email": user.email, "permitted": user is None or user.role != "admin"}

@@ -11,4 +11,4 @@ export default function SignIn() {
       <button type="submit">Signin with Google</button>
     </form>
   )
-} 
+}

@@ -3,7 +3,7 @@ const nextConfig = {
   rewrites: async () => {
     return [
       {
-        source: "/api/:path*",
+        source: "/api/:path((?!auth).*)", // Excludes any paths starting with "auth",
         destination:
           process.env.NODE_ENV === "development"
             ? "http://127.0.0.1:8000/api/:path*"
@@ -24,6 +24,9 @@ const nextConfig = {
             : "/openapi.json",
       }
     ];
+  },
+  env: {
+    NEXT_PUBLIC_API_URL: 'http://ec2-3-133-205-224.us-east-2.compute.amazonaws.com:3000/',
   },
 };
 

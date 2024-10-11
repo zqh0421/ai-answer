@@ -3,8 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "fastapi-dev": "pip3 install -r requirements.txt && python3 -m uvicorn api.index:app --reload",
-    "next-dev": "pnpm install && next dev",
+    "fastapi-dev": "python3 -m uvicorn api.index:app --reload",
+    "next-dev": "next dev",
     "dev": "concurrently \"pnpm run next-dev\" \"pnpm run fastapi-dev\"",
     "build": "next build",
     "fastapi-start": "python3 -m uvicorn api.index:app",
@@ -20,7 +20,8 @@
     "next-auth": "5.0.0-beta.22",
     "react": "^18",
     "react-dom": "^18",
-    "react-dropzone": "^14.2.3"
+    "react-dropzone": "^14.2.3",
+    "swiper": "^11.1.14"
   },
   "devDependencies": {
     "@types/node": "^20",

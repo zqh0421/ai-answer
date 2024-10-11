@@ -29,6 +29,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 sudo apt-get update
 sudo apt-get install poppler-utils
+sudo apt install postgresql postgresql-contrib
 
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
 export NVM_DIR="$([ -z "${XDG_CONFIG_HOME-}" ] && printf %s "${HOME}/.nvm" || printf %s "${XDG_CONFIG_HOME}/nvm")"
