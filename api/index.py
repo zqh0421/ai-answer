@@ -99,9 +99,9 @@ def verify_user(email: str, db: Session = Depends(get_db)):
 async def generate_feedback(request: FeedbackRequestModel, settings: Annotated[Settings, Depends(get_settings)]):
     feedback = ""
     if request.promptEngineering == "zero":
-        feedback = generate_feedback_using_zero(request.question, request.answer, settings)
+        feedback = generate_feedback_using_zero(request.question, request.answer, request.feedbackFramework, settings)
     elif request.promptEngineering == "few":
-        feedback = generate_feedback_using_few(request.question, request.answer, settings)
+        feedback = generate_feedback_using_few(request.question, request.answer, request.feedbackFramework, settings)
     else:
         feedback = "Generate Feedback Error: Invalid Request."
         print("Generate Feedback Error: Invalid Request.")
@@ -114,13 +114,13 @@ async def generate_feedback(request: FeedbackRequestModel, settings: Annotated[S
 async def generate_feedback_rag(request: FeedbackRequestRagModel, settings: Annotated[Settings, Depends(get_settings)]):
     feedback = ""
     if request.promptEngineering == "rag_zero":
-        feedback = generate_feedback_using_rag_zero(request.question, request.answer, request.slide_text_arr, settings)
+        feedback = generate_feedback_using_rag_zero(request.question, request.answer, request.slide_text_arr, request.feedbackFramework, settings)
     elif request.promptEngineering == "rag_few":
-        feedback = generate_feedback_using_rag_few(request.question, request.answer, request.slide_text_arr, settings)
+        feedback = generate_feedback_using_rag_few(request.question, request.answer, request.slide_text_arr, request.feedbackFramework, settings)
     elif request.promptEngineering == "rag_cot":
-        feedback = generate_feedback_using_rag_cot(request.question, request.answer, request.slide_text_arr, settings)
+        feedback = generate_feedback_using_rag_cot(request.question, request.answer, request.slide_text_arr, request.feedbackFramework, settings)
     elif request.promptEngineering == "graph_rag":
-        feedback = generate_feedback_using_graph_rag(request.question, request.answer, request.slide_text_arr, settings)
+        feedback = generate_feedback_using_graph_rag(request.question, request.answer, request.slide_text_arr, request.feedbackFramework, settings)
     else:
         feedback = "Generate Feedback Error: Invalid Request."
         print("Generate Feedback Error: Invalid Request.")

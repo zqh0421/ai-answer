@@ -3,7 +3,7 @@ from openai import OpenAI
 from ...config import Settings, get_settings
 from typing_extensions import Annotated
 
-def generate_feedback_using_zero(question: str, answer: str, settings: Annotated[Settings, Depends(get_settings)], print_stream=False) -> str:
+def generate_feedback_using_zero(question: str, answer: str, feedbackFramework: str, settings: Annotated[Settings, Depends(get_settings)], print_stream=False) -> str:
     api_key = settings.openai_api_key  # Corrected to access openai_api_key
 
     if not api_key:
