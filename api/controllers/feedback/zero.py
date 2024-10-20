@@ -34,4 +34,4 @@ def generate_feedback_using_zero(question: str, answer: str, settings: Annotated
             if print_stream:
                 print(chunk.choices[0].delta.content, end="")
             result += chunk.choices[0].delta.content
-    return f"Feedback for Zero: Your answer '{answer}' doesn't quite match the question '{question}'. Please try again."
+    return f"{result}"

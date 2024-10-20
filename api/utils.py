@@ -43,21 +43,27 @@ def embed_slide(contents, settings: Annotated[Settings, Depends(get_settings)], 
     )
     return embeddings
 
-def retrieve_reference(text_vector, content_vectors, contents):
+def retrieve_reference(text_vector, content_vectors, contents, top_n=3):
     """
-    Retrieve the most relevant slide based on cosine similarity between the query vector and slide vectors.
+    Retrieve the top N most relevant slides based on cosine similarity between the query vector and slide vectors.
     """
     # Convert lists to numpy arrays for cosine similarity
     text_vector = np.array(text_vector).reshape(1, -1)
     content_vectors = np.array(content_vectors)
 
     # Compute cosine similarity between query vector and content vectors
-    similarities = cosine_similarity(text_vector, content_vectors)
+    similarities = cosine_similarity(text_vector, content_vectors).flatten()
 
-    # Get the index of the highest similarity
-    best_match_idx = int(np.argmax(similarities))  # Convert numpy.int64 to Python int
+    # Get the indices of the top N highest similarities
+    top_indices = similarities.argsort()[-top_n:][::-1]  # Sort and get top N indices
 
-    # Retrieve the best match content and its page number
-    best_match_content = contents[best_match_idx]
+    # Retrieve the top N match contents and their indices
+    top_matches = [
+        {
+            "content": f"{contents[idx]}",
+            "page_number": int(idx)
+        }
+        for idx in top_indices
+    ]
     
-    return best_match_idx, best_match_content
+    return top_matches

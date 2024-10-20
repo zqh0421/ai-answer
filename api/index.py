@@ -97,11 +97,13 @@ def verify_user(email: str, db: Session = Depends(get_db)):
 
 @app.post("/api/generate_feedback")
 async def generate_feedback(request: FeedbackRequestModel, settings: Annotated[Settings, Depends(get_settings)]):
+    feedback = ""
     if request.promptEngineering == "zero":
         feedback = generate_feedback_using_zero(request.question, request.answer, settings)
     elif request.promptEngineering == "few":
         feedback = generate_feedback_using_few(request.question, request.answer, settings)
     else:
+        feedback = "Generate Feedback Error: Invalid Request."
         print("Generate Feedback Error: Invalid Request.")
 
     return {
@@ -110,7 +112,7 @@ async def generate_feedback(request: FeedbackRequestModel, settings: Annotated[S
 
 @app.post("/api/generate_feedback_rag")
 async def generate_feedback_rag(request: FeedbackRequestRagModel, settings: Annotated[Settings, Depends(get_settings)]):
-    print("TEST")
+    feedback = ""
     if request.promptEngineering == "rag_zero":
         feedback = generate_feedback_using_rag_zero(request.question, request.answer, request.slide_text_arr, settings)
     elif request.promptEngineering == "rag_few":
@@ -120,6 +122,7 @@ async def generate_feedback_rag(request: FeedbackRequestRagModel, settings: Anno
     elif request.promptEngineering == "graph_rag":
         feedback = generate_feedback_using_graph_rag(request.question, request.answer, request.slide_text_arr, settings)
     else:
+        feedback = "Generate Feedback Error: Invalid Request."
         print("Generate Feedback Error: Invalid Request.")
 
     return {

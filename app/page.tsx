@@ -90,14 +90,17 @@ export default function Home() {
         "/api/embed",
         {
           question: question,
-          answer: answer,
-          result: result
+          answer: question,
+          result: question
+          // answer: answer,
+          // result: result
         }
       );
-      setReference(response.data.result);
+      setReference(response.data.result[0]);
+      setSlideTextArr(response.data.result.map(item => item.content));
 
       let temp: string[] = [];
-      const page_number = response.data.result.page_number;
+      const page_number = response.data.result[0].page_number;
       const startPage = Math.max(0, page_number - 2); // Ensure page number doesn't go below 0
       const endPage = page_number + 2;
       setTotalCount(endPage - startPage + 1);
@@ -126,14 +129,18 @@ export default function Home() {
     }
   }
 
-  useEffect(() => {
-    if (result) {
-      handleRetrieve();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [result]);
+  // useEffect(() => {
+  //   if (result) {
+  //     handleRetrieve();
+  //   }
+  //   // eslint-disable-next-line react-hooks/exhaustive-deps
+  // }, [result]);
 
-  const handleNewSubmit = async () => {
+  const handleSubmit = async () => {
+    if (!question) return;
+    setIsFeedbackLoading(true);
+    setIsImageLoading(true);
+    setIsReferenceLoading(true);
     try {
       let response;
       if (selectedPromptEngineering === "rag_zero" ||
@@ -149,6 +156,7 @@ export default function Home() {
           slide_text_arr: slideTextArr
         });
       } else {
+        handleRetrieve();
         response = await axios.post("/api/generate_feedback", {
           promptEngineering: selectedPromptEngineering,
           feedbackFramework: selectedFeedbackFramework,
@@ -158,27 +166,11 @@ export default function Home() {
       }
       console.log(response);
       setResult(response.data.feedback);
+      setIsFeedbackLoading(false);
     } catch (error) {
       console.error("Error generating feedback:", error);
+      setIsFeedbackLoading(false);
     }
-  };
-
-  const handleSubmit = async () => {
-    if (!question) return;
-    setIsFeedbackLoading(true);
-    setIsImageLoading(true);
-    setIsReferenceLoading(true);
-
-    axios
-      .post("/api/ask", { question, answer })
-      .then((response) => {
-        setResult(response.data.result);
-        setIsFeedbackLoading(false);
-      })
-      .catch((error) => {
-        console.error("Error fetching the result:", error);
-        setIsFeedbackLoading(false);
-      });
   };
 
   // const handleKeyUp = (event: React.KeyboardEvent<HTMLInputElement>) => {
@@ -375,19 +367,6 @@ export default function Home() {
             transition={{ duration: 0.2 }}
           >
             {(isImageLoading || isFeedbackLoading || isReferenceLoading) ? "Submitting..." : "Submit"}
-          </motion.button>
-          <motion.button
-            onClick={handleNewSubmit}
-            className="mt-4 w-full p-2 bg-blue-500 text-white rounded-lg"
-            whileHover={{
-              scale: 1.05,
-              backgroundColor: "#1d40ae",
-              color: "#fff"
-            }}
-            whileTap={{ scale: 0.95 }}
-            transition={{ duration: 0.2 }}
-          >
-            {(isImageLoading || isFeedbackLoading || isReferenceLoading) ? "Submitting..." : "New Submit"}
           </motion.button>
         </motion.div>
       </div>
