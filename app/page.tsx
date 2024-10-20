@@ -34,6 +34,11 @@ export default function Home() {
   const [isReferenceLoading, setIsReferenceLoading] = useState(false);
   const [isFeedbackLoading, setIsFeedbackLoading] = useState(false);
 
+  const [selectedPromptEngineering, setSelectedPromptEngineering] = useState<string>("");
+  const [selectedFeedbackFramework, setSelectedFeedbackFramework] = useState<string>("");
+  const [slideTextArr, setSlideTextArr] = useState<string[]>([""]);
+
+
   const handlePdfImage = async (page_number: number) => {
     try {
       const response = await axios.post(
@@ -67,6 +72,12 @@ export default function Home() {
         setMessage("Failed to load message.");
       });
   }, []);
+
+  useEffect(() => {
+    if (!isImageLoading) {
+      setLoadedCount(-1);
+    }
+  }, [isImageLoading])
 
   function handleInputResize(e: React.ChangeEvent<HTMLTextAreaElement>) {
     e.target.style.height = "auto";
@@ -104,6 +115,7 @@ export default function Home() {
       // Set all fetched images to the state
       setImages(temp);
       setIsImageLoading(false);
+      
       console.log("images" + temp)
       setIsReferenceLoading(false);
 
@@ -121,8 +133,38 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [result]);
 
+  const handleNewSubmit = async () => {
+    try {
+      let response;
+      if (selectedPromptEngineering === "rag_zero" ||
+        selectedPromptEngineering === "rag_few" ||
+        selectedPromptEngineering === "rag_cot" ||
+        selectedPromptEngineering === "graph_rag"
+      ) {
+        response = await axios.post("/api/generate_feedback_rag", {
+          promptEngineering: selectedPromptEngineering,
+          feedbackFramework: selectedFeedbackFramework,
+          question,
+          answer,
+          slide_text_arr: slideTextArr
+        });
+      } else {
+        response = await axios.post("/api/generate_feedback", {
+          promptEngineering: selectedPromptEngineering,
+          feedbackFramework: selectedFeedbackFramework,
+          question,
+          answer,
+        });
+      }
+      console.log(response);
+      setResult(response.data.feedback);
+    } catch (error) {
+      console.error("Error generating feedback:", error);
+    }
+  };
+
   const handleSubmit = async () => {
-    if (!answer || !question) return;
+    if (!question) return;
     setIsFeedbackLoading(true);
     setIsImageLoading(true);
     setIsReferenceLoading(true);
@@ -261,6 +303,40 @@ export default function Home() {
           animate={{ opacity: 1, x: 0 }}
           transition={{ duration: 0.5 }}
         >
+          {/* Dropdown 1: Prompt Engineering */}
+          <div className="mb-4">
+            <label htmlFor="prompt-engineering" className="mr-2">Please select one way of prompt engineering:</label>
+            <select
+              id="prompt-engineering"
+              value={selectedPromptEngineering}
+              onChange={(e) => setSelectedPromptEngineering(e.target.value)}
+              className="border rounded p-2"
+            >
+              <option value="">Select...</option>
+              <option value="zero">Zero</option>
+              <option value="few">Few</option>
+              <option value="rag_zero">RAG Zero</option>
+              <option value="rag_few">RAG Few</option>
+              <option value="rag_cot">RAG CoT</option>
+              <option value="graph_rag">Graph RAG</option>
+            </select>
+          </div>
+
+          {/* Dropdown 2: Feedback Framework */}
+          <div className="mb-4">
+            <label htmlFor="feedback-framework" className="mr-2">Please select a framework of feedback:</label>
+            <select
+              id="feedback-framework"
+              value={selectedFeedbackFramework}
+              onChange={(e) => setSelectedFeedbackFramework(e.target.value)}
+              className="border rounded p-2"
+            >
+              <option value="">Select...</option>
+              <option value="none">None</option>
+              <option value="component">Component</option>
+              <option value="feature">Feature</option>
+            </select>
+          </div>
           {/* Question Input Area */}
           <motion.div className="mt-4" initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.8 }}>
             <h3 className="text-l font-semibold">Question</h3> {/* Question 标题 */}
@@ -299,6 +375,19 @@ export default function Home() {
             transition={{ duration: 0.2 }}
           >
             {(isImageLoading || isFeedbackLoading || isReferenceLoading) ? "Submitting..." : "Submit"}
+          </motion.button>
+          <motion.button
+            onClick={handleNewSubmit}
+            className="mt-4 w-full p-2 bg-blue-500 text-white rounded-lg"
+            whileHover={{
+              scale: 1.05,
+              backgroundColor: "#1d40ae",
+              color: "#fff"
+            }}
+            whileTap={{ scale: 0.95 }}
+            transition={{ duration: 0.2 }}
+          >
+            {(isImageLoading || isFeedbackLoading || isReferenceLoading) ? "Submitting..." : "New Submit"}
           </motion.button>
         </motion.div>
       </div>

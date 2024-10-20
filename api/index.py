@@ -4,9 +4,10 @@ from sqlalchemy.orm import Session
 from .schema import User
 from .database import SessionLocal
 from .config import Settings, get_settings
-from .models import AskModel, EmbedModel, ConvertModel, VisionModel, ConvertBatchModel
+from .models import AskModel, EmbedModel, ConvertModel, VisionModel, ConvertBatchModel, FeedbackRequestModel, FeedbackRequestRagModel
 from .controllers import askController, embedController, convertController, convertBatchController, visionController, encode_image
-
+from .controllers import generate_feedback_using_zero, generate_feedback_using_few
+from .controllers import generate_feedback_using_graph_rag, generate_feedback_using_rag_cot, generate_feedback_using_rag_zero, generate_feedback_using_rag_few
 # from fastapi.security import OAuth2PasswordBearer
 # from google.oauth2 import id_token
 # from google.auth.transport import requests
@@ -93,3 +94,34 @@ def get_db():
 def verify_user(email: str, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == email).first()
     return {"name": user.name, "email": user.email, "permitted": user is None or user.role != "admin"}
+
+@app.post("/api/generate_feedback")
+async def generate_feedback(request: FeedbackRequestModel):
+    if request.promptEngineering == "zero":
+        feedback = generate_feedback_using_zero(request.question, request.answer)
+    elif request.promptEngineering == "few":
+        feedback = generate_feedback_using_few(request.question, request.answer)
+    else:
+        print("Generate Feedback Error: Invalid Request.")
+
+    return {
+        "feedback": feedback
+    }
+
+@app.post("/api/generate_feedback_rag")
+async def generate_feedback_rag(request: FeedbackRequestRagModel):
+    print("TEST")
+    if request.promptEngineering == "rag_zero":
+        feedback = generate_feedback_using_rag_zero(request.question, request.answer, request.slide_text_arr)
+    elif request.promptEngineering == "rag_few":
+        feedback = generate_feedback_using_rag_few(request.question, request.answer, request.slide_text_arr)
+    elif request.promptEngineering == "rag_cot":
+        feedback = generate_feedback_using_rag_cot(request.question, request.answer, request.slide_text_arr)
+    elif request.promptEngineering == "graph_rag":
+        feedback = generate_feedback_using_graph_rag(request.question, request.answer, request.slide_text_arr)
+    else:
+        print("Generate Feedback Error: Invalid Request.")
+
+    return {
+        "feedback": feedback
+    }
