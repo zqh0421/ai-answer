@@ -7,6 +7,7 @@ export default async function NoPermission() {
 
   return (
     <div>
+      <h1>Hello {session?.user?.name}</h1>
       <h1>You do not have permission to access this page.</h1>
       <a href="/">Go back to Home</a>
       <form

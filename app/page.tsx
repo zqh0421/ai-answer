@@ -148,6 +148,7 @@ export default function Home() {
         selectedPromptEngineering === "rag_cot" ||
         selectedPromptEngineering === "graph_rag"
       ) {
+        await handleRetrieve();
         response = await axios.post("/api/generate_feedback_rag", {
           promptEngineering: selectedPromptEngineering,
           feedbackFramework: selectedFeedbackFramework,
@@ -156,7 +157,7 @@ export default function Home() {
           slide_text_arr: slideTextArr
         });
       } else {
-        handleRetrieve();
+        await handleRetrieve();
         response = await axios.post("/api/generate_feedback", {
           promptEngineering: selectedPromptEngineering,
           feedbackFramework: selectedFeedbackFramework,

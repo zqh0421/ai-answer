@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     # domain: str
     nextauth_url: str
     database_url: str
+    next_public_google_drive_api_key: str
     model_config = SettingsConfigDict(
         # `.env.local` takes priority over `.env`
         env_file=('.env', '.env.local')
