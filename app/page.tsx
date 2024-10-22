@@ -220,7 +220,7 @@ export default function Home() {
         selectedPromptEngineering === "rag_cot" ||
         selectedPromptEngineering === "graph_rag"
       ) {
-        await handleRetrieve();
+        handleRetrieve();
         response = await axios.post("/api/generate_feedback_rag", {
           promptEngineering: selectedPromptEngineering,
           feedbackFramework: selectedFeedbackFramework,
