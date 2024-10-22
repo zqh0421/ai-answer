@@ -2,7 +2,9 @@
 
 import { useEffect, useState } from 'react';
 import axios from 'axios';
+import { AxiosError } from 'axios';
 import { usePathname } from 'next/navigation';
+import Image from 'next/image';
 import { Disclosure, DisclosureButton, DisclosurePanel } from '@headlessui/react';
 
 interface Course {
@@ -90,7 +92,7 @@ const CoursePage = () => {
       const res = await axios.get(requestUrl);
   
       const slidesInfo: Slide[] = await Promise.all(
-        res.data.files.map(async (file: any) => {
+        res.data.files.map((file: { id: string; name: string; mimeType: string; thumbnailLink: string }) => {
           if (file.mimeType === 'application/vnd.google-apps.presentation') {
             // If it's a Google Slides (PPT), export it as PDF
             const exportUrl = `https://www.googleapis.com/drive/v3/files/${file.id}/export?mimeType=application/pdf&key=${apiKey}`;
@@ -114,8 +116,12 @@ const CoursePage = () => {
       );
   
       return slidesInfo.filter((slide) => slide !== null); // Filter out any null entries
-    } catch (error) {
-      console.error('Error fetching or converting files:', error.response?.data || error.message);
+    } catch (error: unknown) {
+      if (error instanceof AxiosError) {
+        console.error('Error fetching subfolders:', error.response?.data || error.message);
+      } else {
+        console.error('Unexpected error:', error);
+      }
       return [];
     }
   };
@@ -179,14 +185,18 @@ const CoursePage = () => {
       const res = await axios.get(requestUrl);
   
       // Map the results to a folder object with folder_id and folder_name
-      const folders: Folder[] = res.data.files.map((file: any) => ({
+      const folders: Folder[] = res.data.files.map((file: { id: string; name: string; mimeType: string; thumbnailLink: string }) => ({
         folder_id: file.id,
         folder_name: file.name,
       }));
   
       return folders; // Return the list of subfolders
-    } catch (error) {
-      console.error('Error fetching subfolders:', error.response?.data || error.message);
+    } catch (error: unknown) {
+      if (error instanceof AxiosError) {
+        console.error('Error fetching subfolders:', error.response?.data || error.message);
+      } else {
+        console.error('Unexpected error:', error);
+      }
       return [];
     }
   };  
@@ -410,18 +420,21 @@ const CoursePage = () => {
                               </a>
                             </h3>
                             {slide.slide_cover && (
-                              <img
+                              <Image
                                 src={slide.slide_cover}
                                 alt={`${slide.slide_title} cover`}
+                                width={640}
+                                height={75}
                                 className="w-64 mt-2 rounded"
                               />
                             )}
                             <button
-                              onClick={() => handlePublishSlide(slide.slide_google_id, slide.id)}
+                              onClick={() => handlePublishSlide(slide.slide_google_id, slide.slide_google_id)}
                               className="mt-2 mr-4 p-2 bg-green-600 text-white rounded hover:bg-green-700"
                             >
                               Publish Slide
                             </button>
+
                             <button
                               onClick={() => handleDeleteSlide(module.module_id, slide.slide_google_id)}
                               className="mt-2 p-2 bg-red-600 text-white rounded hover:bg-red-700"

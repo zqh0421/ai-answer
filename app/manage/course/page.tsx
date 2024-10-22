@@ -1,6 +1,6 @@
 'use client'
 import axios from "axios";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { useSession } from "next-auth/react"
 
@@ -21,23 +21,23 @@ const CourseOverview = () => {
   const { data } = useSession();
 
   // Fetch existing courses
-  const fetchCourses = async () => {
+  const fetchCourses = useCallback(async () => {
     try {
       const createrEmail = data?.user?.email;
       const res = await axios.get(`/api/courses/createdby/${createrEmail}`);
-      console.log(res.data)
+      console.log(res.data);
       setCourses(res.data);
     } catch (err) {
       console.error("Error fetching courses:", err);
     }
-  };
+  }, [data?.user?.email]);
 
   useEffect(() => {
     fetchCourses();
-  }, []);
+  }, [fetchCourses]);
 
   // Handle course creation
-  const handleCreateCourse = async (e) => {
+  const handleCreateCourse = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setLoading(true);
     const createrId = "1";
