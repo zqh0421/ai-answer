@@ -48,11 +48,11 @@ const CoursePage = () => {
       const fetchCourseData = async () => {
         try {
           // Fetch course details
-          const courseRes = await axios.get(`/api/courses/${courseId}`);
+          const courseRes = await axios.get(`/api/courses/by_id/${courseId}`);
           setCourse(courseRes.data);
 
           // Fetch course modules
-          const modulesRes = await axios.get(`/api/courses/${courseId}/modules`);
+          const modulesRes = await axios.get(`/api/courses/by_id/${courseId}/modules`);
           setModules(modulesRes.data.modules);
 
           setLoading(false);
@@ -117,7 +117,7 @@ const CoursePage = () => {
     if (!confirmDelete) return;
 
     try {
-      await axios.delete(`/api/modules/${moduleId}`);
+      await axios.delete(`/api/modules/by_id/${moduleId}`);
       setModules((prevModules) => prevModules.filter(module => module.module_id !== moduleId));
       alert('Module deleted successfully');
     } catch (error) {
@@ -191,6 +191,19 @@ const CoursePage = () => {
       alert('Failed to upload slides.');
     }
   };
+  
+  const handlePublishSlide = async (slideGoogleId: string, slideId: string) => {
+    try {
+      const publishRes = await axios.post(`/api/slides/${slideId}/${slideGoogleId}/publish`);
+      console.log("FINISHED")
+      if (publishRes.status === 200) {
+        alert('Slide published successfully!');
+      }
+    } catch (error) {
+      console.error('Error publishing slide:', error);
+      alert('Failed to publish slide.');
+    }
+  };
 
   // Check if slides have been loaded for the module
   const handleModuleClick = (moduleId: string) => {
@@ -202,7 +215,7 @@ const CoursePage = () => {
   // Handle creating a new module
   const handleCreateModule = async () => {
     try {
-      const res = await axios.post(`/api/courses/${courseId}/modules`, {
+      const res = await axios.post(`/api/courses/by_id/${courseId}/modules`, {
         title: newModuleTitle,
       });
 
@@ -229,7 +242,16 @@ const CoursePage = () => {
       <h1 className="text-3xl font-bold mb-4">Course - {course.course_title}</h1>
       <p className="text-lg mb-4">Description: {course.course_description ? course.course_description : 'N/A.'}</p>
       <p className="text-sm text-gray-500">Created at: {course.created_at}</p>
-
+      <section className='mt-8'>
+        <button
+          onClick={async () => {
+            await handlePublish()
+          }}
+          className="p-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+        >
+          Publish Course
+        </button>
+      </section>
       {/* Module Management */}
       <section className="mt-8">
         <div className="flex justify-between items-center mb-4">
@@ -274,6 +296,12 @@ const CoursePage = () => {
                                 className="w-64 mt-2 rounded"
                               />
                             )}
+                            <button
+                              onClick={() => handlePublishSlide(slide.slide_google_id, slide.id)}
+                              className="mt-2 mr-4 p-2 bg-green-600 text-white rounded hover:bg-green-700"
+                            >
+                              Publish Slide
+                            </button>
                             <button
                               onClick={() => handleDeleteSlide(module.module_id, slide.slide_google_id)}
                               className="mt-2 p-2 bg-red-600 text-white rounded hover:bg-red-700"

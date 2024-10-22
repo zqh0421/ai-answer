@@ -2,6 +2,7 @@
 import axios from "axios";
 import { useState, useEffect } from "react";
 import Link from "next/link";
+import { useSession } from "next-auth/react"
 
 interface Course {
   course_id: string;
@@ -17,12 +18,14 @@ const CourseOverview = () => {
   const [isModalOpen, setIsModalOpen] = useState(false); // State for modal visibility
   const [loading, setLoading] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null); // State to track deletion status
+  const { data } = useSession();
 
   // Fetch existing courses
   const fetchCourses = async () => {
     try {
-      const createrId = "1"
-      const res = await axios.get(`/api/courses/createdby/${createrId}`);
+      const createrEmail = data?.user?.email;
+      const res = await axios.get(`/api/courses/createdby/${createrEmail}`);
+      console.log(res.data)
       setCourses(res.data);
     } catch (err) {
       console.error("Error fetching courses:", err);
@@ -64,7 +67,7 @@ const CourseOverview = () => {
 
     setDeleting(courseId);
     try {
-      const res = await axios.delete(`/api/courses/${courseId}`);
+      const res = await axios.delete(`/api/courses/by_id/${courseId}`);
       if (res.status === 200 || res.status === 204) {
         fetchCourses(); // Refresh course list after deletion
       }

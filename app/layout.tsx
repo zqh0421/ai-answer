@@ -3,6 +3,7 @@ import { Lato } from 'next/font/google';
 import './globals.css';
 import Header from './components/Header';
 import Footer from './components/Footer';
+import { SessionProvider } from "next-auth/react";
 
 const lato = Lato({
   weight: '400',
@@ -30,7 +31,7 @@ export default function RootLayout({
 
           {/* Main Content Area */}
           <main className="flex-grow container mx-auto p-6">
-            {children}
+            <SessionProvider>{children}</SessionProvider>
           </main>
 
           {/* Footer */}

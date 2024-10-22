@@ -4,6 +4,29 @@ from .config import Settings, get_settings
 from typing_extensions import Annotated
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
+import requests
+from io import BytesIO
+
+def fetch_pdf_from_drive(file_id: str, settings: Annotated[Settings, Depends(get_settings)]):
+    download_url = f'https://www.googleapis.com/drive/v3/files/{file_id}/export?mimeType=application/pdf&key={settings.next_public_google_drive_api_key}'
+    
+    # Make the request to fetch the PDF content, allowing redirects
+    with requests.Session() as session:
+        response = session.get(download_url, allow_redirects=True)
+        print(response)
+        # Google Drive sometimes serves a confirmation page for large files
+        if 'content-disposition' not in response.headers:
+            # Parse out the confirmation URL from the page
+            confirm_url = f"{download_url}&confirm={response.cookies['download_warning']}"
+            response = session.get(confirm_url)
+        
+        # Check if the file was fetched successfully
+        if response.status_code == 200:
+            print("PDF fetched successfully!")
+            return BytesIO(response.content)  # Return the PDF as a BytesIO stream
+        else:
+            print(f"Failed to fetch PDF: {response.status_code}")
+            return None
 
 def create_embedding(text, settings: Annotated[Settings, Depends(get_settings)], print_stream=False):
     api_key = settings.openai_api_key  # Corrected to access openai_api_key
@@ -60,8 +83,9 @@ def retrieve_reference(text_vector, content_vectors, contents, top_n=3):
     # Retrieve the top N match contents and their indices
     top_matches = [
         {
-            "content": f"{contents[idx]}",
-            "page_number": int(idx)
+            "text": contents[idx].text,
+            "page_number": contents[idx].page_number,
+            "slide_id": contents[idx].slide_id
         }
         for idx in top_indices
     ]

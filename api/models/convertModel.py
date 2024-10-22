@@ -1,7 +1,8 @@
 from pydantic import BaseModel
 
 class ConvertModel(BaseModel):
-    page: int
+    slide_id: str
+    page_number: int
 
 class ConvertBatchModel(BaseModel):
     course: str

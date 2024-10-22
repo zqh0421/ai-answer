@@ -5,6 +5,8 @@ from .schema import User, Course
 from .database import SessionLocal
 from .config import Settings, get_settings
 from sqlalchemy.dialects.postgresql import insert
+import tempfile
+from io import BytesIO
 from .models import AskModel, EmbedModel, ConvertModel, VisionModel, ConvertBatchModel, FeedbackRequestModel, FeedbackRequestRagModel, AuthModel
 from .controllers import askController, embedController, convertController, convertBatchController, visionController, encode_image
 from .controllers import generate_feedback_using_zero, generate_feedback_using_few
@@ -13,9 +15,21 @@ from .controllers import generate_feedback_using_graph_rag, generate_feedback_us
 # from google.oauth2 import id_token
 # from google.auth.transport import requests
 # from pydantic import BaseModel
+from .utils import fetch_pdf_from_drive
 from typing import List
 from . import schema, models
+from langchain_community.document_loaders import PyPDFLoader
+from pdf2image import convert_from_path, convert_from_bytes
+import base64
+
 app = FastAPI()
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 @app.get("/api/test")
 def test():
@@ -29,19 +43,32 @@ def ask(askModel: AskModel, settings: Annotated[Settings, Depends(get_settings)]
     return {"result": f"{result}"}
 
 @app.post("/api/embed")
-def embed(embedModel: EmbedModel, settings: Annotated[Settings, Depends(get_settings)]):
-    result = embedController(embedModel, settings)
+def embed(embedModel: EmbedModel, settings: Annotated[Settings, Depends(get_settings)], db: Session = Depends(get_db)):
+    result = embedController(embedModel, settings, db)
     return result
 
 @app.post("/api/pdf-to-image")
-async def convert(convertModel: ConvertModel):
-    result = await convertController(convertModel)
-    return result
+async def convert(convertModel: ConvertModel, db: Session = Depends(get_db)):
+    try:
+        # Query the page table for the matching slide_id and page_number
+        result = db.query(schema.Page).filter(
+            schema.Page.slide_id == convertModel.slide_id,
+            schema.Page.page_number == convertModel.page_number
+        ).first()  # Use .first() to get the first matching result (you can use .all() if you expect multiple matches)
 
-# @app.post("api/encode-image")
-# def encode(encodeModel: EncodeModel):
-#     result = encode_image(emcodeModel)
-#     return result
+        if not result:
+            raise HTTPException(status_code=404, detail="Page not found for the given slide_id and page_number")
+
+        # Return the matched result
+        return {
+            "slide_id": result.slide_id,
+            "page_number": result.page_number,
+            "text": result.text,
+            "img_base64": result.img_base64
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("api/openai-vision")
 def vision(visionModel: VisionModel):
@@ -53,13 +80,7 @@ async def convert_batch(convertBatchModel: ConvertBatchModel, settings: Annotate
     result = await convertBatchController(convertBatchModel, settings)
     return result
 
-# 依赖注入函数，用于每次请求后关闭数据库连接
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+
 
 # 增加用户
 # @app.post("/api/users/")
@@ -146,10 +167,19 @@ async def generate_feedback_rag(request: FeedbackRequestRagModel, settings: Anno
         "feedback": feedback
     }
 
-@app.get("/api/courses/createdby/{creater_id}")
-def get_courses_created_by(creater_id: str, db: Session = Depends(get_db)):
-    courses = db.query(schema.Course).filter(schema.Course.creater_id == creater_id).all()
+@app.get("/api/courses/createdby/{creater_email}")
+def get_courses_created_by(creater_email: str, db: Session = Depends(get_db)):
+    user = db.query(schema.User).filter(schema.User.email == creater_email).first()
+
+    if not user:
+        return {"error": "User not found"}, 404
+
+    # Now filter courses by the user's id
+    courses = db.query(schema.Course).filter(schema.Course.creater_id == user.id).all()
     print(courses)
+    if not courses:
+        return {"message": "No courses found for this user"}, 200
+
     return courses
 
 @app.post("/api/courses/create")
@@ -164,7 +194,7 @@ def create_course(course: models.CourseResponse, db: Session = Depends(get_db)):
     db.refresh(db_course)
     return db_course
 
-@app.get("/api/courses/{course_id}")
+@app.get("/api/courses/by_id/{course_id}")
 def get_course_by_id(course_id: str, db: Session = Depends(get_db)):
     print("getting")
     print(course_id)
@@ -173,7 +203,7 @@ def get_course_by_id(course_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Course not found")
     return course
 
-@app.put("/api/courses/{course_id}")
+@app.put("/api/courses/by_id/{course_id}")
 def update_course(course_id: str, course: models.CourseResponse, db: Session = Depends(get_db)):
     db_course = db.query(schema.Course).filter(schema.Course.course_id == course_id).first()
     if db_course is None:
@@ -185,7 +215,7 @@ def update_course(course_id: str, course: models.CourseResponse, db: Session = D
     db.refresh(db_course)
     return db_course
 
-@app.delete("/api/courses/{course_id}")
+@app.delete("/api/courses/by_id/{course_id}")
 def delete_course(course_id: str, db: Session = Depends(get_db)):
     db_course = db.query(schema.Course).filter(schema.Course.course_id == course_id).first()
     if db_course is None:
@@ -195,16 +225,16 @@ def delete_course(course_id: str, db: Session = Depends(get_db)):
     db.commit()
     return {"message": "Course deleted successfully"}
 
-@app.get("/api/courses/{course_id}/modules")
+@app.get("/api/courses/by_id/{course_id}/modules")
 def get_modules_by_course(course_id: str, db: Session = Depends(get_db)):
     course = db.query(schema.Course).filter(schema.Course.course_id == course_id).first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
 
-    modules = db.query(schema.Module).filter(schema.Module.course_id == course_id).all()
+    modules = db.query(schema.Module).filter(schema.Module.course_id == course_id).order_by(schema.Module.module_title.asc()).all()
     return {"modules": modules}
 
-@app.post("/api/courses/{course_id}/modules", status_code=201)
+@app.post("/api/courses/by_id/{course_id}/modules", status_code=201)
 def create_module(course_id: str, module: models.ModuleCreate, db: Session = Depends(get_db)):
     course = db.query(schema.Course).filter(schema.Course.course_id == course_id).first()
     if not course:
@@ -223,7 +253,7 @@ def get_slides_by_module(module_id: str, db: Session = Depends(get_db)):
     if not module:
         raise HTTPException(status_code=404, detail="Module not found")
 
-    slides = db.query(schema.Slide).filter(schema.Slide.module_id == module_id).all()
+    slides = db.query(schema.Slide).filter(schema.Slide.module_id == module_id).order_by(schema.Slide.slide_title.asc()).all()
     return {"slides": slides}
 
 @app.post("/api/modules/{module_id}/slides/batch", status_code=status.HTTP_201_CREATED)
@@ -257,7 +287,7 @@ def create_slides_batch(module_id: str, slides: models.SlidesCreate, db: Session
     return {"message": f"{len(slides.slides)} slides uploaded successfully!"}
 
 # Delete module and all slides associated with it
-@app.delete("/api/modules/{module_id}")
+@app.delete("/api/modules/by_id/{module_id}")
 def delete_module(module_id: str, db: Session = Depends(get_db)):
     # Find the module by its ID
     module = db.query(schema.Module).filter(schema.Module.module_id == module_id).first()
@@ -286,3 +316,42 @@ def delete_slide(module_id: str, slide_id: str, db: Session = Depends(get_db)):
     db.commit()
 
     return {"detail": "Slide deleted successfully"}
+
+@app.get("/api/courses/public")
+def get_public_courses(db: Session = Depends(get_db)):
+    # 查询所有状态为 public 的课程
+    public_courses = db.query(schema.Course).filter(schema.Course.authority == "public").order_by(schema.Course.course_title.asc()).all()
+    
+    return public_courses
+
+@app.post("/api/slides/{slide_id}/{slide_google_id}/publish")
+def publish_slide(slide_id: str, slide_google_id: str, settings: Annotated[Settings, Depends(get_settings)], db: Session = Depends(get_db)):
+    pdfstream = fetch_pdf_from_drive(slide_google_id, settings)
+
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as temp_pdf_file:
+            temp_pdf_file.write(pdfstream.getvalue())
+            temp_pdf_path = temp_pdf_file.name
+
+            images = convert_from_bytes(pdfstream.getvalue())
+            if not images:
+                raise HTTPException(status_code=404, detail="Page not found")
+            
+            loader = PyPDFLoader(temp_pdf_path)
+            pages = loader.load() # texts for each page
+
+            if len(images) != len(pages):
+                raise HTTPException(status_code=500, detail="Mismatch between the number of images and pages")
+            
+            for (img, page) in zip(images, pages):
+                img_byte_arr = BytesIO()
+                img.save(img_byte_arr, format='PNG')
+                img_byte_arr.seek(0)
+                img_base64 = base64.b64encode(img_byte_arr.read()).decode('utf-8')
+                new_slide = schema.Page(slide_id=slide_id, page_number=page.metadata['page'], text=page.page_content, img_base64=img_base64)
+                db.add(new_slide)
+                db.commit()
+        return {"message": "Slide published successfully"}
+    except Exception as e:
+        db.rollback()  # Rollback in case of error
+        raise HTTPException(status_code=500, detail=str(e))

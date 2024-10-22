@@ -1,6 +1,6 @@
 from pydantic import BaseModel
+from typing import List
 
 class EmbedModel(BaseModel):
     question: str
-    answer: str
-    result: str
+    slideIds: List[str]
