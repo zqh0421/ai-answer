@@ -24,6 +24,12 @@ interface Slide {
   slide_cover: string
 }
 
+interface modulesNslides {
+  module_id: string;
+  module_title: string;
+  slides: Slide[];
+}
+
 const CoursePage = () => {
   const pathname = usePathname();
   const pathnames = pathname.split('/');
@@ -37,11 +43,14 @@ const CoursePage = () => {
   const [newModuleTitle, setNewModuleTitle] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false); // Modal state for creating module
   const [selectedModuleForSlide, setSelectedModuleForSlide] = useState<string | null>(null);
-  const [driveFolderLink, setDriveFolderLink] = useState(''); // Input field for Drive folder link
+  const [driveFolderLink, setDriveFolderLink] = useState('');
   const [isSlideModalOpen, setIsSlideModalOpen] = useState(false);
-  const [slideInfoList, setSlideInfoList] = useState<Slide[]>([]); // Stores metadata of fetched slides
-  const [showConfirmation, setShowConfirmation] = useState(false); // State to control the confirmation pop-up
-
+  const [slideInfoList, setSlideInfoList] = useState<Slide[]>([]);
+  const [showConfirmation, setShowConfirmation] = useState(false);
+  const [courseFolderLink, setCourseFolderLink] = useState('');
+  const [isModulesUploadModalOpen, setIsModulesUploadModalOpen] = useState(false);
+  const [showModulesUploadConfirmation, setShowModulesUploadConfirmation] = useState(false);
+  const [modulesUploadList, setModulesUploadList] = useState<modulesNslides[]>([]);
   // Fetch the course details and modules when the component mounts
   useEffect(() => {
     if (courseId) {
@@ -156,6 +165,55 @@ const CoursePage = () => {
     }
   };
 
+  interface Folder {
+    folder_id: string;
+    folder_name: string;
+  }
+  
+  const fetchSubfoldersFromFolder = async (folderId: string): Promise<Folder[]> => {
+    try {
+      const apiKey = process.env.NEXT_PUBLIC_GOOGLE_DRIVE_API_KEY;
+      // Google Drive API query to get subfolders within a folder
+      const requestUrl = `https://www.googleapis.com/drive/v3/files?q='${folderId}'+in+parents+and+mimeType='application/vnd.google-apps.folder'&fields=files(id,name)&key=${apiKey}`;
+      
+      const res = await axios.get(requestUrl);
+  
+      // Map the results to a folder object with folder_id and folder_name
+      const folders: Folder[] = res.data.files.map((file: any) => ({
+        folder_id: file.id,
+        folder_name: file.name,
+      }));
+  
+      return folders; // Return the list of subfolders
+    } catch (error) {
+      console.error('Error fetching subfolders:', error.response?.data || error.message);
+      return [];
+    }
+  };  
+
+  const handleFetchModulesFromFolder = async () => {
+    console.log(courseFolderLink)
+    const folderId = extractFolderIdFromLink(courseFolderLink);
+    if (folderId) {
+      console.log(folderId)
+      const subfolders = await fetchSubfoldersFromFolder(folderId);
+
+      let temp: modulesNslides[] = [];
+
+      // Loop through each subfolder (module) and fetch slides
+      for (const subfolder of subfolders) {
+        const slidesInfo = await fetchDriveFolderFiles(subfolder.folder_id); // Fetch slides for each subfolder
+        temp = [...temp, {
+          module_id: subfolder.folder_id,
+          module_title: subfolder.folder_name,
+          slides: slidesInfo
+        }];
+      setModulesUploadList(temp);
+      setShowModulesUploadConfirmation(true); // Trigger confirmation pop-up
+      }
+    };
+  }
+
   // Fetch slides for a specific module
   const fetchSlides = async (moduleId: string) => {
     console.log("fetching")
@@ -229,6 +287,60 @@ const CoursePage = () => {
     }
   };
 
+  const handleAutoCreateModule = async (title: string): Promise<string | null> => {
+    try {
+      const res = await axios.post(`/api/courses/by_id/${courseId}/modules`, { title });
+      
+      if (res.status === 201) {
+        // 返回新模块的ID
+        const newModule = res.data;
+        setModules([...modules, newModule]);
+        return newModule.module_id; // 返回模块ID用于后续上传slides
+      }
+      return null;
+    } catch (error) {
+      console.error('Error creating module:', error);
+      return null;
+    }
+  };
+  
+
+  const handleAutoCreateSlides = async (module_id: string, slideInfoList: Slide[]) => {
+    try {
+      const res = await axios.post(`/api/modules/${module_id}/slides/batch`, {
+        slides: slideInfoList,
+      });
+  
+      if (res.status === 201) {
+        alert(`Slides uploaded for module ${module_id} successfully!`);
+      }
+    } catch (error) {
+      console.error(`Error uploading slides for module ${module_id}:`, error);
+      alert(`Failed to upload slides for module ${module_id}.`);
+    }
+  };
+  
+
+  const handleCreateModules = async () => {
+    try {
+      const createModulePromises = modulesUploadList.map(async (mod) => {
+        const moduleId = await handleAutoCreateModule(mod.module_title);
+        if (moduleId) {
+          await handleAutoCreateSlides(moduleId, mod.slides);
+        }
+      });
+  
+      // 等待所有模块和slides上传完成
+      await Promise.all(createModulePromises);
+      alert('Modules and slides uploaded successfully!');
+      setIsModulesUploadModalOpen(false);
+      setShowModulesUploadConfirmation(false);
+    } catch (error) {
+      console.error('Error uploading modules and slides:', error);
+      alert('Failed to upload modules or slides.');
+    }
+  };
+
   if (loading) {
     return <p>Loading...</p>;
   }
@@ -244,8 +356,16 @@ const CoursePage = () => {
       <p className="text-sm text-gray-500">Created at: {course.created_at}</p>
       <section className='mt-8'>
         <button
+          onClick={() => {
+            setIsModulesUploadModalOpen(true);
+          }}
+          className="p-2 bg-green-600 text-white rounded hover:bg-green-700"
+        >
+          Add Slides from Course Folder
+        </button>
+        <button
           onClick={async () => {
-            await handlePublish()
+            // await handlePublish()
           }}
           className="p-2 bg-blue-600 text-white rounded hover:bg-blue-700"
         >
@@ -334,6 +454,36 @@ const CoursePage = () => {
           </div>
         )}
       </section>
+
+      {/* Modal for Google Drive Course Folder Link */}
+      {isModulesUploadModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900 bg-opacity-50">
+          <div className="bg-white p-6 rounded-lg shadow-lg w-96">
+            <h2 className="text-2xl font-semibold mb-4">Add Slides from Google Drive Course Folder</h2>
+            <input
+              type="text"
+              value={courseFolderLink}
+              onChange={(e) => setCourseFolderLink(e.target.value)}
+              placeholder="Paste Google Drive folder link"
+              className="p-2 border rounded w-full mb-4"
+            />
+            <div className="flex justify-end space-x-4">
+              <button
+                onClick={() => setIsModulesUploadModalOpen(false)}
+                className="p-2 bg-gray-400 text-white rounded hover:bg-gray-500"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleFetchModulesFromFolder}
+                className="p-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+              >
+                Fetch Slides
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
        {/* Modal for Google Drive Folder Link */}
        {isSlideModalOpen && (
@@ -433,6 +583,51 @@ const CoursePage = () => {
               >
                 Cancel
               </button>
+            </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Confirmation Pop-up */}
+      {isModulesUploadModalOpen && showModulesUploadConfirmation && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900 bg-opacity-50">
+          {modulesUploadList.length ? (<div className="bg-white p-6 rounded-lg shadow-lg w-[500px]">
+            <h2 className="text-2xl font-semibold mb-4">Confirm Upload</h2>
+            <p className="mb-4">{modulesUploadList.length} modules were fetched from the Google Drive folder. Do you want to upload them?</p>
+            <ul className="space-y-2 max-h-40 overflow-y-scroll list-disc">
+              {modulesUploadList.map((mod) => (
+                <li key={mod.module_id}>
+                  <p>{mod.module_title}</p>
+                </li>
+              ))}
+            </ul>
+            <div className="flex justify-end space-x-4 mt-4">
+              <button
+                onClick={() => setShowConfirmation(false)}
+                className="p-2 bg-gray-400 text-white rounded hover:bg-gray-500"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleCreateModules}
+                className="p-2 bg-green-600 text-white rounded hover:bg-green-700"
+              >
+                Upload
+              </button>
+            </div>
+          </div>) :
+          (
+            <div className="bg-white p-6 rounded-lg shadow-lg w-[500px]">
+              <h2 className="text-2xl font-semibold mb-4">Confirm Upload</h2>
+              <p>No slides here.</p>
+              <div className="flex justify-end space-x-4 mt-4">
+                <button
+                  onClick={() => setShowConfirmation(false)}
+                  className="p-2 bg-gray-400 text-white rounded hover:bg-gray-500"
+                >
+                  Cancel
+                </button>
             </div>
             </div>
           )}

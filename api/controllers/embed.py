@@ -24,7 +24,9 @@ def embedController(embedModel: EmbedModel, settings: Annotated[Settings, Depend
     docs = db.query(schema.Page).filter(schema.Page.slide_id.in_(embedModel.slideIds)).all()
 
     # Step 3: Extract content and other relevant fields from the queried documents
-    contents = [doc.text for doc in docs]  # Access as attributes, not dictionary keys
+    contents = [doc.text for doc in docs]
+    if not contents:
+        raise HTTPException(status_code=400, detail="No content found for the provided slide IDs.")
 
     # Step 4: Get embeddings for the text contents
     content_vectors = embed_slide(contents, settings)

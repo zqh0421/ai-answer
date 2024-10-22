@@ -198,7 +198,7 @@ export default function Home() {
       setImages(temp);
       setIsImageLoading(false);
       
-      console.log("images" + temp)
+      // console.log("images" + temp)
       setIsReferenceLoading(false);
 
     } catch (error) {
@@ -263,10 +263,10 @@ export default function Home() {
       {/* Drawer for Testing Area */}
       <TestDrawer isOpen={isDrawerOpen} closeDrawer={closeDrawer} message={message} />
 
-      <div className="grid grid-cols-4 gap-4">
-        {/* 左侧 Feedback Area */}
+      <div className="grid grid-cols-7 gap-2">
+        {/* Left Feedback Area */}
         <motion.div
-          className="col-span-3 flex flex-col"
+          className="col-span-5 flex flex-col"
           initial={{ opacity: 0, y: 50 }} // 初始位置
           animate={{ opacity: 1, y: 0 }} // 最终状态
           transition={{ duration: 0.8 }} // 动画持续时间
@@ -368,8 +368,9 @@ export default function Home() {
             </motion.div>
           </motion.div>
         </motion.div>
+        {/* Right Input Area */}
         <motion.div
-          className="col-span-1 p-4 bg-white rounded-lg shadow-md"
+          className="col-span-2 p-4 bg-white rounded-lg shadow-md"
           initial={{ opacity: 0, x: 100 }}
           animate={{ opacity: 1, x: 0 }}
           transition={{ duration: 0.5 }}
