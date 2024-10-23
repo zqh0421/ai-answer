@@ -55,6 +55,28 @@ Open [http://localhost:3000](http://localhost:3000) with your browser to see the
 
 Open [http://localhost:3000/docs](http://localhost:3000/docs) with your browser to see the API documents.
 
+### Create and Connect to Database
+```bash
+docker-compose up
+psql -h localhost -U postgres -d mufin # Password: postgress
+```
+
+### Database Settings
+```bash
+sudo apt-get install wget ca-certificates
+wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt/ $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+sudo apt-get update
+sudo apt-get install postgresql-client-17
+```
+
+After entering database mode:
+```sql
+\dt  -- Check all tables
+INSERT INTO users (id, image, name, email, role) VALUES (1, 'N/A', 'User', 'user@example.com', 'admin'); -- Change this to the inforamtion you are using for login accordingly
+SELECT * FROM users;  -- Check User Data
+```
+
 ### How to start your dev work
 
 The backend API entrance are defined in `/api/index.py`.

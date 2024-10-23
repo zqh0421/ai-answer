@@ -14,7 +14,7 @@ def askController(question, answer, settings: Annotated[Settings, Depends(get_se
         api_key=api_key
     )
     stream = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-4o",
         messages=[
             {
                 "role":"system",

@@ -37,7 +37,7 @@ def generate_feedback_using_zero(question: str, answer: str, feedbackFramework: 
         client = OpenAI(
             api_key=api_key)
         stream = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-4o",
             messages=[
                 {
                 "role":"system",
@@ -57,7 +57,7 @@ def generate_feedback_using_zero(question: str, answer: str, feedbackFramework: 
         client = OpenAI(
             api_key=api_key)
         stream = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-4o",
             messages=[
                 {
                 "role":"system",
@@ -79,7 +79,7 @@ def generate_feedback_using_zero(question: str, answer: str, feedbackFramework: 
         client = OpenAI(
             api_key=api_key)
         stream = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-4o",
             messages=[
                 {
                 "role":"system",

@@ -37,7 +37,7 @@ def create_embedding(text, settings: Annotated[Settings, Depends(get_settings)],
     # Initialize the embedding model
     embeddings_model = OpenAIEmbeddings(
         api_key=api_key,
-        model="text-embedding-ada-002"
+        model="text-embedding-3-large"
     )
 
     result = embeddings_model.embed_query(text)
@@ -58,7 +58,7 @@ def embed_slide(contents, settings: Annotated[Settings, Depends(get_settings)], 
     # Initialize the embedding model
     embeddings_model = OpenAIEmbeddings(
         api_key=api_key,
-        model="text-embedding-ada-002"
+        model="text-embedding-3-large"
     )
 
     embeddings = embeddings_model.embed_documents(

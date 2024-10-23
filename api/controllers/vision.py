@@ -30,7 +30,7 @@ def visionController(question, answer, settings: Annotated[Settings, Depends(get
     base64_image = encode_image(image_path)
 
     stream = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-4o",
         messages=[
             {
                 "role":"system",
