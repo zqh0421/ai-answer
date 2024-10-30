@@ -22,6 +22,7 @@ source venv/bin/activate
 
 - Create a `.env.local` file.
 - Modify the content in the `.env.local` file referring to the format in the `.env.example` file.
+- `mufin-ir.pem` is needed.
 
 ### Install dependencies
 
