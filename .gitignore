@@ -41,3 +41,4 @@ next-env.d.ts
 
 # cache files
 __pycache__/
+data/

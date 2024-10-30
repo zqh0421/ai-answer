@@ -38,7 +38,7 @@ interface Reference {
 
 
 export default function Home() {
-  const base_question = "What is Learning Objectives of E-Learning Design Principles & Methods about?"
+  const base_question = "What are pitfalls of E-Learning Design Principles & Methods about?"
   const base_wrong_answer = "Learning is about engineering."
   const [message, setMessage] = useState("Loading...");
   const [isDrawerOpen, setIsDrawerOpen] = useState(true); // Drawer state
@@ -263,10 +263,10 @@ export default function Home() {
       {/* Drawer for Testing Area */}
       <TestDrawer isOpen={isDrawerOpen} closeDrawer={closeDrawer} message={message} />
 
-      <div className="grid grid-cols-7 gap-2">
+      <div className="grid grid-cols-10 gap-4 w-full">
         {/* Left Feedback Area */}
         <motion.div
-          className="col-span-5 flex flex-col"
+          className="col-span-7 flex flex-col w-full"
           initial={{ opacity: 0, y: 50 }} // 初始位置
           animate={{ opacity: 1, y: 0 }} // 最终状态
           transition={{ duration: 0.8 }} // 动画持续时间
@@ -274,7 +274,7 @@ export default function Home() {
 
           {/* Slide Page Images with Swiper */}
           <motion.div
-            className="mb-4 p-4 bg-gray-100 rounded-lg shadow-md h-[30vw] w-[60vw] flex justify-center items-center overflow-hidden"
+            className="mb-4 p-4 bg-gray-100 rounded-lg shadow-md h-[30vw] w-full flex justify-center items-center overflow-hidden"
             initial={{ opacity: 0 }}
             animate={{ opacity: imageSrc ? 1 : 0.5 }}
             transition={{ duration: 0.8 }}
@@ -335,7 +335,7 @@ export default function Home() {
 
           {/* Feedback and Answer */}
           <motion.div
-            className="p-4 bg-gray-100 rounded-lg shadow-md w-[60vw]"
+            className="p-4 bg-gray-100 rounded-lg shadow-md w-full"
             initial={{ opacity: 0, y: 50 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.8 }}
@@ -370,7 +370,7 @@ export default function Home() {
         </motion.div>
         {/* Right Input Area */}
         <motion.div
-          className="col-span-2 p-4 bg-white rounded-lg shadow-md"
+          className="col-span-3 w-full p-4 bg-white rounded-lg shadow-md"
           initial={{ opacity: 0, x: 100 }}
           animate={{ opacity: 1, x: 0 }}
           transition={{ duration: 0.5 }}
@@ -469,7 +469,7 @@ export default function Home() {
                     onChange={(e) => setSelectedPromptEngineering(e.target.value)}
                     className="border rounded p-2"
                   >
-                    <option value="">Select...</option>
+                    {/* <option value="">Select...</option> */}
                     <option value="zero">Zero</option>
                     <option value="few">Few</option>
                     <option value="rag_zero">RAG Zero</option>
@@ -487,7 +487,7 @@ export default function Home() {
                     onChange={(e) => setSelectedFeedbackFramework(e.target.value)}
                     className="border rounded p-2"
                   >
-                    <option value="">Select...</option>
+                    {/* <option value="">Select...</option> */}
                     <option value="none">None</option>
                     <option value="component">Component</option>
                     <option value="feature">Feature</option>

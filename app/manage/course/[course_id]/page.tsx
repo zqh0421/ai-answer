@@ -429,7 +429,7 @@ const CoursePage = () => {
                               />
                             )}
                             <button
-                              onClick={() => handlePublishSlide(slide.slide_google_id, slide.slide_google_id)}
+                              onClick={() => handlePublishSlide(slide.slide_google_id, slide.id)}
                               className="mt-2 mr-4 p-2 bg-green-600 text-white rounded hover:bg-green-700"
                             >
                               Publish Slide

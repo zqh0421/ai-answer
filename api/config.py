@@ -5,9 +5,16 @@ class Settings(BaseSettings):
     auth_google_id: str
     auth_google_secret: str
     auth_secret: str
-    # domain: str
+    env: str
     nextauth_url: str
-    database_url: str
+    database_host: str
+    database_port: int
+    database_name: str
+    database_username: str
+    database_password: str
+    database_tunnel_host: str
+    database_tunnel_username: str
+    database_tunnel_private_key_path: str
     next_public_google_drive_api_key: str
     model_config = SettingsConfigDict(
         # `.env.local` takes priority over `.env`

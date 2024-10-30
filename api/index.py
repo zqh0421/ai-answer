@@ -31,6 +31,11 @@ def get_db():
     finally:
         db.close()
 
+@app.on_event("shutdown")
+async def shutdown_event():
+    if tunnel:
+        tunnel.stop()
+
 @app.get("/api/test")
 def test():
     return {
@@ -231,7 +236,7 @@ def get_modules_by_course(course_id: str, db: Session = Depends(get_db)):
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
 
-    modules = db.query(schema.Module).filter(schema.Module.course_id == course_id).order_by(schema.Module.module_title.asc()).all()
+    modules = db.query(schema.Module).filter(schema.Module.course_id == course_id).order_by(schema.Module.module_order.asc()).all()
     return {"modules": modules}
 
 @app.post("/api/courses/by_id/{course_id}/modules", status_code=201)
@@ -327,7 +332,7 @@ def get_public_courses(db: Session = Depends(get_db)):
 @app.post("/api/slides/{slide_id}/{slide_google_id}/publish")
 def publish_slide(slide_id: str, slide_google_id: str, settings: Annotated[Settings, Depends(get_settings)], db: Session = Depends(get_db)):
     pdfstream = fetch_pdf_from_drive(slide_google_id, settings)
-
+    print(slide_id, slide_google_id)
     try:
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as temp_pdf_file:
             temp_pdf_file.write(pdfstream.getvalue())
@@ -342,7 +347,7 @@ def publish_slide(slide_id: str, slide_google_id: str, settings: Annotated[Setti
 
             if len(images) != len(pages):
                 raise HTTPException(status_code=500, detail="Mismatch between the number of images and pages")
-            
+            # new_slide = schema.Page(slide_id=slide_id, page_number=pages[0].metadata['page'], text=pages[0].page_content)
             for (img, page) in zip(images, pages):
                 img_byte_arr = BytesIO()
                 img.save(img_byte_arr, format='PNG')

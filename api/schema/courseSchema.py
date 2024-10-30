@@ -15,7 +15,7 @@ class Course(Base):
     course_description = Column(Text, nullable=False)
     creater_id = Column(String(100), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
-    authority = Column(String, default="private")
+    authority = Column(String, default="public")
 
     modules = relationship("Module", back_populates="course", cascade="all, delete-orphan")
 
