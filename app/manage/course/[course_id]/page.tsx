@@ -20,6 +20,7 @@ interface Module {
 }
 
 interface Slide {
+  id: string
   slide_google_id: string
   slide_title: string
   slide_url: string
@@ -150,7 +151,7 @@ const CoursePage = () => {
       await axios.delete(`/api/modules/${moduleId}/slides/${slideId}`);
       setSlidesByModule((prevSlides) => ({
         ...prevSlides,
-        [moduleId]: prevSlides[moduleId].filter(slide => slide.slide_google_id !== slideId),
+        [moduleId]: prevSlides[moduleId].filter(slide => slide.id !== slideId),
       }));
       alert('Slide deleted successfully');
     } catch (error) {
@@ -436,7 +437,7 @@ const CoursePage = () => {
                             </button>
 
                             <button
-                              onClick={() => handleDeleteSlide(module.module_id, slide.slide_google_id)}
+                              onClick={() => handleDeleteSlide(module.module_id, slide.id)}
                               className="mt-2 p-2 bg-red-600 text-white rounded hover:bg-red-700"
                             >
                               Delete Slide

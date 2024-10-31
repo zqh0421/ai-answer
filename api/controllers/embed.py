@@ -8,6 +8,8 @@ from fastapi import FastAPI, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from ..database import SessionLocal
 from .. import schema
+from sqlalchemy import cast
+from sqlalchemy.dialects.postgresql import UUID
 
 def get_db():
     db = SessionLocal()
@@ -21,7 +23,7 @@ def embedController(embedModel: EmbedModel, settings: Annotated[Settings, Depend
     q_vector = create_embedding(embedModel.question, settings)
     
     # Step 2: Query the `page` table to get documents with matching slide_ids
-    docs = db.query(schema.Page).filter(schema.Page.slide_id.in_(embedModel.slideIds)).all()
+    docs = db.query(schema.Page).filter(cast(schema.Page.slide_id, UUID).in_(embedModel.slideIds)).all()
 
     # Step 3: Extract content and other relevant fields from the queried documents
     contents = [doc.text for doc in docs]

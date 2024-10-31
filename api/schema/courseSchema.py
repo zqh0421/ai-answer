@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, DateTime, Integer, ForeignKey, Float
+from sqlalchemy import Column, String, Text, DateTime, Integer, ForeignKey, Float, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID, ARRAY
 from datetime import datetime
 import uuid
@@ -44,7 +44,7 @@ class Slide(Base):
     module_id = Column(UUID(as_uuid=True), ForeignKey('module.module_id', ondelete="CASCADE"), nullable=False)
 
     module = relationship("Module", back_populates="slides")
-    pages = relationship("Page", back_populates="slide", cascade="all, delete-orphan")
+    pages = relationship("Page", back_populates="slide", cascade="all, delete-orphan", primaryjoin="Slide.id == Page.slide_id")
 
 class Page(Base):
     __tablename__ = "page"
@@ -55,6 +55,10 @@ class Page(Base):
     img_base64 = Column(Text)
     vector = Column(ARRAY(Float))  # Use ARRAY from postgresql dialect for storing arrays
     page_number = Column(Integer, index=True)
-    slide_id = Column(UUID(as_uuid=True), ForeignKey("slide.id"))
+    slide_id = Column(UUID(as_uuid=True), ForeignKey('slide.id', ondelete="CASCADE"), nullable=False)
 
     slide = relationship("Slide", back_populates="pages")
+
+    __table_args__ = (
+        UniqueConstraint('slide_id', 'page_number', name='_slide_id_page_number_uc'),
+    )

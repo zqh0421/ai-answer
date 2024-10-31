@@ -2,7 +2,7 @@ from fastapi import FastAPI, Depends, HTTPException, status
 from typing_extensions import Annotated
 from sqlalchemy.orm import Session
 from .schema import User, Course
-from .database import SessionLocal
+from .database import SessionLocal, tunnel
 from .config import Settings, get_settings
 from sqlalchemy.dialects.postgresql import insert
 import tempfile
@@ -21,6 +21,9 @@ from . import schema, models
 from langchain_community.document_loaders import PyPDFLoader
 from pdf2image import convert_from_path, convert_from_bytes
 import base64
+import os
+from uuid import UUID
+from sqlalchemy import cast
 
 app = FastAPI()
 
@@ -59,7 +62,7 @@ async def convert(convertModel: ConvertModel, db: Session = Depends(get_db)):
         result = db.query(schema.Page).filter(
             schema.Page.slide_id == convertModel.slide_id,
             schema.Page.page_number == convertModel.page_number
-        ).first()  # Use .first() to get the first matching result (you can use .all() if you expect multiple matches)
+        ).first()
 
         if not result:
             raise HTTPException(status_code=404, detail="Page not found for the given slide_id and page_number")
@@ -70,6 +73,9 @@ async def convert(convertModel: ConvertModel, db: Session = Depends(get_db)):
             "page_number": result.page_number,
             "text": result.text,
             "img_base64": result.img_base64
+        }
+        return {
+
         }
 
     except Exception as e:
@@ -312,7 +318,7 @@ def delete_module(module_id: str, db: Session = Depends(get_db)):
 @app.delete("/api/modules/{module_id}/slides/{slide_id}")
 def delete_slide(module_id: str, slide_id: str, db: Session = Depends(get_db)):
     # Find the slide by its ID
-    slide = db.query(schema.Slide).filter(schema.Slide.slide_google_id == slide_id, schema.Slide.module_id == module_id).first()
+    slide = db.query(schema.Slide).filter(schema.Slide.id == slide_id, schema.Slide.module_id == module_id).first()
     if not slide:
         raise HTTPException(status_code=404, detail="Slide not found")
 
@@ -330,33 +336,56 @@ def get_public_courses(db: Session = Depends(get_db)):
     return public_courses
 
 @app.post("/api/slides/{slide_id}/{slide_google_id}/publish")
-def publish_slide(slide_id: str, slide_google_id: str, settings: Annotated[Settings, Depends(get_settings)], db: Session = Depends(get_db)):
+async def publish_slide(slide_id: str, slide_google_id: str, settings: Annotated[Settings, Depends(get_settings)], db: Session = Depends(get_db)):
     pdfstream = fetch_pdf_from_drive(slide_google_id, settings)
-    print(slide_id, slide_google_id)
+    print("Slide ID:", slide_id, "Slide Google ID:", slide_google_id)
     try:
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as temp_pdf_file:
             temp_pdf_file.write(pdfstream.getvalue())
             temp_pdf_path = temp_pdf_file.name
 
+            print("Temporary PDF path created:", temp_pdf_path)
+
             images = convert_from_bytes(pdfstream.getvalue())
             if not images:
-                raise HTTPException(status_code=404, detail="Page not found")
-            
+                raise HTTPException(status_code=404, detail="No pages found in PDF")
+
             loader = PyPDFLoader(temp_pdf_path)
-            pages = loader.load() # texts for each page
+            pages = loader.load()
+            print("Number of images:", len(images), "Number of text pages:", len(pages))
 
             if len(images) != len(pages):
                 raise HTTPException(status_code=500, detail="Mismatch between the number of images and pages")
-            # new_slide = schema.Page(slide_id=slide_id, page_number=pages[0].metadata['page'], text=pages[0].page_content)
-            for (img, page) in zip(images, pages):
+
+            for img, page in zip(images, pages):
                 img_byte_arr = BytesIO()
                 img.save(img_byte_arr, format='PNG')
                 img_byte_arr.seek(0)
                 img_base64 = base64.b64encode(img_byte_arr.read()).decode('utf-8')
-                new_slide = schema.Page(slide_id=slide_id, page_number=page.metadata['page'], text=page.page_content, img_base64=img_base64)
-                db.add(new_slide)
-                db.commit()
+                
+                new_page = schema.Page(
+                    slide_id=slide_id,
+                    page_number=page.metadata['page'],
+                    text=page.page_content,
+                    img_base64=img_base64
+                )
+                db.add(new_page)
+            
+            db.commit()
+            print("Pages successfully added to the database.")
+
         return {"message": "Slide published successfully"}
     except Exception as e:
-        db.rollback()  # Rollback in case of error
-        raise HTTPException(status_code=500, detail=str(e))
+        db.rollback()
+        error_message = f"Error publishing slide: {str(e)}"
+        print(error_message)
+        print(traceback.format_exc())  # 打印完整的堆栈信息
+        raise HTTPException(status_code=500, detail=error_message)
+    finally:
+        # 删除临时文件
+        if 'temp_pdf_path' in locals():
+            try:
+                os.remove(temp_pdf_path)
+                print("Temporary PDF file deleted:", temp_pdf_path)  # 调试信息
+            except Exception as e:
+                print("Failed to delete temporary file:", str(e))
