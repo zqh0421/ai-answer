@@ -297,7 +297,7 @@ export default function Home() {
                   allSlides.forEach((slide, index) => {
                     // Scale the current center slide and reset the others
                     if (index === swiper.activeIndex) {
-                      slide.style.transform = "scale(1.8)"; // Enlarge the active slide
+                      slide.style.transform = "scale(2.4)"; // Enlarge the active slide
                       slide.style.zIndex = "999";
                       slide.style.opacity = "1";
                       slide.style.transition = "transform 0.5s ease, opacity 0.5s ease";
@@ -309,7 +309,7 @@ export default function Home() {
                     }
                   });
                 }}
-                style={{ overflow: "visible", width: "60vw", padding: "2vw" }}
+                style={{ overflow: "visible", width: "70vw", padding: "2vw" }}
               >
                 {images?.map((src, index) => (
                   <SwiperSlide key={index}>
