@@ -24,6 +24,7 @@ import base64
 import os
 from uuid import UUID
 from sqlalchemy import cast
+from .controllers.vision import setVision
 
 app = FastAPI()
 
@@ -265,7 +266,23 @@ def get_slides_by_module(module_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Module not found")
 
     slides = db.query(schema.Slide).filter(schema.Slide.module_id == module_id).order_by(schema.Slide.slide_title.asc()).all()
-    return {"slides": slides}
+
+    result = [{
+            "id": slide.id,
+            "slide_google_id": slide.slide_google_id,
+            "slide_title": slide.slide_title,
+            "slide_cover": slide.slide_cover,
+            "published": slide.published,
+            "gotVision": slide.vision_summary is not None,
+            "module_id": slide.module_id,
+            "slide_google_url": slide.slide_google_url
+        }
+        for slide in slides
+    ]
+
+    return {
+        "slides": result
+    }
 
 @app.post("/api/modules/{module_id}/slides/batch", status_code=status.HTTP_201_CREATED)
 def create_slides_batch(module_id: str, slides: models.SlidesCreate, db: Session = Depends(get_db)):
@@ -370,6 +387,12 @@ async def publish_slide(slide_id: str, slide_google_id: str, settings: Annotated
                     img_base64=img_base64
                 )
                 db.add(new_page)
+
+            slide = db.query(schema.Slide).filter(schema.Slide.id == slide_id).first()
+            if slide:
+                slide.published = True
+            else:
+                raise HTTPException(status_code=404, detail="Slide not found")
             
             db.commit()
             print("Pages successfully added to the database.")
@@ -389,3 +412,30 @@ async def publish_slide(slide_id: str, slide_google_id: str, settings: Annotated
                 print("Temporary PDF file deleted:", temp_pdf_path)  # 调试信息
             except Exception as e:
                 print("Failed to delete temporary file:", str(e))
+
+@app.post("/api/slides/{slide_id}/{slide_google_id}/set-vision")
+async def set_vision(slide_id: str, slide_google_id: str, settings: Annotated[Settings, Depends(get_settings)], db: Session = Depends(get_db)):
+    slide = db.query(schema.Slide).filter(schema.Slide.id == slide_id, schema.Slide.slide_google_id == slide_google_id).first()
+    if not slide:
+        raise HTTPException(status_code=404, detail="Slide not found")
+
+    # Get list of pages for the slide
+    pages = db.query(schema.Page).filter(schema.Page.slide_id == slide_id).all()
+    if not pages:
+        raise HTTPException(status_code=404, detail="No pages found for this slide")
+
+    # Process vision for each page
+    page_visions = []
+    for page in pages:
+        vision_info = setVision([page.img_base64], settings=settings)
+        page_visions.append(vision_info)
+        page.image_text = vision_info  # Save vision info to each page (ensure `vision_info` column exists in Page model)
+
+    # Optional: Aggregate vision information for the entire slide
+    sum_vision_info = setVision([page.img_base64 for page in pages], settings=settings)
+    slide.vision_summary = sum_vision_info  # Ensure `vision_info` column exists in Slide model
+
+    # Save changes to the database
+    db.commit()
+
+    return {"message": "Vision set successfully"}

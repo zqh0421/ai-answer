@@ -26,16 +26,20 @@ def embedController(embedModel: EmbedModel, settings: Annotated[Settings, Depend
     docs = db.query(schema.Page).filter(cast(schema.Page.slide_id, UUID).in_(embedModel.slideIds)).all()
 
     # Step 3: Extract content and other relevant fields from the queried documents
-    contents = [doc.text for doc in docs]
+    contents = []
+    for doc in docs:
+        if embedModel.preferredInfoType is "vision" and doc.image_text:
+            contents.append(doc.image_text)
+        elif doc.text:
+            contents.append(doc.text)
+        else:
+            contents.append("")
     if not contents:
         raise HTTPException(status_code=400, detail="No content found for the provided slide IDs.")
-
     # Step 4: Get embeddings for the text contents
     content_vectors = embed_slide(contents, settings)
-
     # Step 5: Retrieve the most relevant reference based on cosine similarity
     top_matches = retrieve_reference(q_vector, content_vectors, docs)
-
     # Step 6: For each top match, find the corresponding slide_google_id and slide_title from the slide table
     enriched_matches = []
     for match in top_matches:
@@ -47,6 +51,8 @@ def embedController(embedModel: EmbedModel, settings: Annotated[Settings, Depend
             match["slide_google_id"] = slide.slide_google_id
             match["slide_title"] = slide.slide_title
             enriched_matches.append(match)
+
+    print(enriched_matches)
 
     # Step 7: Return the enriched results with slide_google_id and slide_title
     return {

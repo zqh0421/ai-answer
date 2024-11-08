@@ -3,6 +3,7 @@ from fastapi import Depends
 from openai import OpenAI
 from ...config import Settings, get_settings
 from typing_extensions import Annotated
+from .call_gpt import call_gpt
 
 def generate_feedback_using_rag_few(question: str, answer: str, slide_text_arr: List[str], feedbackFramework: str, settings: Annotated[Settings, Depends(get_settings)]) -> str:
     api_key = settings.openai_api_key  # Corrected to access openai_api_key
@@ -71,80 +72,23 @@ def generate_feedback_using_rag_few(question: str, answer: str, slide_text_arr: 
         f"Answer: {answer}\n\n"
     )
 
-    if not api_key:
-        raise ValueError("OPENAI_API_KEY is not set in the environment variables")
-    
     if feedbackFramework=="none":
-        # Initialize the OpenAI API
-        client = OpenAI(
-            api_key=api_key)
-        stream = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {
-                "role":"system",
-                "content": "You are an expert in providing feedback using 2-3 sentences for students' answer based on the questions "
-            },
-            {
-                "role": "user",
-                "content":prompt_none
-            }
-        ],
-        stream=True,
-        max_tokens=4000,
-        temperature=0.01
-    )
+        result = call_gpt(
+            "You are an expert in providing feedback using 2-3 sentences for students' answer based on the questions",
+            prompt_none,
+            settings
+        )
     if feedbackFramework=="component":
-        # Initialize the OpenAI API
-        client = OpenAI(
-            api_key=api_key)
-        stream = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {
-                "role":"system",
-                "content": "You are an expert in providing feedback using 2-3 sentences for students' answer based on the questions "
-            },
-            {
-                "role": "user",
-                "content":prompt_component
-                
-            }
-        ],
-        stream=True,
-        max_tokens=4000,
-        temperature=0.01
-    )
-
+        result = call_gpt(
+            "You are an expert in providing feedback using 2-3 sentences for students' answer based on the questions",
+            prompt_component,
+            settings
+        )
     if feedbackFramework=="feature":
-        # Initialize the OpenAI API
-        client = OpenAI(
-            api_key=api_key)
-        stream = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {
-                "role":"system",
-                "content": "You are a helpful assistant that verifies answers to questions.  Please respond with yes or no about whther the answer is correct, and provide short explanations using 2-3 sentences."
-            },
-            {
-                "role": "user",
-                "content":prompt_feature
-            }
-        ],
-        stream=True,
-        max_tokens=4000,
-        temperature=0.01
-    )
-
-    result = ""
-    print_stream = True
-    for chunk in stream:
-        if chunk.choices[0].delta.content is not None:
-            if print_stream:
-                print(chunk.choices[0].delta.content, end="")
-            result += chunk.choices[0].delta.content
-    result = result.replace("**", "|")
+        result = call_gpt(
+            "You are a helpful assistant that verifies answers to questions.  Please respond with yes or no about whther the answer is correct, and provide short explanations using 2-3 sentences.",
+            prompt_feature,
+            settings
+        )
+    
     return f"{result}"
-    #return f"selected is that feedbackFramework: '{feedbackFramework}' Feedback for Few: Your answer '{answer}' doesn't quite match the question '{question}'. Please try again."
-    #return f"selected is that feedbackFramework: '{feedbackFramework}' Feedback for Few: Your answer '{answer}' doesn't quite match the question '{question}'. Please try again."

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "fastapi-dev": "python3 -m uvicorn api.index:app --reload --timeout-keep-alive 1000",
+    "fastapi-dev": "python3 -m uvicorn api.index:app --reload --timeout-keep-alive 100000",
     "next-dev": "next dev",
     "dev": "concurrently \"pnpm run next-dev\" \"pnpm run fastapi-dev\"",
     "build": "next build",

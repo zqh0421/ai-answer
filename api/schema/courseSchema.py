@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, DateTime, Integer, ForeignKey, Float, UniqueConstraint
+from sqlalchemy import Column, String, Text, DateTime, Integer, ForeignKey, Float, UniqueConstraint, Boolean
 from sqlalchemy.dialects.postgresql import UUID, ARRAY
 from datetime import datetime
 import uuid
@@ -42,6 +42,8 @@ class Slide(Base):
     slide_google_url = Column(String)
     slide_cover = Column(String)
     module_id = Column(UUID(as_uuid=True), ForeignKey('module.module_id', ondelete="CASCADE"), nullable=False)
+    published = Column(Boolean, default=False)
+    vision_summary = Column(String)
 
     module = relationship("Module", back_populates="slides")
     pages = relationship("Page", back_populates="slide", cascade="all, delete-orphan", primaryjoin="Slide.id == Page.slide_id")

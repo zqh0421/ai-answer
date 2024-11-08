@@ -20,11 +20,15 @@ interface Module {
 }
 
 interface Slide {
-  id: string
-  slide_google_id: string
-  slide_title: string
-  slide_url: string
-  slide_cover: string
+  id: string;
+  slide_google_id: string;
+  slide_title: string;
+  slide_url: string;
+  slide_cover: string;
+  published: boolean; // New field to track publish status
+  publishing?: boolean; // Temporary state for ongoing publishing
+  gotVision: boolean;
+  gettingVision?: boolean;
 }
 
 interface modulesNslides {
@@ -85,6 +89,16 @@ const CoursePage = () => {
     return match ? match[1] : null;
   };  
 
+  const fetchImageAsBase64 = async (url: string): Promise<string | null> => {
+    try {
+      const response = await axios.get(url, { responseType: 'arraybuffer' });
+      return `data:image/jpeg;base64,${Buffer.from(response.data, 'binary').toString('base64')}`;
+    } catch (error) {
+      console.error('Error fetching image:', error);
+      return null;
+    }
+  };
+
   // Helper function to fetch files' metadata inside a Google Drive folder
   const fetchDriveFolderFiles = async (folderId: string): Promise<Slide[]> => {
     try {
@@ -93,7 +107,9 @@ const CoursePage = () => {
       const res = await axios.get(requestUrl);
   
       const slidesInfo: Slide[] = await Promise.all(
-        res.data.files.map((file: { id: string; name: string; mimeType: string; thumbnailLink: string }) => {
+        res.data.files.map(async (file: { id: string; name: string; mimeType: string; thumbnailLink: string }) => {
+          const slide_cover = file.thumbnailLink ? await fetchImageAsBase64(file.thumbnailLink) : null;
+
           if (file.mimeType === 'application/vnd.google-apps.presentation') {
             // If it's a Google Slides (PPT), export it as PDF
             const exportUrl = `https://www.googleapis.com/drive/v3/files/${file.id}/export?mimeType=application/pdf&key=${apiKey}`;
@@ -101,7 +117,7 @@ const CoursePage = () => {
               slide_google_id: file.id,
               slide_title: file.name,
               slide_url: exportUrl,
-              slide_cover: file.thumbnailLink,
+              slide_cover: slide_cover,
             };
           } else if (file.mimeType === 'application/pdf') {
             // If it's already a PDF, no conversion needed
@@ -109,7 +125,7 @@ const CoursePage = () => {
               slide_google_id: file.id,
               slide_title: file.name,
               slide_url: `https://drive.google.com/file/d/${file.id}/view`,
-              slide_cover: file.thumbnailLink,
+              slide_cover: slide_cover,
             };
           }
           return null; // Skip other file types
@@ -227,9 +243,9 @@ const CoursePage = () => {
 
   // Fetch slides for a specific module
   const fetchSlides = async (moduleId: string) => {
-    console.log("fetching")
     try {
       const slidesRes = await axios.get(`/api/modules/${moduleId}/slides`);
+      
       setSlidesByModule((prevSlides) => ({
         ...prevSlides,
         [moduleId]: slidesRes.data.slides, // Store slides by module ID
@@ -261,18 +277,79 @@ const CoursePage = () => {
     }
   };
   
-  const handlePublishSlide = async (slideGoogleId: string, slideId: string) => {
+  const handlePublishSlide = async (slideGoogleId: string, slideId: string, moduleId: string) => {
+    setSlidesByModule((prevSlides) => ({
+      ...prevSlides,
+      [moduleId]: prevSlides[moduleId].map((slide) =>
+        slide.id === slideId ? { ...slide, publishing: true } : slide
+      ),
+    }));
     try {
       const publishRes = await axios.post(`/api/slides/${slideId}/${slideGoogleId}/publish`);
       console.log("FINISHED")
       if (publishRes.status === 200) {
-        alert('Slide published successfully!');
+        setSlidesByModule((prevSlides) => ({
+          ...prevSlides,
+          [moduleId]: prevSlides[moduleId].map((slide) =>
+            slide.id === slideId ? { ...slide, published: true, publishing: false } : slide
+          ),
+        }));
+        console.log('Slide published status updated to true');
+      } else {
+        setSlidesByModule((prevSlides) => ({
+          ...prevSlides,
+          [moduleId]: prevSlides[moduleId].map((slide) =>
+            slide.id === slideId ? { ...slide, published: false, publishing: false } : slide
+          ),
+        }));
       }
     } catch (error) {
       console.error('Error publishing slide:', error);
-      alert('Failed to publish slide.');
+      setSlidesByModule((prevSlides) => ({
+        ...prevSlides,
+        [moduleId]: prevSlides[moduleId].map((slide) =>
+          slide.id === slideId ? { ...slide, published: false, publishing: false } : slide
+        ),
+      }));
     }
   };
+
+  const handleSetVision = async (slideGoogleId: string, slideId: string, moduleId: string) => {
+    setSlidesByModule((prevSlides) => ({
+      ...prevSlides,
+      [moduleId]: prevSlides[moduleId].map((slide) =>
+        slide.id === slideId ? { ...slide, gettingVision: true } : slide
+      ),
+    }));
+    try {
+      const response = await axios.post(`/api/slides/${slideId}/${slideGoogleId}/set-vision`, { timeout: 100000});
+      
+      if (response.status === 200) {
+        setSlidesByModule((prevSlides) => ({
+          ...prevSlides,
+          [moduleId]: prevSlides[moduleId].map((slide) =>
+            slide.id === slideId ? { ...slide, gotVision: true, gettingVision: false } : slide
+          ),
+        }));
+      } else {
+        setSlidesByModule((prevSlides) => ({
+          ...prevSlides,
+          [moduleId]: prevSlides[moduleId].map((slide) =>
+            slide.id === slideId ? { ...slide, gotVision: false, gettingVision: false } : slide
+          ),
+        }));
+      }
+    } catch (error) {
+      console.error('Error setting vision:', error);
+      setSlidesByModule((prevSlides) => ({
+        ...prevSlides,
+        [moduleId]: prevSlides[moduleId].map((slide) =>
+          slide.id === slideId ? { ...slide, gotVision: false, gettingVision: false } : slide
+        ),
+      }));
+    }
+  };
+  
 
   // Check if slides have been loaded for the module
   const handleModuleClick = (moduleId: string) => {
@@ -430,10 +507,20 @@ const CoursePage = () => {
                               />
                             )}
                             <button
-                              onClick={() => handlePublishSlide(slide.slide_google_id, slide.id)}
-                              className="mt-2 mr-4 p-2 bg-green-600 text-white rounded hover:bg-green-700"
+                              onClick={() => handlePublishSlide(slide.slide_google_id, slide.id, module.module_id)}
+                              disabled={slide.published || slide.publishing}
+                              className={`mt-2 mr-4 p-2 text-white rounded ${slide.published || slide.publishing ? "bg-gray-600" : "bg-green-600 hover:bg-green-700"}`}
                             >
-                              Publish Slide
+                              {slide.published ? "Published" : slide.publishing ? "Publishing" : "Publish Slide"}
+                            </button>
+                            <button
+                              onClick={() => handleSetVision(slide.slide_google_id, slide.id, module.module_id)}
+                              disabled={!slide.published || slide.publishing || slide.gotVision || slide.gettingVision}
+                              className={`mt-2 mr-4 p-2 text-white rounded ${
+                                !slide.published || slide.publishing || slide.gotVision || slide.gettingVision ?
+                                "bg-gray-600" : "bg-green-600 hover:bg-green-700"}`}
+                            >
+                              {slide.gotVision ? "Vision Info Available" : slide.gettingVision ? "Getting Vision" : "Set Vision"}
                             </button>
 
                             <button

@@ -31,9 +31,11 @@ interface Slide {
 
 interface Reference {
   text: string;
+  image_text: string;
   page_number: number;
   slide_google_id: string;
   slide_title: string;
+  display: string;
 }
 
 
@@ -56,8 +58,8 @@ export default function Home() {
   const [isReferenceLoading, setIsReferenceLoading] = useState(false);
   const [isFeedbackLoading, setIsFeedbackLoading] = useState(false);
 
-  const [selectedPromptEngineering, setSelectedPromptEngineering] = useState<string>("");
-  const [selectedFeedbackFramework, setSelectedFeedbackFramework] = useState<string>("");
+  const [selectedPromptEngineering, setSelectedPromptEngineering] = useState<string>("zero");
+  const [selectedFeedbackFramework, setSelectedFeedbackFramework] = useState<string>("none");
   const [slideTextArr, setSlideTextArr] = useState<string[]>([""]);
 
   const [course, setCourse] = useState<string>();  // Course Selection
@@ -67,6 +69,8 @@ export default function Home() {
   
   const [availableModules, setAvailableModules] = useState<Module[]>([]);  // Modules for the selected course
   const [availableSlides, setAvailableSlides] = useState<Slide[]>([]);    // Slides for the selected modules
+
+  const [preferredInfoType, setPreferredInfoType] = useState<string>("text");
 
   useEffect(() => {
     axios
@@ -168,11 +172,37 @@ export default function Home() {
         "/api/embed",
         {
           question: question,
-          slideIds: slide
+          slideIds: slide,
+          preferredInfoType: preferredInfoType
         }
       );
       setReference(response.data.result[0]);
-      setSlideTextArr(response.data.result.map((item: { text: string }) => item.text));
+      if (preferredInfoType == "vision" && response.data.result[0].image_text) {
+        setReference({
+          ...response.data.result[0],
+          display: response.data.result[0].image_text
+        })
+      } else if (response.data.result[0].text) {
+        setReference({
+          ...response.data.result[0],
+          display: response.data.result[0].text
+        })
+      } else {
+        setReference({
+          ...response.data.result[0],
+          display: "EMPTY REFERENCE"
+        })
+      }
+      setSlideTextArr(response.data.result.map((item: Reference) => {
+        if (preferredInfoType == "vision" && item.image_text) {
+          return item.image_text;
+        } else if (item.text) {
+          return item.text;
+        } else {
+          alert(`${item.slide_title} unpublished!`)
+        }
+      }));
+      // setSlideTextArr(response.data.result.map((item: { text: string }) => item.text)); // TODO: Adjustable
       console.log("REFERENCE")
       console.log(response.data.result)
       let temp: string[] = [];
@@ -355,7 +385,9 @@ export default function Home() {
               <h3 className="text-xl font-semibold">Reference:</h3>
               {reference && !isReferenceLoading ? (
                 <div>
-                  <p>{reference.text} (page {reference.page_number + 1})</p>
+                  <p>{
+                    reference.display
+                  } (page {reference.page_number + 1})</p>
                   <p>For full slide:
                     <a href={`https://docs.google.com/presentation/d/${reference.slide_google_id}/edit?usp=sharing`} target="_blank" className="text-blue-500">
                       {reference.slide_title}
@@ -461,6 +493,30 @@ export default function Home() {
 
             {activeTab === "input" && (
               <motion.div>
+                <div className="mb-4">
+                  <p className="mr-2">Please select preferred information type:</p>
+                  <label className="mr-4">
+                    <input
+                      type="radio"
+                      name="infoType"
+                      value="text"
+                      checked={preferredInfoType === "text"}
+                      onChange={(e) => setPreferredInfoType(e.target.value)}
+                    />
+                    Text
+                  </label>
+                  <label>
+                    <input
+                      type="radio"
+                      name="infoType"
+                      value="vision"
+                      checked={preferredInfoType === "vision"}
+                      onChange={(e) => setPreferredInfoType(e.target.value)}
+                    />
+                    Vision
+                  </label>
+                </div>
+
                 <div className="mb-4">
                   <label htmlFor="prompt-engineering" className="mr-2">Please select one way of prompt engineering:</label>
                   <select
