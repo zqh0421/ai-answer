@@ -1,2 +1,3 @@
-from .userSchema import User
-from .courseSchema import Course, Module, Slide, Page
+from .userSchema import *
+from .courseSchema import *
+from .questionSchema import *

@@ -439,3 +439,50 @@ async def set_vision(slide_id: str, slide_google_id: str, settings: Annotated[Se
     db.commit()
 
     return {"message": "Vision set successfully"}
+
+@app.post("/api/questions/create")
+def create_question(request: models.QuestionResponse, db: Session = Depends(get_db)):
+    user = db.query(schema.User).filter(schema.User.email == request.creater_email).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    db_question = schema.Question(
+        type=request.type,
+        content=request.content,
+        options=request.options,
+        objective=request.objective,
+        slide_ids=request.slide_ids,
+        creater_email=request.creater_email,
+    )
+    db.add(db_question)
+    db.commit()
+    db.refresh(db_question)
+    return db_question
+
+@app.get("/api/questions/all")
+def get_all_question(db: Session = Depends(get_db)):
+    questions = db.query(schema.Question).all()
+    # result = [{
+    #         "id": slide.id,
+    #         "slide_google_id": slide.slide_google_id,
+    #         "slide_title": slide.slide_title,
+    #         "slide_cover": slide.slide_cover,
+    #         "published": slide.published,
+    #         "gotVision": slide.vision_summary is not None,
+    #         "module_id": slide.module_id,
+    #         "slide_google_url": slide.slide_google_url
+    #     }
+    #     for question in questions
+    # ]
+    return questions
+
+@app.delete("/api/questions/by_id/{question_id}")
+def delete_question_by_id(question_id: str, db: Session = Depends(get_db)):
+    db_question = db.query(schema.Question).filter(schema.Question.question_id == question_id).first()
+
+    if db_question is None:
+        raise HTTPException(status_code=404, detail="Question not found")
+    
+    db.delete(db_question)
+    db.commit()
+    return {"message": "Question deleted successfully"}

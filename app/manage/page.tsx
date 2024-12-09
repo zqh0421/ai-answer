@@ -7,16 +7,22 @@ interface AuthResponse {
   user: {
     email: string;
     name?: string;
+    image?: string;
+    user_id: string;
   };
+  expires: string
 }
  
 const Manage = async () => {
   const session = await auth() as AuthResponse;
+  // console.log(session)
 
   if (!session) {
     console.log('No session found, redirecting to /admin/login');
     return redirect('/manage/login');  // Ensure this is the correct path to redirect to
   }
+
+  // console.log(session.user)
 
   const handleAuth = async () => {
     let res;
@@ -24,6 +30,8 @@ const Manage = async () => {
       res = await axios.post(`${process.env.NEXTAUTH_URL}/api/admin_auth`, {
         email: session?.user.email
       });
+      // console.log("handleAuth")
+      // console.log(res.data)
     } catch (err) {
       if (err instanceof Error) {
         console.error("Error during admin auth:", err.message);
@@ -39,8 +47,8 @@ const Manage = async () => {
   await handleAuth();
   
   return (
-    <main>
-      <h1>Hello {session.user.name}</h1>
+    <main className="flex flex-col gap-2">
+      <h1>Hello, {session.user.name}!</h1>
 
       <form
         action={async () => {
@@ -48,13 +56,16 @@ const Manage = async () => {
           await signOut();
         }}
       >
-        <button type="submit">Log Out</button>
+        <button type="submit" className="text-blue-600">Log Out</button>
       </form>
 
       {/* Button to go to Manage Course Overview */}
-      <section>
+      <section className="flex flex-col gap-2">
         <Link href="/manage/course">
-          <button type="button">Go to Course Management</button>
+          <button type="button" className="text-blue-600">Go to Course Management</button>
+        </Link>
+        <Link href="/manage/question">
+          <button type="button" className="text-blue-600">Go to Question Management</button>
         </Link>
       </section>
     </main>

@@ -24,7 +24,7 @@ interface Module {
   created_at: string;
 }
 
-interface Slide {
+export interface Slide {
   id: string;
   slide_title: string;
 }

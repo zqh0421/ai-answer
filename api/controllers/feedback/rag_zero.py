@@ -35,19 +35,19 @@ def generate_feedback_using_rag_zero(question: str, answer: str, slide_text_arr:
     
     if feedbackFramework=="none":
         result = call_gpt(
-            "You are an expert in providing feedback using 2-3 sentences for students' answer based on the questions",
+            "You are an expert tutor in providing feedback for studnet answers to questions. Please respond with correctness, and provide short explanations using 2-3 sentences, referring to given course materials. Please proposed a clear rubric and score the answer based on that.",
             prompt_none,
             settings
         )
     if feedbackFramework=="component":
         result = call_gpt(
-            "You are an expert in providing feedback using 2-3 sentences for students' answer based on the questions",
+            "You are an expert tutor in providing feedback for studnet answers to questions. Please respond with correctness, and provide short explanations using 2-3 sentences, referring to given course materials.",
             prompt_component,
             settings
         )
     if feedbackFramework=="feature":
         result = call_gpt(
-            "You are a helpful assistant that verifies answers to questions.  Please respond with yes or no about whther the answer is correct, and provide short explanations using 2-3 sentences.",
+            "You are an expert tutor in providing feedback for studnet answers to questions. Please respond with correctness, and provide short explanations using 2-3 sentences, referring to given course materials",
             prompt_feature,
             settings
         )
