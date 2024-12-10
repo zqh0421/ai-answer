@@ -1,4 +1,6 @@
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, File, UploadFile
+import boto3
+import uuid
 from typing_extensions import Annotated
 from sqlalchemy.orm import Session
 from .schema import User, Course
@@ -25,6 +27,7 @@ import os
 from uuid import UUID
 from sqlalchemy import cast
 from .controllers.vision import setVision
+import re
 
 app = FastAPI()
 
@@ -445,10 +448,10 @@ def create_question(request: models.QuestionResponse, db: Session = Depends(get_
     user = db.query(schema.User).filter(schema.User.email == request.creater_email).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-
+    serialized_content = [content.dict() for content in request.content]
     db_question = schema.Question(
         type=request.type,
-        content=request.content,
+        content=serialized_content,
         options=request.options,
         objective=request.objective,
         slide_ids=request.slide_ids,
@@ -476,6 +479,13 @@ def get_all_question(db: Session = Depends(get_db)):
     # ]
     return questions
 
+@app.get("/api/questions/by_id/{question_id}")
+def get_question_by_id(question_id: str, db: Session = Depends(get_db)):
+    question = db.query(schema.Question).filter(schema.Question.question_id == question_id).first()
+    if question is None:
+        raise HTTPException(status_code=404, detail="Question not found")
+    return question
+
 @app.delete("/api/questions/by_id/{question_id}")
 def delete_question_by_id(question_id: str, db: Session = Depends(get_db)):
     db_question = db.query(schema.Question).filter(schema.Question.question_id == question_id).first()
@@ -486,3 +496,31 @@ def delete_question_by_id(question_id: str, db: Session = Depends(get_db)):
     db.delete(db_question)
     db.commit()
     return {"message": "Question deleted successfully"}
+
+@app.post("/api/s3upload")
+async def upload_file(settings: Annotated[Settings, Depends(get_settings)], file: UploadFile = File(...)):
+    try:
+        file.file.seek(0)
+        file_extension = file.filename.split(".")[-1]
+        file_name_sanitized = re.sub(r"[^a-zA-Z0-9._-]", "_", file.filename)
+        file_key = f"uploads/{uuid.uuid4()}_{file_name_sanitized}"
+
+        s3 = boto3.client(
+            "s3",
+            aws_access_key_id=settings.s3_access_key_id,
+            aws_secret_access_key=settings.s3_secret_access_key,
+            region_name=settings.s3_region_name,
+        )
+
+        s3.upload_fileobj(
+            file.file,
+            settings.s3_bucket_name,
+            file_key,
+            ExtraArgs={"ContentType": file.content_type or "application/octet-stream"},
+        )
+        file_url = f"https://{settings.s3_bucket_name}.s3.amazonaws.com/{file_key}"
+
+        return { "url": file_url }
+    except Exception as e:
+        print("error")
+        raise HTTPException(status_code=404, detail=str(e))

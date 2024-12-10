@@ -2,6 +2,6 @@ from pydantic import BaseModel
 from typing import List
 
 class EmbedModel(BaseModel):
-    question: str
+    question: List[dict]
     slideIds: List[str]
     preferredInfoType: str

@@ -2,10 +2,12 @@ from openai import OpenAI
 from fastapi import Depends
 from .config import Settings, get_settings
 from typing_extensions import Annotated
+from typing import List
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 import requests
 from io import BytesIO
+from .controllers.feedback.call_gpt import format_question
 
 def fetch_pdf_from_drive(file_id: str, settings: Annotated[Settings, Depends(get_settings)]):
     download_url = f'https://www.googleapis.com/drive/v3/files/{file_id}/export?mimeType=application/pdf&key={settings.next_public_google_drive_api_key}'
@@ -28,21 +30,66 @@ def fetch_pdf_from_drive(file_id: str, settings: Annotated[Settings, Depends(get
             print(f"Failed to fetch PDF: {response.status_code}")
             return None
 
-def create_embedding(text, settings: Annotated[Settings, Depends(get_settings)], print_stream=False):
-    api_key = settings.openai_api_key  # Corrected to access openai_api_key
+def create_embedding(
+    content: List[dict],
+    settings: Annotated[Settings, Depends(get_settings)],
+    print_stream=False
+):
+    api_key = settings.openai_api_key
 
     if not api_key:
         raise ValueError("OPENAI_API_KEY is not set in the environment variables")
 
-    # Initialize the embedding model
+    # Initialize OpenAI client
     embeddings_model = OpenAI(
         api_key=api_key,
         organization=settings.openai_api_org,
         project=settings.openai_api_proj
     )
 
+    # Format the content
+    formatted_content = format_question(content)
+
+    # Check if the content contains images
+    contains_image = any(item["type"] == "image_url" for item in formatted_content)
+
+    # If the content includes images, send it to GPT-4o for understanding
+    if contains_image:
+        system_prompt = (
+            "You are an expert at understanding multi-modal inputs, including both text and images. "
+            "Summarize the content in a structured way, integrating information from both text and image."
+        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": formatted_content}
+        ]
+
+        # Call GPT-4o for processing the content
+        gpt4o_client = OpenAI(
+            api_key=api_key,
+            organization=settings.openai_api_org,
+            project=settings.openai_api_proj
+        )
+
+        gpt_result = gpt4o_client.chat.completions.create(
+            model="gpt-4o",
+            messages=messages,
+            max_tokens=4000,
+            temperature=0.01,
+            stream=False,
+        )
+        # Extract understanding from GPT-4o response
+        if gpt_result.choices[0].message.content:
+            understanding = gpt_result.choices[0].message.content
+        else:
+            raise ValueError("GPT-4o did not return any understanding of the content.")
+    else:
+        # If no images are present, concatenate all text content for embeddings
+        understanding = " ".join(item["text"] for item in formatted_content if item["type"] == "text")
+
+    # Send the understanding to the embedding API
     result = embeddings_model.embeddings.create(
-        input=text,
+        input=understanding,
         model="text-embedding-3-small"
     )
 

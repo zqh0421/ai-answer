@@ -18,11 +18,14 @@ class Settings(BaseSettings):
     database_tunnel_username: str
     database_tunnel_private_key_path: str
     next_public_google_drive_api_key: str
+    s3_access_key_id: str
+    s3_secret_access_key: str
+    s3_region_name: str
+    s3_bucket_name: str
     model_config = SettingsConfigDict(
         # `.env.local` takes priority over `.env`
         env_file=('.env', '.env.local')
     )
-
 
 def get_settings():
     return Settings() 

@@ -3,27 +3,27 @@ from fastapi import Depends
 from openai import OpenAI
 from ...config import Settings, get_settings
 from typing_extensions import Annotated
-from .call_gpt import call_gpt
+from .call_gpt import call_gpt, format_question
 
-def generate_feedback_using_rag_cot(question: str, answer: str, slide_text_arr: List[str], feedbackFramework: str, settings: Annotated[Settings, Depends(get_settings)]) -> str:
+def generate_feedback_using_rag_cot(question: List[dict], answer: str, slide_text_arr: List[str], feedbackFramework: str, settings: Annotated[Settings, Depends(get_settings)]) -> str:
     api_key = settings.openai_api_key  # Corrected to access openai_api_key
     print("slide_text_arr:",slide_text_arr)
     prompt_none = (
-    f"Based on the following question, student's answer, and Slides Content, provide feedback accurately and relevantly in 2-3 sentences. Please think step by step using the following approach:\n\n"
-    f"Please think step by step:"
-    f"Step 1: Analyze the question and identify the key concepts that should be addressed.\n"
-    f"Step 2: Evaluate the student's answer and determine if it addresses the key concepts and aligns with the content in the slides.\n"
-    f"Step 3: Generate feedback that highlights any strengths or areas for improvement based on the comparison. Ensure the feedback is clear and actionable.\n"
-    f"Here are some examples of feedback:\n"
-    f"1. Your answer is quite broad and doesn’t address the specific learning objectives of the course. According to the slides, try focusing on how design principles guide e-learning strategies. This will make your response more relevant and targeted.\n"
-    f"2. Your answer is not correct. According to the slides, the link between learning and engineering is an interesting angle, but it needs more substance. Think about what aspects of e-learning design are critical to achieving effective learning outcomes. This could help make your answer more comprehensive.\n"
-    f"3. Your answer is correct and consistent with the content in the slides. You did a great job!\n\n"
-    f"Slides Content: {slide_text_arr}\n\n"
-    f"Question: {question}\n\n"
-    f"Answer: {answer}\n\n"
-)
+        f"You are an expert in providing feedback using 2-3 sentences for students' answer based on the questions"
+        f"Based on the following question, student's answer, and Slides Content, provide feedback accurately and relevantly in 2-3 sentences. Please think step by step using the following approach:\n\n"
+        f"Please think step by step:"
+        f"Step 1: Analyze the question and identify the key concepts that should be addressed.\n"
+        f"Step 2: Evaluate the student's answer and determine if it addresses the key concepts and aligns with the content in the slides.\n"
+        f"Step 3: Generate feedback that highlights any strengths or areas for improvement based on the comparison. Ensure the feedback is clear and actionable.\n"
+        f"Here are some examples of feedback:\n"
+        f"1. Your answer is quite broad and doesn’t address the specific learning objectives of the course. According to the slides, try focusing on how design principles guide e-learning strategies. This will make your response more relevant and targeted.\n"
+        f"2. Your answer is not correct. According to the slides, the link between learning and engineering is an interesting angle, but it needs more substance. Think about what aspects of e-learning design are critical to achieving effective learning outcomes. This could help make your answer more comprehensive.\n"
+        f"3. Your answer is correct and consistent with the content in the slides. You did a great job!\n\n"
+        f"Slides Content: {slide_text_arr}\n\n"
+    )
 
     prompt_component = (
+        f"You are an expert in providing feedback using 2-3 sentences for students' answer based on the questions"
         f"Based on the following questions, and students' answers, and Slides Content,provide feedback step-by-step, accurately and relevantly, following the four feedback levels (task, process, self-regulatory, and self). each feedback level only contain 2-3 sentences\n\n"  
         f" the output format must be: For Task:XXX\n For Process:XXX\n  For Self-Regulatory:XXX\n  For Self:XXX\n  "
         f"Please think step by step:"
@@ -65,11 +65,9 @@ def generate_feedback_using_rag_cot(question: str, answer: str, slide_text_arr: 
         f"Now, apply the same process to the Slides Content, provided question and answer."
 
         f"Slides Content: {slide_text_arr}\n\n"
-        f"Question: {question}\n\n"
-        f"Answer: {answer}\n\n"
-        
     )
     prompt_feature = (
+        f"You are a helpful assistant that verifies answers to questions.  Please respond with yes or no about whther the answer is correct, and provide short explanations using 2-3 sentences."
         f"Based on the following questions, Slides content, and students' answers, provide feedback accurately and relevantly, and feedback needs to have these features:  "
         f"1. Task-Focused and Clear: Feedback should focus on the task, be specific and clear, offering actionable suggestions for improvement."
         f"2. Elaborated and Manageable: Provide feedback that explains why an answer is correct or incorrect in small, digestible portions, avoiding overload."
@@ -84,26 +82,32 @@ def generate_feedback_using_rag_cot(question: str, answer: str, slide_text_arr: 
         f"Your answer is on the right track, focusing on the task of estimating Y values from X using the sum of squared errors, which is a key concept from the slide content. However, it could be more elaborated. The sum of squared errors, also known as residuals, is a measure of how well the regression line fits the data. The smaller the sum of squared errors, the better the estimate. But remember, it's not just about knowing the method, it's about understanding why and how it works. This understanding will help you progress towards your goal of mastering the topic. Also, don't be discouraged if you make mistakes or find this concept challenging. Learning is a process, and effort is more important than perfection. Keep practicing and you'll get there."
         f"Now, generate feedback for the follwing information:"
         f"Slides Content: {slide_text_arr}\n\n"
-        f"Question: {question}\n\n"
-        f"Answer: {answer}\n\n"
     )
+
+    question_message = format_question(question)
+
+    user_prompt = question_message
+    user_prompt.append({
+        "type": "text",
+        "text": f"Answer: {answer}"
+    })
 
     if feedbackFramework=="none":
         result = call_gpt(
-            "You are an expert in providing feedback using 2-3 sentences for students' answer based on the questions",
             prompt_none,
+            user_prompt,
             settings
         )
     if feedbackFramework=="component":
         result = call_gpt(
-            "You are an expert in providing feedback using 2-3 sentences for students' answer based on the questions",
             prompt_component,
+            user_prompt,
             settings
         )
     if feedbackFramework=="feature":
         result = call_gpt(
-            "You are a helpful assistant that verifies answers to questions.  Please respond with yes or no about whther the answer is correct, and provide short explanations using 2-3 sentences.",
             prompt_feature,
+            user_prompt,
             settings
         )
     

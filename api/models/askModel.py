@@ -8,12 +8,12 @@ class AskModel(BaseModel):
 class FeedbackRequestModel(BaseModel):
     promptEngineering: str
     feedbackFramework: str
-    question: str
+    question: List[dict]
     answer: str
 
 class FeedbackRequestRagModel(BaseModel):
     promptEngineering: str
     feedbackFramework: str
-    question: str
+    question: List[dict]
     answer: str
     slide_text_arr: List[str]

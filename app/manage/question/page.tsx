@@ -4,13 +4,15 @@ import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { useSession } from "next-auth/react";
 import { Slide } from "@/app/page";
+import ContentEditor from "@/app/components/ContentEditor";
+import Image from 'next/image';
 
-interface QuestionContent {
+export interface QuestionContent {
   type: string; // text, image, etc.
   content: string;
 }
 
-interface Question {
+export interface Question {
   question_id: string;
   type: string; // Question type, e.g., "multiple choice", "open ended"
   objective?: string[]; // Learning objectives as an array of strings
@@ -21,10 +23,10 @@ interface Question {
 
 const QuestionOverview = () => {
   const [questions, setQuestions] = useState<Question[]>([]);
-  const [slides, setSlides] = useState<Slide[]>([]); // Slide data for dropdown
+  const [slides] = useState<Slide[]>([]); // Slide data for dropdown
   const [newQuestionType, setNewQuestionType] = useState('');
   const [newQuestionContent, setNewQuestionContent] = useState<QuestionContent[]>([]);
-  const [newQuestionOptions, setNewQuestionOptions] = useState<QuestionOptions>({});
+  const [newQuestionOptions, setNewQuestionOptions] = useState<string[]>([]);
   const [newQuestionObjective, setNewQuestionObjective] = useState<string[]>([]);
   const [newSlideIds, setNewSlideIds] = useState<string[]>([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -120,27 +122,47 @@ const QuestionOverview = () => {
             <li className="text-gray-500">No questions available</li>
           ) : (
             questions.map((question) => (
-              <li key={question.question_id} className="flex justify-between items-center bg-gray-100 p-4 rounded-lg">
-                {/* <Link href={`/manage/question/${question.question_id}`}>
+              <li
+                key={question.question_id}
+                className="flex justify-between items-center bg-gray-100 p-4 rounded-lg"
+              >
+                <Link href={`/manage/question/${question.question_id}`}>
                   <span className="text-lg font-medium text-indigo-600 hover:text-indigo-800">
-                    {question.content.map(item => {
+                    {/* Render question content */}
+                    {question.content.map((item, index) => {
                       if (item.type === "text") {
-                        <p>{item.content}</p>
+                        return <p key={index}>{item.content}</p>;
                       } else if (item.type === "image") {
-                        <img src={item.content} />
+                        return (
+                          <Image
+                            key={index}
+                            src={item.content}
+                            alt="Question content"
+                            className="max-w-xs mt-2"
+                          />
+                        );
                       }
+                      return null; // Fallback for unsupported content types
                     })}
                   </span>
-                </Link> */}
-                <button
-                  onClick={() => handleDeleteQuestion(question.question_id)}
-                  className={`py-2 px-4 text-white bg-red-600 hover:bg-red-700 rounded-md ${
-                    deleting === question.question_id ? "opacity-50 cursor-not-allowed" : ""
-                  }`}
-                  disabled={deleting === question.question_id}
-                >
-                  {deleting === question.question_id ? "Deleting..." : "Delete"}
-                </button>
+                </Link>
+                <div className="flex space-x-4">
+                  <button
+                    onClick={() => window.location.href = `/?question_id=${question.question_id}`}
+                    className="py-2 px-4 text-white bg-green-600 hover:bg-green-700 rounded-md"
+                  >
+                    Go to MuFIN
+                  </button>
+                  <button
+                    onClick={() => handleDeleteQuestion(question.question_id)}
+                    className={`py-2 px-4 text-white bg-red-600 hover:bg-red-700 rounded-md ${
+                      deleting === question.question_id ? "opacity-50 cursor-not-allowed" : ""
+                    }`}
+                    disabled={deleting === question.question_id}
+                  >
+                    {deleting === question.question_id ? "Deleting..." : "Delete"}
+                  </button>
+                </div>
               </li>
             ))
           )}
@@ -170,21 +192,9 @@ const QuestionOverview = () => {
                 </select>
               </div>
               <div className="mb-4">
-                <label htmlFor="questionContent" className="block text-sm font-medium text-gray-700">
-                  Question Content (JSON)
-                </label>
-                <textarea
-                  id="questionContent"
-                  value={JSON.stringify(newQuestionContent, null, 2)}
-                  onChange={(e) => {
-                    try {
-                      setNewQuestionContent(JSON.parse(e.target.value));
-                    } catch {
-                      console.error("Invalid JSON format");
-                    }
-                  }}
-                  className="mt-1 block w-full p-2 border border-gray-300 rounded-md"
-                  required
+                <ContentEditor
+                  contents={newQuestionContent}
+                  setContents={setNewQuestionContent}
                 />
               </div>
               {newQuestionType === 'multiple choice' && (

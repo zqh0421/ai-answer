@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, Suspense } from "react";
 import { motion } from "framer-motion";
 import axios from "axios";
 import TestDrawer from './components/TestDrawer';
@@ -10,6 +10,9 @@ import 'swiper/css';
 import 'swiper/css/navigation';
 import 'swiper/css/pagination';
 import 'swiper/css/scrollbar';
+import { useSearchParams } from 'next/navigation';
+import { Question, QuestionContent } from "./manage/question/page";
+import Image from 'next/image';
 
 interface Course {
   course_id: string;
@@ -38,13 +41,14 @@ interface Reference {
   display: string;
 }
 
-
-export default function Home() {
+function HomeChildren() {
   const base_question = "What are pitfalls of E-Learning Design Principles & Methods about?"
-  const base_wrong_answer = "Learning is about engineering."
+  const base_wrong_answer = ""
   const [message, setMessage] = useState("Loading...");
   const [isDrawerOpen, setIsDrawerOpen] = useState(true); // Drawer state
-  const [question, setQuestion] = useState(base_question); // For Question Input
+  const [question, setQuestion] = useState<QuestionContent[]>([
+    { type: "text", content: base_question },
+  ]);
   const [answer, setAnswer] = useState(base_wrong_answer); // For Answer Input
   const [result, setResult] = useState(""); // For Result Display
   const [reference, setReference] = useState<Reference>(); // For Reference Display
@@ -71,6 +75,36 @@ export default function Home() {
   const [availableSlides, setAvailableSlides] = useState<Slide[]>([]);    // Slides for the selected modules
 
   const [preferredInfoType, setPreferredInfoType] = useState<string>("text");
+
+  const searchParams = useSearchParams();
+  const question_id = searchParams.get('question_id');
+  const [questionPreset, setQuestionPreset] = useState<Question>({
+    question_id: "",
+    type: "",
+    content: [],
+  });
+  const [isFullScreen, setIsFullScreen] = useState(false);
+  const [questionLoading, setQuestionLoading] = useState(false);
+
+  useEffect(() => {
+    if (question_id) {
+      setQuestionLoading(true);
+      // Fetch the question by ID
+      axios
+        .get(`/api/questions/by_id/${question_id}`)
+        .then((res) => {
+          setQuestionPreset(res.data);
+          console.log(res.data)
+          // no display input box question
+        })
+        .catch((err) => {
+          console.error("Error fetching question:", err);
+        })
+        .finally(() => {
+          setQuestionLoading(false);
+        });
+    }
+  }, [question_id]);
 
   useEffect(() => {
     axios
@@ -168,10 +202,13 @@ export default function Home() {
 
   const handleRetrieve = async () => {
     try {
+      console.log("HANDLE RETRIEVE")
+      console.log(questionPreset)
+      console.log(question)
       const response = await axios.post(
         "/api/embed",
         {
-          question: question,
+          question: questionPreset.content || question, // TODO: revise for content editor
           slideIds: slide,
           preferredInfoType: preferredInfoType
         }
@@ -203,8 +240,6 @@ export default function Home() {
         }
       }));
       // setSlideTextArr(response.data.result.map((item: { text: string }) => item.text)); // TODO: Adjustable
-      console.log("REFERENCE")
-      console.log(response.data.result)
       let temp: string[] = [];
       const page_number = response.data.result[0].page_number;
       // const startPage = Math.max(0, page_number - 2); // Ensure page number doesn't go below 0
@@ -239,7 +274,7 @@ export default function Home() {
   }
 
   const handleSubmit = async () => {
-    if (!question) return;
+    if (!question && !questionPreset) return;
     setIsFeedbackLoading(true);
     setIsImageLoading(true);
     setIsReferenceLoading(true);
@@ -254,7 +289,7 @@ export default function Home() {
         response = await axios.post("/api/generate_feedback_rag", {
           promptEngineering: selectedPromptEngineering,
           feedbackFramework: selectedFeedbackFramework,
-          question,
+          question: questionPreset.content || question,
           answer,
           slide_text_arr: slideTextArr
         });
@@ -265,7 +300,7 @@ export default function Home() {
           axios.post("/api/generate_feedback", {
             promptEngineering: selectedPromptEngineering,
             feedbackFramework: selectedFeedbackFramework,
-            question,
+            question: questionPreset.content || question,
             answer,
           })
         ]);
@@ -531,7 +566,7 @@ export default function Home() {
                     <option value="rag_zero">RAG Zero</option>
                     <option value="rag_few">RAG Few</option>
                     <option value="rag_cot">RAG CoT</option>
-                    <option value="graph_rag">Graph RAG</option>
+                    {/* <option value="graph_rag">Graph RAG</option> */}
                   </select>
                 </div>
 
@@ -551,15 +586,59 @@ export default function Home() {
                 </div>
 
                 <motion.div className="mt-4">
-                  <h3 className="text-l font-semibold">Question</h3>
-                  <textarea
-                    value={question}
-                    onChange={(e) => setQuestion(e.target.value)}
-                    placeholder="Enter your question"
-                    className="border rounded p-2 w-full resize-none min-h-32"
-                    rows={1}
-                    onInput={handleInputResize}
-                  />
+                  <div className="flex flex-row justify-between">
+                    <h3 className="text-l font-semibold">Question</h3>
+                    {!questionLoading && questionPreset?.content?.length > 0 ? <button
+                            onClick={() => setIsFullScreen(true)}
+                            className="mb-4 px-2 text-white bg-green-600 hover:bg-green-700 rounded-sm"
+                          >
+                            View
+                          </button>
+                      : <></>}
+                  </div>
+                  {/* Conditional Full-Screen Button */}
+                  {questionPreset?.content?.length > 0 ? (
+                    <>
+                      {!isFullScreen ? (
+                        <div>
+                          {/* Hide ContentEditor when a preloaded question exists */}
+                          <div className="text-gray-500 text-sm">Preloaded question available. Click the View button to view the content if needed.</div>
+                        </div>
+                      ) : (
+                        <div className="fixed inset-0 z-50 bg-white p-6 overflow-auto">
+                          <button
+                            onClick={() => setIsFullScreen(false)}
+                            className="py-2 px-4 text-white bg-red-600 hover:bg-red-700 rounded-md absolute top-4 right-4"
+                          >
+                            Close Full-Screen
+                          </button>
+                          {/* Display question content in full-screen */}
+                          {questionPreset.content.map((item, index) => (
+                            <div key={index} className="mb-4">
+                              {item.type === "text" ? (
+                                <p className="text-lg">{item.content}</p>
+                              ) : (
+                                <Image
+                                  src={item.content}
+                                  alt={`Content ${index}`}
+                                  className="max-w-full h-auto rounded-lg"
+                                />
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <textarea
+                      value={question[0].content} // TODO: revise for content editor
+                      onChange={(e) => setQuestion([{ type: "text", content: e.target.value}])}
+                      placeholder="Enter your question"
+                      className="border rounded p-2 w-full resize-none min-h-32"
+                      rows={1}
+                      onInput={handleInputResize}
+                    />
+                  )}
                 </motion.div>
 
                 <motion.div className="mt-4">
@@ -594,4 +673,12 @@ export default function Home() {
       </div>
     </main>
   );
+}
+
+export default function Home() {
+  return (
+    <Suspense fallback={<div>Loading...</div>}>
+      <HomeChildren />
+    </Suspense>
+  )
 }
