@@ -30,7 +30,7 @@ export default function RootLayout({
           <Header />
 
           {/* Main Content Area */}
-          <main className="flex-grow container mx-auto p-6">
+          <main className="flex-grow container mx-2 min-w-full p-6">
             <SessionProvider>{children}</SessionProvider>
           </main>
 

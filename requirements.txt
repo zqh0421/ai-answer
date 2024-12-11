@@ -5,6 +5,8 @@ aniso8601==9.0.1
 annotated-types==0.7.0
 bcrypt==4.2.0
 blinker==1.8.2
+boto3==1.35.76
+botocore==1.35.76
 build==1.2.2
 click==8.1.7
 databases==0.9.0
@@ -14,9 +16,11 @@ environs==11.0.0
 fastapi==0.100.1
 frozenlist==1.4.1
 greenlet==3.1.1
+gunicorn==23.0.0
 httptools==0.6.1
 itsdangerous==2.2.0
 jiter==0.5.0
+jmespath==1.0.1
 joblib==1.4.2
 jsonpatch==1.33
 langchain==0.3.1
@@ -50,6 +54,7 @@ python-dotenv==1.0.1
 python-multipart==0.0.10
 pytz==2024.2
 regex==2024.9.11
+s3transfer==0.10.4
 scikit-learn==1.5.2
 scipy==1.14.1
 SQLAlchemy==2.0.35

@@ -4,7 +4,7 @@ import { usePathname } from 'next/navigation';
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 import { Question } from '../page';
-import Image from 'next/image';
+import DynamicImage from '@/app/components/DynamicImage';
 
 const ManageQuestion = () => {
   const pathname = usePathname();
@@ -49,7 +49,7 @@ const ManageQuestion = () => {
             {item.type === 'text' ? (
               <p>{item.content}</p>
             ) : item.type === 'image' ? (
-              <Image src={item.content} alt={`Question content ${index + 1}`} className="max-w-xs" />
+              <DynamicImage src={item.content} alt={`Question content ${index + 1}`} className="max-w-xs" />
             ) : null}
           </div>
         ))}

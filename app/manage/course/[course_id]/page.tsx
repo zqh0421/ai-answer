@@ -4,8 +4,8 @@ import { useEffect, useState } from 'react';
 import axios from 'axios';
 import { AxiosError } from 'axios';
 import { usePathname } from 'next/navigation';
-import Image from 'next/image';
 import { Disclosure, DisclosureButton, DisclosurePanel } from '@headlessui/react';
+import DynamicImage from '@/app/components/DynamicImage';
 
 interface Course {
   course_id: string;
@@ -498,11 +498,9 @@ const CoursePage = () => {
                               </a>
                             </h3>
                             {slide.slide_cover && (
-                              <Image
+                              <DynamicImage
                                 src={slide.slide_cover}
                                 alt={`${slide.slide_title} cover`}
-                                width={640}
-                                height={75}
                                 className="w-64 mt-2 rounded"
                               />
                             )}

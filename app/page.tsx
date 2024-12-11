@@ -4,15 +4,15 @@ import { useState, useEffect, Suspense } from "react";
 import { motion } from "framer-motion";
 import axios from "axios";
 import TestDrawer from './components/TestDrawer';
-import { Swiper, SwiperSlide } from 'swiper/react';
-import { Navigation, Pagination, Scrollbar, A11y } from 'swiper/modules';
-import 'swiper/css';
-import 'swiper/css/navigation';
-import 'swiper/css/pagination';
-import 'swiper/css/scrollbar';
+// import { Swiper, SwiperSlide } from 'swiper/react';
+// import { Navigation, Pagination, Scrollbar, A11y } from 'swiper/modules';
+// import 'swiper/css';
+// import 'swiper/css/navigation';
+// import 'swiper/css/pagination';
+// import 'swiper/css/scrollbar';
 import { useSearchParams } from 'next/navigation';
 import { Question, QuestionContent } from "./manage/question/page";
-import Image from 'next/image';
+import DynamicImage from "./components/DynamicImage";
 
 interface Course {
   course_id: string;
@@ -56,13 +56,13 @@ function HomeChildren() {
   const [images, setImages] = useState<string[] | null>(null);
   const [totalCount, setTotalCount] = useState(-1);
   const [loadedCount, setLoadedCount] = useState(-1);
-  const [activeTab, setActiveTab] = useState("selection"); // Track active tab
+  const [activeTab, setActiveTab] = useState("input"); // Track active tab
 
   const [isImageLoading, setIsImageLoading] = useState(false);
   const [isReferenceLoading, setIsReferenceLoading] = useState(false);
   const [isFeedbackLoading, setIsFeedbackLoading] = useState(false);
 
-  const [selectedPromptEngineering, setSelectedPromptEngineering] = useState<string>("zero");
+  const [selectedPromptEngineering, setSelectedPromptEngineering] = useState<string>("rag_few");
   const [selectedFeedbackFramework, setSelectedFeedbackFramework] = useState<string>("none");
   const [slideTextArr, setSlideTextArr] = useState<string[]>([""]);
 
@@ -74,8 +74,8 @@ function HomeChildren() {
   const [availableModules, setAvailableModules] = useState<Module[]>([]);  // Modules for the selected course
   const [availableSlides, setAvailableSlides] = useState<Slide[]>([]);    // Slides for the selected modules
 
-  const [preferredInfoType, setPreferredInfoType] = useState<string>("text");
-
+  const [preferredInfoType, setPreferredInfoType] = useState<string>("vision");
+  const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const searchParams = useSearchParams();
   const question_id = searchParams.get('question_id');
   const [questionPreset, setQuestionPreset] = useState<Question>({
@@ -85,6 +85,12 @@ function HomeChildren() {
   });
   const [isFullScreen, setIsFullScreen] = useState(false);
   const [questionLoading, setQuestionLoading] = useState(false);
+
+  useEffect(() => {
+    if (courses.length > 0 && !course) {
+      setCourse(courses[0].course_id); // 默认选择第一个课程
+    }
+  }, [courses, course]);
 
   useEffect(() => {
     if (question_id) {
@@ -164,8 +170,6 @@ function HomeChildren() {
           page_number: pageNumber
         }
       );
-      console.log("IMGAES")
-      console.log(response.data)
       // const imageBlob = response.data;
       // const imageUrl = URL.createObjectURL(imageBlob);
       setImageSrc(response.data.img_base64);
@@ -202,9 +206,6 @@ function HomeChildren() {
 
   const handleRetrieve = async () => {
     try {
-      console.log("HANDLE RETRIEVE")
-      console.log(questionPreset)
-      console.log(question)
       const response = await axios.post(
         "/api/embed",
         {
@@ -230,6 +231,8 @@ function HomeChildren() {
           display: "EMPTY REFERENCE"
         })
       }
+
+
       setSlideTextArr(response.data.result.map((item: Reference) => {
         if (preferredInfoType == "vision" && item.image_text) {
           return item.image_text;
@@ -266,6 +269,19 @@ function HomeChildren() {
       // console.log("images" + temp)
       setIsReferenceLoading(false);
 
+      return {
+        slide_text_arr: response.data.result.map((item: Reference) => {
+          if (preferredInfoType == "vision" && item.image_text) {
+            return item.image_text;
+          } else if (item.text) {
+            return item.text;
+          } else {
+            alert(`${item.slide_title} unpublished!`)
+          }
+        }),
+        reference: response.data.result[0]
+      }
+
     } catch (error) {
       console.error("Error fetching the result:", error);
       setIsReferenceLoading(false);
@@ -273,11 +289,48 @@ function HomeChildren() {
     }
   }
 
+  type RecordResultInput = {
+    learner_id: string
+    ip_address?: string,
+    question_id: string,
+    answer: string,
+    feedback: string,
+    prompt_engineering_method: string,
+    preferred_info_type: string,
+    feedback_framework: string,
+    slide_retrieval_range?: string[],
+    reference_slide_page_number?: number,
+    reference_slide_content?: string,
+    reference_slide_id?: string,
+    system_total_response_time?: number,
+    submission_time?: number,
+  }
+
+  const recordResultToDatabase = async (result: RecordResultInput) => {
+    try {
+      await axios.post("/api/record_result", result);
+      console.log("Successfully recorded result to db:", result);
+    } catch (error) {
+      console.error("Error recording result to database:", error);
+    }
+  };
+
+  function isValidInput(input: string): boolean {
+    // Regular expression to check if the string contains at least one alphanumeric character
+    const alphanumericRegex = /[a-zA-Z0-9]/;
+  
+    // Check if the input is not empty and matches the regex
+    return input.trim() !== "" && alphanumericRegex.test(input);
+  }  
+
   const handleSubmit = async () => {
     if (!question && !questionPreset) return;
     setIsFeedbackLoading(true);
     setIsImageLoading(true);
     setIsReferenceLoading(true);
+
+    const startTime = Date.now();
+    let retrievalResult = null;
     try {
       let response;
       if (selectedPromptEngineering === "rag_zero" ||
@@ -285,28 +338,57 @@ function HomeChildren() {
         selectedPromptEngineering === "rag_cot" ||
         selectedPromptEngineering === "graph_rag"
       ) {
-        handleRetrieve();
+        retrievalResult = await handleRetrieve();
         response = await axios.post("/api/generate_feedback_rag", {
           promptEngineering: selectedPromptEngineering,
           feedbackFramework: selectedFeedbackFramework,
           question: questionPreset.content || question,
-          answer,
+          answer: isValidInput(answer) ? answer : "The student haven't provided any answer yet.",
           slide_text_arr: slideTextArr
         });
       } else {
         // eslint-disable-next-line @typescript-eslint/no-unused-vars
-        const [_, feedbackResponse] = await Promise.all([
-          handleRetrieve(),
+        const [retrieval, feedbackResponse] = await Promise.all([
+          await handleRetrieve(),
           axios.post("/api/generate_feedback", {
             promptEngineering: selectedPromptEngineering,
             feedbackFramework: selectedFeedbackFramework,
             question: questionPreset.content || question,
-            answer,
+            answer: isValidInput(answer) ? answer : "The student haven't provided any answer yet.",
           })
         ]);
         response = feedbackResponse
+        retrievalResult = retrieval
       }
-      console.log(response);
+
+      const endTime = Date.now();
+      if (questionPreset) {
+        console.log(retrievalResult)
+        const recordPayload: RecordResultInput = {
+          learner_id: "test_learner",
+          // ip_address: "todo",
+          question_id: questionPreset.question_id,
+          answer: answer,
+          feedback: response.data.feedback,
+          prompt_engineering_method: selectedPromptEngineering,
+          preferred_info_type: preferredInfoType === "vision" && reference?.image_text ? "vision" : "text",
+          feedback_framework: selectedFeedbackFramework,
+          slide_retrieval_range: retrievalResult?.slide_text_arr,
+          reference_slide_page_number: retrievalResult?.reference?.page_number,
+          reference_slide_content: preferredInfoType === "vision" && retrievalResult?.reference?.image_text ? retrievalResult?.reference?.image_text : reference?.text,
+          reference_slide_id: retrievalResult?.reference?.slide_google_id, // to be updated
+          submission_time: startTime,
+          system_total_response_time: endTime - startTime
+        };
+
+        try {
+          await recordResultToDatabase(recordPayload);
+          console.log("Successfully recorded result:", recordPayload);
+        } catch (error) {
+          console.error("Failed to record result:", error);
+        }
+      }
+
       setResult(response.data.feedback);
       setIsFeedbackLoading(false);
     } catch (error) {
@@ -328,7 +410,7 @@ function HomeChildren() {
       {/* Drawer for Testing Area */}
       <TestDrawer isOpen={isDrawerOpen} closeDrawer={closeDrawer} message={message} />
 
-      <div className="grid grid-cols-10 gap-4 w-full">
+      <div className="grid grid-cols-11 gap-4 w-full">
         {/* Left Feedback Area */}
         <motion.div
           className="col-span-7 flex flex-col w-full"
@@ -337,66 +419,39 @@ function HomeChildren() {
           transition={{ duration: 0.8 }} // 动画持续时间
         >
 
-          {/* Slide Page Images with Swiper */}
-          <motion.div
-            className="mb-4 p-4 bg-gray-100 rounded-lg shadow-md h-[30vw] w-full flex justify-center items-center overflow-hidden"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: imageSrc ? 1 : 0.5 }}
-            transition={{ duration: 0.8 }}
-          >
-            {imageSrc && !isImageLoading ? (
-              <Swiper
-                // install Swiper modules
-                modules={[Navigation, Pagination, Scrollbar, A11y]}
-                spaceBetween={50}
-                centeredSlides={true}
-                slidesPerView={3}
-                navigation
-                pagination={{ clickable: true }}
-                initialSlide={Math.floor(totalCount / 2)}
-                loop={true}
-                onSwiper={(swiper) => console.log(swiper)}
-                onSlideChange={(swiper) => {
-                  // To apply effects on the middle slide
-                  const allSlides = swiper.slides;
-                  allSlides.forEach((slide, index) => {
-                    // Scale the current center slide and reset the others
-                    if (index === swiper.activeIndex) {
-                      slide.style.transform = "scale(2.4)"; // Enlarge the active slide
-                      slide.style.zIndex = "999";
-                      slide.style.opacity = "1";
-                      slide.style.transition = "transform 0.5s ease, opacity 0.5s ease";
-                    } else {
-                      slide.style.transform = "scale(1)";
-                      slide.style.opacity = "0.8";
-                      slide.style.zIndex = "1";
-                      slide.style.transition = "transform 0.5s ease, opacity 0.5s ease";
-                    }
-                  });
-                }}
-                style={{ overflow: "visible", width: "70vw", padding: "2vw" }}
-              >
-                {images?.map((src, index) => (
-                  <SwiperSlide key={index}>
-                    <div className="flex justify-center items-center">
-                      <motion.img
-                        src={`data:image/png;base64,${src}`}
-                        alt={`PDF Page ${index}`}
-                        className="w-auto h-[90%] rounded-lg shadow-md mb-4"
-                        initial={{ scale: 0.8 }}
-                        animate={{ scale: 1 }}
-                        transition={{ duration: 0.5 }}
-                      />
-                    </div>
-                  </SwiperSlide>
-                ))}
-              </Swiper>
-            ) : (
-              <motion.p>
-                {isImageLoading ? `Loading images...${totalCount>-1 ? `${loadedCount}/${totalCount}` : ``}` : "No images available"}
-              </motion.p>
-            )}
-          </motion.div>
+        <motion.div
+          className="mb-4 p-4 bg-gray-100 rounded-lg shadow-md h-[30vw] w-full flex justify-center items-center overflow-hidden"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: imageSrc ? 1 : 0.5 }}
+          transition={{ duration: 0.8 }}
+        >
+          {imageSrc && !isImageLoading ? (
+            <div
+              className="flex space-x-4 overflow-x-scroll w-[70vw] p-4"
+              style={{ scrollBehavior: "smooth" }}
+            >
+              {images?.map((src, index) => (
+                <div
+                  key={index}
+                  className="flex-shrink-0 flex justify-center items-center max-w-[90%]"
+                >
+                  <DynamicImage
+                    src={`data:image/png;base64,${src}`}
+                    alt={`PDF Page ${index}`}
+                    className="w-auto h-[90%] rounded-lg shadow-md mb-4"
+                    maxWidth={200}
+                  />
+                </div>
+              ))}
+            </div>
+          ) : (
+            <motion.p>
+              {isImageLoading
+                ? `Loading images...${totalCount > -1 ? `${loadedCount}/${totalCount}` : ``}`
+                : "No images available"}
+            </motion.p>
+          )}
+        </motion.div>
 
           {/* Feedback and Answer */}
           <motion.div
@@ -437,7 +492,7 @@ function HomeChildren() {
         </motion.div>
         {/* Right Input Area */}
         <motion.div
-          className="col-span-3 w-full p-4 bg-white rounded-lg shadow-md"
+          className="col-span-4 w-full p-4 bg-white rounded-lg shadow-md"
           initial={{ opacity: 0, x: 100 }}
           animate={{ opacity: 1, x: 0 }}
           transition={{ duration: 0.5 }}
@@ -526,148 +581,164 @@ function HomeChildren() {
               </motion.div>
             )}
 
-            {activeTab === "input" && (
-              <motion.div>
-                <div className="mb-4">
-                  <p className="mr-2">Please select preferred information type:</p>
-                  <label className="mr-4">
-                    <input
-                      type="radio"
-                      name="infoType"
-                      value="text"
-                      checked={preferredInfoType === "text"}
-                      onChange={(e) => setPreferredInfoType(e.target.value)}
-                    />
-                    Text
-                  </label>
-                  <label>
-                    <input
-                      type="radio"
-                      name="infoType"
-                      value="vision"
-                      checked={preferredInfoType === "vision"}
-                      onChange={(e) => setPreferredInfoType(e.target.value)}
-                    />
-                    Vision
-                  </label>
-                </div>
+{activeTab === "input" && (
+  <motion.div>
+    {/* Collapsible Card for Settings */}
+    <div className="mb-4 border rounded-lg shadow-md bg-white overflow-hidden">
+      <div
+        onClick={() => setIsSettingsOpen(!isSettingsOpen)}
+        className="cursor-pointer p-2 bg-gray-100 flex justify-between items-center"
+      >
+        <h3 className="font-semibold text-sm">Settings</h3>
+        <span className={`transform transition-transform duration-300 ${isSettingsOpen ? "rotate-180" : "rotate-0"}`}>
+          ▼
+        </span>
+      </div>
+      {isSettingsOpen && (
+        <div className="p-4 space-y-4">
+          <div>
+            <p className="mb-2">Please select preferred information type:</p>
+            <label className="mr-4">
+              <input
+                type="radio"
+                name="infoType"
+                value="text"
+                checked={preferredInfoType === "text"}
+                onChange={(e) => setPreferredInfoType(e.target.value)}
+              />
+              Text
+            </label>
+            <label>
+              <input
+                type="radio"
+                name="infoType"
+                value="vision"
+                checked={preferredInfoType === "vision"}
+                onChange={(e) => setPreferredInfoType(e.target.value)}
+              />
+              Vision
+            </label>
+          </div>
 
-                <div className="mb-4">
-                  <label htmlFor="prompt-engineering" className="mr-2">Please select one way of prompt engineering:</label>
-                  <select
-                    id="prompt-engineering"
-                    value={selectedPromptEngineering}
-                    onChange={(e) => setSelectedPromptEngineering(e.target.value)}
-                    className="border rounded p-2"
-                  >
-                    {/* <option value="">Select...</option> */}
-                    <option value="zero">Zero</option>
-                    <option value="few">Few</option>
-                    <option value="rag_zero">RAG Zero</option>
-                    <option value="rag_few">RAG Few</option>
-                    <option value="rag_cot">RAG CoT</option>
-                    {/* <option value="graph_rag">Graph RAG</option> */}
-                  </select>
-                </div>
+          <div>
+            <label htmlFor="prompt-engineering" className="mb-2 block">
+              Please select one way of prompt engineering:
+            </label>
+            <select
+              id="prompt-engineering"
+              value={selectedPromptEngineering}
+              onChange={(e) => setSelectedPromptEngineering(e.target.value)}
+              className="border rounded p-2 w-full"
+            >
+              <option value="zero">Zero</option>
+              <option value="few">Few</option>
+              <option value="rag_zero">RAG Zero</option>
+              <option value="rag_few">RAG Few</option>
+              <option value="rag_cot">RAG CoT</option>
+            </select>
+          </div>
 
-                <div className="mb-4">
-                  <label htmlFor="feedback-framework" className="mr-2">Please select a framework of feedback:</label>
-                  <select
-                    id="feedback-framework"
-                    value={selectedFeedbackFramework}
-                    onChange={(e) => setSelectedFeedbackFramework(e.target.value)}
-                    className="border rounded p-2"
-                  >
-                    {/* <option value="">Select...</option> */}
-                    <option value="none">None</option>
-                    <option value="component">Component</option>
-                    <option value="feature">Feature</option>
-                  </select>
-                </div>
+          <div>
+            <label htmlFor="feedback-framework" className="mb-2 block">
+              Please select a framework of feedback:
+            </label>
+            <select
+              id="feedback-framework"
+              value={selectedFeedbackFramework}
+              onChange={(e) => setSelectedFeedbackFramework(e.target.value)}
+              className="border rounded p-2 w-full"
+            >
+              <option value="none">None</option>
+              <option value="component">Component</option>
+              <option value="feature">Feature</option>
+            </select>
+          </div>
+        </div>
+      )}
+    </div>
 
-                <motion.div className="mt-4">
-                  <div className="flex flex-row justify-between">
-                    <h3 className="text-l font-semibold">Question</h3>
-                    {!questionLoading && questionPreset?.content?.length > 0 ? <button
-                            onClick={() => setIsFullScreen(true)}
-                            className="mb-4 px-2 text-white bg-green-600 hover:bg-green-700 rounded-sm"
-                          >
-                            View
-                          </button>
-                      : <></>}
-                  </div>
-                  {/* Conditional Full-Screen Button */}
-                  {questionPreset?.content?.length > 0 ? (
-                    <>
-                      {!isFullScreen ? (
-                        <div>
-                          {/* Hide ContentEditor when a preloaded question exists */}
-                          <div className="text-gray-500 text-sm">Preloaded question available. Click the View button to view the content if needed.</div>
-                        </div>
-                      ) : (
-                        <div className="fixed inset-0 z-50 bg-white p-6 overflow-auto">
-                          <button
-                            onClick={() => setIsFullScreen(false)}
-                            className="py-2 px-4 text-white bg-red-600 hover:bg-red-700 rounded-md absolute top-4 right-4"
-                          >
-                            Close Full-Screen
-                          </button>
-                          {/* Display question content in full-screen */}
-                          {questionPreset.content.map((item, index) => (
-                            <div key={index} className="mb-4">
-                              {item.type === "text" ? (
-                                <p className="text-lg">{item.content}</p>
-                              ) : (
-                                <Image
-                                  src={item.content}
-                                  alt={`Content ${index}`}
-                                  className="max-w-full h-auto rounded-lg"
-                                />
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </>
-                  ) : (
-                    <textarea
-                      value={question[0].content} // TODO: revise for content editor
-                      onChange={(e) => setQuestion([{ type: "text", content: e.target.value}])}
-                      placeholder="Enter your question"
-                      className="border rounded p-2 w-full resize-none min-h-32"
-                      rows={1}
-                      onInput={handleInputResize}
-                    />
-                  )}
-                </motion.div>
-
-                <motion.div className="mt-4">
-                  <h3 className="text-l font-semibold">Answer</h3>
-                  <textarea
-                    value={answer}
-                    onChange={(e) => setAnswer(e.target.value)}
-                    placeholder="Enter your answer"
-                    className="border rounded p-2 w-full resize-none min-h-32"
-                    rows={1}
-                    onInput={handleInputResize}
+    {/* Question Section */}
+    <motion.div className="mt-4">
+      <div className="flex flex-row justify-between">
+        <h3 className="text-l font-semibold">Question</h3>
+        {!questionLoading && questionPreset?.content?.length > 0 ? (
+          <button
+            onClick={() => setIsFullScreen(true)}
+            className="mb-4 px-2 text-white bg-green-600 hover:bg-green-700 rounded-sm"
+          >
+            View
+          </button>
+        ) : null}
+      </div>
+      {questionPreset?.content?.length > 0 ? (
+        !isFullScreen ? (
+          <div>
+            <p className="text-gray-500 text-sm">Preloaded question available.</p>
+          </div>
+        ) : (
+          <div className="fixed inset-0 z-50 bg-white p-6 overflow-auto">
+            <button
+              onClick={() => setIsFullScreen(false)}
+              className="py-2 px-4 text-white bg-red-600 hover:bg-red-700 rounded-md absolute top-4 right-4"
+            >
+              Close Full-Screen
+            </button>
+            {questionPreset.content.map((item, index) => (
+              <div key={index} className="mb-4">
+                {item.type === "text" ? (
+                  <p className="text-lg">{item.content}</p>
+                ) : (
+                  <DynamicImage
+                    src={item.content}
+                    alt={`Content ${index}`}
+                    className="max-w-full h-auto rounded-lg"
                   />
-                </motion.div>
+                )}
+              </div>
+            ))}
+          </div>
+        )
+      ) : (
+        <textarea
+          value={question[0].content}
+          onChange={(e) => setQuestion([{ type: "text", content: e.target.value }])}
+          placeholder="Enter your question"
+          className="border rounded p-2 w-full resize-none min-h-32"
+          rows={1}
+          onInput={handleInputResize}
+        />
+      )}
+    </motion.div>
 
-                <motion.button
-                  onClick={handleSubmit}
-                  className="mt-4 w-full p-2 bg-blue-500 text-white rounded-lg"
-                  whileHover={{
-                    scale: 1.05,
-                    backgroundColor: "#1d40ae",
-                    color: "#fff"
-                  }}
-                  whileTap={{ scale: 0.95 }}
-                  transition={{ duration: 0.2 }}
-                >
-                  Submit
-                </motion.button>
-              </motion.div>
-            )}
+    {/* Answer Section */}
+    <motion.div className="mt-4">
+      <h3 className="text-l font-semibold">Answer</h3>
+      <textarea
+        value={answer}
+        onChange={(e) => setAnswer(e.target.value)}
+        placeholder="Enter your answer"
+        className="border rounded p-2 w-full resize-none min-h-32"
+        rows={1}
+        onInput={handleInputResize}
+      />
+    </motion.div>
+
+    <motion.button
+      onClick={handleSubmit}
+      className="mt-4 w-full p-2 bg-blue-500 text-white rounded-lg"
+      whileHover={{
+        scale: 1.05,
+        backgroundColor: "#1d40ae",
+        color: "#fff",
+      }}
+      whileTap={{ scale: 0.95 }}
+      transition={{ duration: 0.2 }}
+    >
+      Submit
+    </motion.button>
+  </motion.div>
+)}
+
           </motion.div>
         </motion.div>
       </div>

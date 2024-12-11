@@ -61,5 +61,5 @@ def call_gpt(system_prompt: str, user_prompt: List[dict], settings: Annotated[Se
             if print_stream:
                 print(chunk.choices[0].delta.content, end="")
             result += chunk.choices[0].delta.content
-    result = result.replace("**", "|")
+    result = result.replace("**", "\n")
     return f"{result}"

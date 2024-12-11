@@ -524,3 +524,36 @@ async def upload_file(settings: Annotated[Settings, Depends(get_settings)], file
     except Exception as e:
         print("error")
         raise HTTPException(status_code=404, detail=str(e))
+
+@app.post('/api/record_result')
+def record_result(result: models.RecordResultModel, db: Session = Depends(get_db)):
+    try:
+        # Create a new RecordResultModel instance
+        db_result = schema.RecordResult(
+            learner_id=result.learner_id,
+            question_id=result.question_id,
+            answer=result.answer,
+            preferred_info_type=result.preferred_info_type,
+            prompt_engineering_method=result.prompt_engineering_method,
+            feedback_framework=result.feedback_framework,
+            feedback=result.feedback,
+            # ip_address=result.ip_address,
+            reference_slide_id=result.reference_slide_id,
+            reference_slide_content=result.reference_slide_content,
+            reference_slide_page_number=result.reference_slide_page_number,
+            slide_retrieval_range=result.slide_retrieval_range,
+
+            system_total_response_time=result.system_total_response_time,
+            submission_time=result.submission_time,
+        )
+
+        # Add the new result to the database session and commit
+        db.add(db_result)
+        db.commit()
+        # db.refresh(db_result)
+
+        return db_result
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"Error recording result: {str(e)}")

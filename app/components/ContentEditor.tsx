@@ -1,5 +1,5 @@
 import React from "react";
-import Image from 'next/image';
+import DynamicImage from "@/app/components/DynamicImage";
 
 interface ContentEditorProps {
   contents: { type: string; content: string }[];
@@ -71,9 +71,10 @@ const ContentEditor: React.FC<ContentEditorProps> = ({ contents, setContents }) 
                 />
               ) : (
                 <div className="flex flex-col items-start">
-                  <Image
+                  <DynamicImage
                     src={content.content}
                     alt="Uploaded"
+                    maxWidth={300}
                     className="max-w-full max-h-40 mb-2"
                   />
                   <button

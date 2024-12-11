@@ -8,6 +8,11 @@ const nextConfig = {
         hostname: 'lh3.googleusercontent.com',
         pathname: '/drive-storage/**',
       },
+      {
+        protocol: 'https',
+        hostname: 'mufin-basket.s3.amazonaws.com',
+        pathname: '/uploads/**',
+      },
     ],
   },
   rewrites: async () => {

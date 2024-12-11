@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useSession } from "next-auth/react";
 import { Slide } from "@/app/page";
 import ContentEditor from "@/app/components/ContentEditor";
-import Image from 'next/image';
+import DynamicImage from "@/app/components/DynamicImage";
 
 export interface QuestionContent {
   type: string; // text, image, etc.
@@ -134,9 +134,10 @@ const QuestionOverview = () => {
                         return <p key={index}>{item.content}</p>;
                       } else if (item.type === "image") {
                         return (
-                          <Image
+                          <DynamicImage
                             key={index}
                             src={item.content}
+                            maxWidth={500}
                             alt="Question content"
                             className="max-w-xs mt-2"
                           />
