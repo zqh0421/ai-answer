@@ -18,7 +18,7 @@ source venv/bin/activate
 # venv\Scripts\activate
 ```
 
-### Prepare enviroment variable(s)
+### Prepare environment variable(s)
 
 - Create a `.env.local` file.
 - Modify the content in the `.env.local` file referring to the format in the `.env.example` file.
