@@ -3,7 +3,7 @@ import { Lato } from 'next/font/google';
 import './globals.css';
 import Header from './components/Header';
 import Footer from './components/Footer';
-import { SessionProvider } from "next-auth/react";
+import ClientProvider from './components/ClientProvider'; // 引入客户端逻辑组件
 
 const lato = Lato({
   weight: '400',
@@ -13,7 +13,7 @@ const lato = Lato({
 
 export const metadata: Metadata = {
   title: 'MuFIN: Information Retrieval',
-  description: 'MuFIN: Information Retrieval by Chloe Qianhui',
+  description: 'MuFIN: Information Retrieval by Chloe Qianhui (qianhuiz@cs.cmu.edu)',
 };
 
 export default function RootLayout({
@@ -24,14 +24,14 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={`${lato.className} bg-gray-50`}>
-        {/* Main Content */}
+        {/* Redux + SessionProvider 包裹在 ClientProvider 中 */}
         <div className="flex flex-col min-h-screen">
           {/* Header */}
           <Header />
 
           {/* Main Content Area */}
           <main className="flex-grow container mx-2 min-w-full p-6">
-            <SessionProvider>{children}</SessionProvider>
+            <ClientProvider>{children}</ClientProvider>
           </main>
 
           {/* Footer */}

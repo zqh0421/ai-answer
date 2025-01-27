@@ -14,6 +14,12 @@ import { useSearchParams } from 'next/navigation';
 import { Question, QuestionContent } from "./manage/question/page";
 import DynamicImage from "./components/DynamicImage";
 
+
+import { useSelector, useDispatch } from 'react-redux';
+import { RootState, AppDispatch } from '@/app/store/store';
+import { saveAnswer } from '@/app/slices/userSlice';
+import ParticipantModal from '@/app/components/ParticipantModal';
+
 interface Course {
   course_id: string;
   course_title: string;
@@ -43,13 +49,12 @@ interface Reference {
 
 function HomeChildren() {
   const base_question = "What are pitfalls of E-Learning Design Principles & Methods about?"
-  const base_wrong_answer = ""
+  // const base_wrong_answer = ""
   const [message, setMessage] = useState("Loading...");
   const [isDrawerOpen, setIsDrawerOpen] = useState(true); // Drawer state
   const [question, setQuestion] = useState<QuestionContent[]>([
     { type: "text", content: base_question },
   ]);
-  const [answer, setAnswer] = useState(base_wrong_answer); // For Answer Input
   const [result, setResult] = useState(""); // For Result Display
   const [reference, setReference] = useState<Reference>(); // For Reference Display
   const [imageSrc, setImageSrc] = useState<string | null>(null);
@@ -78,6 +83,8 @@ function HomeChildren() {
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const searchParams = useSearchParams();
   const question_id = searchParams.get('question_id');
+  const course_version = searchParams.get('version')
+
   const [questionPreset, setQuestionPreset] = useState<Question>({
     question_id: "",
     type: "",
@@ -85,6 +92,17 @@ function HomeChildren() {
   });
   const [isFullScreen, setIsFullScreen] = useState(false);
   const [questionLoading, setQuestionLoading] = useState(false);
+
+  const answers = useSelector((state: RootState) => state.user.answers);
+  const participantId = useSelector((state: RootState) => state.user.participantId);
+  const [answer, setAnswer] = useState(answers[question_id || ''] || ''); // For Answer Input
+  const dispatch = useDispatch<AppDispatch>();
+
+  const handleSaveAnswer = (temp_answer: string) => {
+    if (question_id) {
+      dispatch(saveAnswer({ questionId: question_id, answer: temp_answer }));
+    }
+  };
 
   useEffect(() => {
     if (courses.length > 0 && !course) {
@@ -168,6 +186,9 @@ function HomeChildren() {
         {
           slide_id: slideId,
           page_number: pageNumber
+        },
+        {
+          timeout: 60000
         }
       );
       // const imageBlob = response.data;
@@ -209,31 +230,33 @@ function HomeChildren() {
       const response = await axios.post(
         "/api/embed",
         {
+          question_id,
           question: questionPreset.content || question, // TODO: revise for content editor
           slideIds: slide,
           preferredInfoType: preferredInfoType
         }
       );
-      setReference(response.data.result[0]);
-      if (preferredInfoType == "vision" && response.data.result[0].image_text) {
+      const res = JSON.parse(response.data).result
+      setReference(res[0]);
+      if (preferredInfoType == "vision" && res[0].image_text) {
         setReference({
-          ...response.data.result[0],
-          display: response.data.result[0].image_text
+          ...res[0],
+          display: res[0].image_text
         })
-      } else if (response.data.result[0].text) {
+      } else if (res[0].text) {
         setReference({
-          ...response.data.result[0],
-          display: response.data.result[0].text
+          ...res[0],
+          display: res[0].text
         })
       } else {
         setReference({
-          ...response.data.result[0],
+          ...res[0],
           display: "EMPTY REFERENCE"
         })
       }
 
 
-      setSlideTextArr(response.data.result.map((item: Reference) => {
+      setSlideTextArr(res.map((item: Reference) => {
         if (preferredInfoType == "vision" && item.image_text) {
           return item.image_text;
         } else if (item.text) {
@@ -244,7 +267,7 @@ function HomeChildren() {
       }));
       // setSlideTextArr(response.data.result.map((item: { text: string }) => item.text)); // TODO: Adjustable
       let temp: string[] = [];
-      const page_number = response.data.result[0].page_number;
+      const page_number = res[0].page_number;
       // const startPage = Math.max(0, page_number - 2); // Ensure page number doesn't go below 0
       // const endPage = page_number + 2;
       // setTotalCount(endPage - startPage + 1);
@@ -255,7 +278,7 @@ function HomeChildren() {
 
       // Fetch the images for the current page and its surrounding pages
       for (let i = startPage; i <= endPage; i++) {
-        const image: string | null = await handlePdfImage(i, response.data.result[0].slide_id); // Await here to ensure it processes in order
+        const image: string | null = await handlePdfImage(i, res[0].slide_id); // Await here to ensure it processes in order
         if (image !== null) {
           setLoadedCount(prevCount => prevCount + 1);
           temp = [...temp, image];
@@ -270,7 +293,7 @@ function HomeChildren() {
       setIsReferenceLoading(false);
 
       return {
-        slide_text_arr: response.data.result.map((item: Reference) => {
+        slide_text_arr: res.map((item: Reference) => {
           if (preferredInfoType == "vision" && item.image_text) {
             return item.image_text;
           } else if (item.text) {
@@ -279,7 +302,7 @@ function HomeChildren() {
             alert(`${item.slide_title} unpublished!`)
           }
         }),
-        reference: response.data.result[0]
+        reference: res[0]
       }
 
     } catch (error) {
@@ -308,7 +331,9 @@ function HomeChildren() {
 
   const recordResultToDatabase = async (result: RecordResultInput) => {
     try {
-      await axios.post("/api/record_result", result);
+      await axios.post("/api/record_result", result, {
+        timeout: 60000
+      });
       console.log("Successfully recorded result to db:", result);
     } catch (error) {
       console.error("Error recording result to database:", error);
@@ -331,69 +356,78 @@ function HomeChildren() {
 
     const startTime = Date.now();
     let retrievalResult = null;
-    try {
-      let response;
-      if (selectedPromptEngineering === "rag_zero" ||
-        selectedPromptEngineering === "rag_few" ||
-        selectedPromptEngineering === "rag_cot" ||
-        selectedPromptEngineering === "graph_rag"
-      ) {
-        retrievalResult = await handleRetrieve();
-        response = await axios.post("/api/generate_feedback_rag", {
-          promptEngineering: selectedPromptEngineering,
-          feedbackFramework: selectedFeedbackFramework,
-          question: questionPreset.content || question,
-          answer: isValidInput(answer) ? answer : "The student haven't provided any answer yet.",
-          slide_text_arr: slideTextArr
-        });
-      } else {
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
-        const [retrieval, feedbackResponse] = await Promise.all([
-          await handleRetrieve(),
-          axios.post("/api/generate_feedback", {
+    if (course_version == 'a') {
+      // retrieve human feedback here
+    } else {
+      try {
+        let response;
+        if (selectedPromptEngineering === "rag_zero" ||
+          selectedPromptEngineering === "rag_few" ||
+          selectedPromptEngineering === "rag_cot" ||
+          selectedPromptEngineering === "graph_rag"
+        ) {
+          retrievalResult = await handleRetrieve();
+          // console.log("time1")
+          // console.log(Date.now() - startTime)
+          response = await axios.post("/api/generate_feedback_rag", {
             promptEngineering: selectedPromptEngineering,
             feedbackFramework: selectedFeedbackFramework,
             question: questionPreset.content || question,
             answer: isValidInput(answer) ? answer : "The student haven't provided any answer yet.",
-          })
-        ]);
-        response = feedbackResponse
-        retrievalResult = retrieval
-      }
-
-      const endTime = Date.now();
-      if (questionPreset) {
-        console.log(retrievalResult)
-        const recordPayload: RecordResultInput = {
-          learner_id: "test_learner",
-          // ip_address: "todo",
-          question_id: questionPreset.question_id,
-          answer: answer,
-          feedback: response.data.feedback,
-          prompt_engineering_method: selectedPromptEngineering,
-          preferred_info_type: preferredInfoType === "vision" && reference?.image_text ? "vision" : "text",
-          feedback_framework: selectedFeedbackFramework,
-          slide_retrieval_range: retrievalResult?.slide_text_arr,
-          reference_slide_page_number: retrievalResult?.reference?.page_number,
-          reference_slide_content: preferredInfoType === "vision" && retrievalResult?.reference?.image_text ? retrievalResult?.reference?.image_text : reference?.text,
-          reference_slide_id: retrievalResult?.reference?.slide_google_id, // to be updated
-          submission_time: startTime,
-          system_total_response_time: endTime - startTime
-        };
-
-        try {
-          await recordResultToDatabase(recordPayload);
-          console.log("Successfully recorded result:", recordPayload);
-        } catch (error) {
-          console.error("Failed to record result:", error);
+            slide_text_arr: slideTextArr
+          });
+          // console.log("time2")
+          // console.log(Date.now() - startTime)
+        } else {
+          // eslint-disable-next-line @typescript-eslint/no-unused-vars
+          const [retrieval, feedbackResponse] = await Promise.all([
+            await handleRetrieve(),
+            axios.post("/api/generate_feedback", {
+              promptEngineering: selectedPromptEngineering,
+              feedbackFramework: selectedFeedbackFramework,
+              question: questionPreset.content || question,
+              answer: isValidInput(answer) ? answer : "The student haven't provided any answer yet.",
+            })
+          ]);
+          response = feedbackResponse
+          retrievalResult = retrieval
         }
-      }
 
-      setResult(response.data.feedback);
-      setIsFeedbackLoading(false);
-    } catch (error) {
-      console.error("Error generating feedback:", error);
-      setIsFeedbackLoading(false);
+        const endTime = Date.now();
+        console.log(endTime - startTime)
+        if (questionPreset) {
+          console.log(retrievalResult)
+          const recordPayload: RecordResultInput = {
+            learner_id: participantId || "unidentifiable_learner",
+            // ip_address: "todo",
+            question_id: questionPreset.question_id,
+            answer: answer,
+            feedback: response.data.feedback,
+            prompt_engineering_method: selectedPromptEngineering,
+            preferred_info_type: preferredInfoType === "vision" && reference?.image_text ? "vision" : "text",
+            feedback_framework: selectedFeedbackFramework,
+            slide_retrieval_range: retrievalResult?.slide_text_arr,
+            reference_slide_page_number: retrievalResult?.reference?.page_number,
+            reference_slide_content: preferredInfoType === "vision" && retrievalResult?.reference?.image_text ? retrievalResult?.reference?.image_text : reference?.text,
+            reference_slide_id: retrievalResult?.reference?.slide_google_id, // to be updated
+            submission_time: startTime,
+            system_total_response_time: endTime - startTime
+          };
+
+          try {
+            await recordResultToDatabase(recordPayload);
+            console.log("Successfully recorded result:", recordPayload);
+          } catch (error) {
+            console.error("Failed to record result:", error);
+          }
+        }
+
+        setResult(response.data.feedback);
+        setIsFeedbackLoading(false);
+      } catch (error) {
+        console.error("Error generating feedback:", error);
+        setIsFeedbackLoading(false);
+      }
     }
   };
 
@@ -407,6 +441,8 @@ function HomeChildren() {
 
   return (
     <main className="flex flex-col items-center justify-between">
+      <ParticipantModal isOpen={!participantId} />
+
       {/* Drawer for Testing Area */}
       <TestDrawer isOpen={isDrawerOpen} closeDrawer={closeDrawer} message={message} />
 
@@ -419,7 +455,7 @@ function HomeChildren() {
           transition={{ duration: 0.8 }} // 动画持续时间
         >
 
-        <motion.div
+        {(course_version=="b" || course_version=="d") && <motion.div
           className="mb-4 p-4 bg-gray-100 rounded-lg shadow-md h-[30vw] w-full flex justify-center items-center overflow-hidden"
           initial={{ opacity: 0 }}
           animate={{ opacity: imageSrc ? 1 : 0.5 }}
@@ -451,7 +487,7 @@ function HomeChildren() {
                 : "No images available"}
             </motion.p>
           )}
-        </motion.div>
+        </motion.div>}
 
           {/* Feedback and Answer */}
           <motion.div
@@ -461,17 +497,17 @@ function HomeChildren() {
             transition={{ duration: 0.8 }}
           >
             {/* AI Feedback */}
-            <motion.div className="mb-4">
+            {(course_version=="a" || course_version=="c" || course_version=="d") && <motion.div className="mb-4">
               <h3 className="text-xl font-semibold">Feedback:</h3>
               {result && !isFeedbackLoading ? (
                 <p>{result}</p>
               ) : (
                 <p>{isFeedbackLoading ? "Loading feedback..." : "No feedback yet"}</p>
               )}
-            </motion.div>
+            </motion.div>}
 
             {/* Reference Display */}
-            <motion.div className="mt-4">
+            {(course_version=="b" || course_version=="d") && <motion.div className="mt-4">
               <h3 className="text-xl font-semibold">Reference:</h3>
               {reference && !isReferenceLoading ? (
                 <div>
@@ -488,6 +524,7 @@ function HomeChildren() {
                 <p>{isReferenceLoading ? "Loading reference..." : "No reference available"}</p>
               )}
             </motion.div>
+            }
           </motion.div>
         </motion.div>
         {/* Right Input Area */}
@@ -498,7 +535,7 @@ function HomeChildren() {
           transition={{ duration: 0.5 }}
         >
           {/* Tabs Header */}
-          <div className="w-full flex justify-center mb-4">
+          {/* <div className="w-full flex justify-center mb-4">
             <button
               className={`px-4 py-2 border-b-2 ${activeTab === "selection" ? "border-blue-500" : "border-transparent"}`}
               onClick={() => setActiveTab("selection")}
@@ -511,7 +548,7 @@ function HomeChildren() {
             >
               Retrieval
             </button>
-          </div>
+          </div> */}
 
           {/* Tab Content */}
           <motion.div>
@@ -715,7 +752,10 @@ function HomeChildren() {
       <h3 className="text-l font-semibold">Answer</h3>
       <textarea
         value={answer}
-        onChange={(e) => setAnswer(e.target.value)}
+        onChange={(e) => {
+          setAnswer(e.target.value)
+          handleSaveAnswer(e.target.value)
+        }}
         placeholder="Enter your answer"
         className="border rounded p-2 w-full resize-none min-h-32"
         rows={1}
@@ -725,16 +765,20 @@ function HomeChildren() {
 
     <motion.button
       onClick={handleSubmit}
-      className="mt-4 w-full p-2 bg-blue-500 text-white rounded-lg"
+      className={`
+        mt-4 w-full p-2  text-white rounded-lg
+        ${isFeedbackLoading || isImageLoading || isReferenceLoading ? 'bg-gray-500' : 'bg-blue-500'}
+      `}
       whileHover={{
-        scale: 1.05,
-        backgroundColor: "#1d40ae",
+        scale: `${isFeedbackLoading || isImageLoading || isReferenceLoading ? 1.00 : 1.05 }`,
+        backgroundColor: `${isFeedbackLoading || isImageLoading || isReferenceLoading ? '#ccc' : "#1d40ae"}`,
         color: "#fff",
       }}
-      whileTap={{ scale: 0.95 }}
+      whileTap={{ scale: `${isFeedbackLoading || isImageLoading || isReferenceLoading ? 1.00 : 0.95 }`, }}
       transition={{ duration: 0.2 }}
+      // disabled={isFeedbackLoading || isImageLoading || isReferenceLoading}
     >
-      Submit
+      {isFeedbackLoading || isImageLoading || isReferenceLoading ? 'Evaluating ...' : 'Submit'}
     </motion.button>
   </motion.div>
 )}

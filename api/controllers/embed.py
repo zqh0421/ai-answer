@@ -10,6 +10,7 @@ from ..database import SessionLocal
 from .. import schema
 from sqlalchemy import cast
 from sqlalchemy.dialects.postgresql import UUID
+import time
 
 def get_db():
     db = SessionLocal()
@@ -19,6 +20,7 @@ def get_db():
         db.close()
 
 def embedController(embedModel: EmbedModel, settings: Annotated[Settings, Depends(get_settings)], db: Session = Depends(get_db)):
+    init_time = time.time()
     # Step 1: Create the embedding for the input question
     q_vector = create_embedding(embedModel.question, settings)
     
@@ -52,8 +54,9 @@ def embedController(embedModel: EmbedModel, settings: Annotated[Settings, Depend
             match["slide_title"] = slide.slide_title
             enriched_matches.append(match)
 
-    print(enriched_matches)
-
+    # print(enriched_matches)
+    print("embed")
+    print(time.time() - init_time)
     # Step 7: Return the enriched results with slide_google_id and slide_title
     return {
         "result": enriched_matches

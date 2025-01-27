@@ -2,6 +2,7 @@ from fastapi import Depends
 from openai import OpenAI
 from ...config import Settings, get_settings
 from typing_extensions import Annotated, List
+import time
 
 def format_question(question: List[dict]) -> List[dict]:
     """
@@ -38,6 +39,7 @@ def call_gpt(system_prompt: str, user_prompt: List[dict], settings: Annotated[Se
         project=api_proj
     )
 
+    init_time = time.time()
     stream = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
@@ -58,8 +60,10 @@ def call_gpt(system_prompt: str, user_prompt: List[dict], settings: Annotated[Se
     print_stream = True
     for chunk in stream:
         if chunk.choices[0].delta.content is not None:
-            if print_stream:
-                print(chunk.choices[0].delta.content, end="")
+            # if print_stream:
+                # print(chunk.choices[0].delta.content, end="")
             result += chunk.choices[0].delta.content
     result = result.replace("**", "\n")
+    print("call_gpt")
+    print(time.time() - init_time)
     return f"{result}"

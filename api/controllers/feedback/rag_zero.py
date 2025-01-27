@@ -6,7 +6,7 @@ from typing_extensions import Annotated
 from .call_gpt import call_gpt, format_question
 
 def generate_feedback_using_rag_zero(question: List[dict], answer: str, slide_text_arr: List[str], feedbackFramework: str, settings: Annotated[Settings, Depends(get_settings)]) -> str:
-    print("slide_text_arr:",slide_text_arr)
+    # print("slide_text_arr:",slide_text_arr)
     prompt_none = (
         f"You are an expert tutor in providing feedback using 2-3 sentences for students' answer based on the questions."
         f"Based on the following questions, and students' answers, and Slides Content,  provide feedback  accurately and relevantly in 2-3 sentence.\n\n" 

@@ -59,8 +59,8 @@ def visionController(question, answer, settings: Annotated[Settings, Depends(get
     result = ""
     for chunk in stream:
         if chunk.choices[0].delta.content is not None:
-            if print_stream:
-                print(chunk.choices[0].delta.content, end="")
+            # if print_stream:
+                # print(chunk.choices[0].delta.content, end="")
             result += chunk.choices[0].delta.content
     return result
 

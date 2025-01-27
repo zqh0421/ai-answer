@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Depends, HTTPException, status, File, UploadFile
 import boto3
 import uuid
+from uuid import UUID
 from typing_extensions import Annotated
 from sqlalchemy.orm import Session
 from .schema import User, Course
@@ -28,6 +29,8 @@ from uuid import UUID
 from sqlalchemy import cast
 from .controllers.vision import setVision
 import re
+import time
+import json
 
 app = FastAPI()
 
@@ -54,10 +57,46 @@ def ask(askModel: AskModel, settings: Annotated[Settings, Depends(get_settings)]
     result = askController(askModel.question, askModel.answer, settings)
     return {"result": f"{result}"}
 
+def serialize_with_uuid(obj):
+    """
+    Helper function to convert UUIDs to strings for JSON serialization.
+    """
+    if isinstance(obj, UUID):
+        return str(obj)
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+
 @app.post("/api/embed")
-def embed(embedModel: EmbedModel, settings: Annotated[Settings, Depends(get_settings)], db: Session = Depends(get_db)):
-    result = embedController(embedModel, settings, db)
-    return result
+async def embed(embedModel: EmbedModel, settings: Annotated[Settings, Depends(get_settings)], db: Session = Depends(get_db)):
+    question = db.query(schema.Question).filter(
+        schema.Question.question_id == embedModel.question_id,
+        schema.Question.embed_result.isnot(None),
+    ).first()
+
+    if question and question.embed_result:
+        print("yes")
+        result = question.embed_result
+        print(result)
+        return result
+    else:
+        result = embedController(embedModel, settings, db)
+
+        # Serialize the result into a JSON string
+        escaped_json = json.dumps(result, default=serialize_with_uuid)
+
+        # Save the escaped_json to the database for the specified question_id
+        question_to_update = db.query(schema.Question).filter(
+            schema.Question.question_id == embedModel.question_id
+        ).first()
+
+        if question_to_update:
+            question_to_update.embed_result = escaped_json
+            db.add(question_to_update)
+            db.commit()
+            print("Embed result saved to database.")
+        else:
+            print("Question not found in database. Unable to save embed result.")
+        return result
 
 @app.post("/api/pdf-to-image")
 async def convert(convertModel: ConvertModel, db: Session = Depends(get_db)):
@@ -169,7 +208,7 @@ async def generate_feedback_rag(request: FeedbackRequestRagModel, settings: Anno
     if request.promptEngineering == "rag_zero":
         feedback = generate_feedback_using_rag_zero(request.question, request.answer, request.slide_text_arr, request.feedbackFramework, settings)
     elif request.promptEngineering == "rag_few":
-        feedback = generate_feedback_using_rag_few(request.question, request.answer, request.slide_text_arr, request.feedbackFramework, settings)
+        feedback = await generate_feedback_using_rag_few(request.question, request.answer, request.slide_text_arr, request.feedbackFramework, settings)
     elif request.promptEngineering == "rag_cot":
         feedback = generate_feedback_using_rag_cot(request.question, request.answer, request.slide_text_arr, request.feedbackFramework, settings)
     elif request.promptEngineering == "graph_rag":
