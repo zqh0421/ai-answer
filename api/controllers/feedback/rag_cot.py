@@ -66,22 +66,27 @@ def generate_feedback_using_rag_cot(question: List[dict], answer: str, slide_tex
 
         f"Slides Content: {slide_text_arr}\n\n"
     )
+
     prompt_feature = (
-        f"You are a helpful assistant that verifies answers to questions.  Please respond with yes or no about whther the answer is correct, and provide short explanations using 2-3 sentences."
-        f"Based on the following questions, Slides content, and students' answers, provide feedback accurately and relevantly, and feedback needs to have these features:  "
-        f"1. Task-Focused and Clear: Feedback should focus on the task, be specific and clear, offering actionable suggestions for improvement."
-        f"2. Elaborated and Manageable: Provide feedback that explains why an answer is correct or incorrect in small, digestible portions, avoiding overload."
-        f"3. Goal-Oriented: Feedback should be timely, helping learners understand their progress toward goals and reducing uncertainty."
-        f"4. Encourages Learning Orientation: Promote a growth mindset by framing mistakes as part of the learning process and emphasizing effort."
-        f" Please integrate these four FEATURES into a single paragraph of feedback text, not by presenting them separately, but by fusing and integrating them\n\n"
-        f"Please think step by step:"
-        f"Step 1: Analyze the question and identify the key concepts that should be addressed.\n"
-        f"Step 2: Evaluate the student's answer and determine if it addresses the key concepts and aligns with the content in the slides.\n"
-        f"Step 3: Generate feedback combing four features.\n"
-        f"Here are some examples:"
-        f"Your answer is on the right track, focusing on the task of estimating Y values from X using the sum of squared errors, which is a key concept from the slide content. However, it could be more elaborated. The sum of squared errors, also known as residuals, is a measure of how well the regression line fits the data. The smaller the sum of squared errors, the better the estimate. But remember, it's not just about knowing the method, it's about understanding why and how it works. This understanding will help you progress towards your goal of mastering the topic. Also, don't be discouraged if you make mistakes or find this concept challenging. Learning is a process, and effort is more important than perfection. Keep practicing and you'll get there."
-        f"Now, generate feedback for the follwing information:"
-        f"Slides Content: {slide_text_arr}\n\n"
+        f"Based on the following question, student's response, provide feedback accurately and relevantly, which is designed to promote learning, help learners obtain varied and frequent feedback information, and help them to develop understandings of their own role in the feedback process. "
+        f"feedback content needs to meet the requirements of the below feedback characteristics\n"
+        f"- Feedback encourages positive learner affect (i.e., Positively framed feedback comments are known to enhance learner self-efficacy and motivation).\n"
+        f"- Feedback is usable for learners,be both clear and specific, give explanation, but please do not directly give the right answer if students' response is incorrect.\n "
+        f"- Feedback needs to strengthen teacher and learner relationships,for instance, including a brief relational comment to display recognition and value of the individual learner behind the piece of work\n "
+        f"- Feedback needs to invite dialogue about feedback, promote learner independence (i.e., invite students to ask question from teachers; invite dialogue through text-based feedback comments).\n"
+        f"keep theses five requirements of feedback characteristics in mind, and then generate feedback according to following steps:"
+        f"Step 1: provide critiques about the student's answer (that is to directly tell the student whether their response is correct or not, and give the reason). Please provide a strict evaluation based on the text of the provided slides.\n"
+        f"Step 2: highlight the strengths of the student's answer (i.e., praise student in some aspect according to their response).\n"
+        f"Step 3: provide actionable information for future learning (i.e., giving suggestion for the tasks, suggest learning skills or strategies).\n"
+        f"Step 4: encourage the student's agency (e.g., direct invitations to discuss feedback or performance with the teacher; suggesting that the learner seek help from sources or resources other than the teacher; encouraging the learner to engage in further independent study).\n"
+        f"The output should be a single paragraph containing less than 4 sentences.\n"
+        f"Note: Please provide the feedback in a single paragraph without mentioning any 'components'.\n\n"
+        f"Please think step-by-step according to above characteristics and components to analyze the student's response in relation to the question and the slides content. However, **do not include your reasoning in the final output; only provide the feedback to the student**.\n"
+        f"\n"
+        
+        f"### Slides Content:\n{slide_text_arr}\n"
+        f"using above information to generate feedback----,let's think and generate step by step"
+        f"**Do not include your reasoning in the final output; only provide the feedback to the student.**\n\n"
     )
 
     question_message = format_question(question)

@@ -12,7 +12,7 @@ interface TestDrawerProps {
 export default function TestDrawer({ isOpen, closeDrawer, message }: TestDrawerProps) {
   return (
     <Transition show={isOpen} as={Fragment}>
-      <Dialog as="div" className="relative z-50" onClose={closeDrawer}>
+      <Dialog as="div" className="relative z-[99]" onClose={closeDrawer}>
         <Transition.Child
           as={Fragment}
           enter="transition ease-out duration-300"

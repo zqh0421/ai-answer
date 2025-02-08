@@ -31,7 +31,7 @@ const ContentEditor: React.FC<ContentEditorProps> = ({ contents, setContents }) 
       if (res.ok) {
         const data = await res.json();
         const imageUrl = data.url; // Get the URL of the uploaded image
-        console.log(imageUrl)
+        // console.log(imageUrl)
         handleContentChange(index, imageUrl);
       } else {
         console.error("Image upload failed");

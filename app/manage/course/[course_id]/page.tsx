@@ -178,10 +178,10 @@ const CoursePage = () => {
 
   // Fetch metadata for the files in the pasted Drive folder link
   const handleFetchSlidesFromFolder = async () => {
-    console.log("fetch")
+    // console.log("fetch")
     const folderId = extractFolderIdFromLink(driveFolderLink);
     if (folderId) {
-      console.log("YEs")
+      // console.log("YEs")
       const slidesInfo = await fetchDriveFolderFiles(folderId);
       setSlideInfoList(slidesInfo); // Store fetched slide metadata
       setShowConfirmation(true); // Trigger confirmation pop-up
@@ -219,10 +219,10 @@ const CoursePage = () => {
   };  
 
   const handleFetchModulesFromFolder = async () => {
-    console.log(courseFolderLink)
+    // console.log(courseFolderLink)
     const folderId = extractFolderIdFromLink(courseFolderLink);
     if (folderId) {
-      console.log(folderId)
+      // console.log(folderId)
       const subfolders = await fetchSubfoldersFromFolder(folderId);
 
       let temp: modulesNslides[] = [];
@@ -258,14 +258,14 @@ const CoursePage = () => {
   // Submit fetched slides metadata to the backend
   const handleCreateSlides = async () => {
     if (!selectedModuleForSlide || slideInfoList.length === 0) return;
-    console.log(slideInfoList[0])
+    // console.log(slideInfoList[0])
     try {
       const res = await axios.post(`/api/modules/${selectedModuleForSlide}/slides/batch`, {
         slides: slideInfoList,
       });
   
       if (res.status === 201) {
-        console.log("selected: " + selectedModuleForSlide)
+        // console.log("selected: " + selectedModuleForSlide)
         fetchSlides(selectedModuleForSlide);
         setIsSlideModalOpen(false);
         setShowConfirmation(false);
@@ -286,7 +286,7 @@ const CoursePage = () => {
     }));
     try {
       const publishRes = await axios.post(`/api/slides/${slideId}/${slideGoogleId}/publish`);
-      console.log("FINISHED")
+      // console.log("FINISHED")
       if (publishRes.status === 200) {
         setSlidesByModule((prevSlides) => ({
           ...prevSlides,
@@ -294,7 +294,7 @@ const CoursePage = () => {
             slide.id === slideId ? { ...slide, published: true, publishing: false } : slide
           ),
         }));
-        console.log('Slide published status updated to true');
+        // console.log('Slide published status updated to true');
       } else {
         setSlidesByModule((prevSlides) => ({
           ...prevSlides,

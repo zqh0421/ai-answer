@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, Suspense } from "react";
+import { useState, useEffect, Suspense, useCallback } from "react";
 import { motion } from "framer-motion";
 import axios from "axios";
 import TestDrawer from './components/TestDrawer';
@@ -13,12 +13,16 @@ import TestDrawer from './components/TestDrawer';
 import { useSearchParams } from 'next/navigation';
 import { Question, QuestionContent } from "./manage/question/page";
 import DynamicImage from "./components/DynamicImage";
-
+import { debounce } from 'lodash';
 
 import { useSelector, useDispatch } from 'react-redux';
 import { RootState, AppDispatch } from '@/app/store/store';
 import { saveAnswer } from '@/app/slices/userSlice';
 import ParticipantModal from '@/app/components/ParticipantModal';
+
+import ReactMarkdown from 'react-markdown';
+
+import ImageGallery from "@/app/components/ImageGallery"
 
 interface Course {
   course_id: string;
@@ -67,8 +71,10 @@ function HomeChildren() {
   const [isReferenceLoading, setIsReferenceLoading] = useState(false);
   const [isFeedbackLoading, setIsFeedbackLoading] = useState(false);
 
-  const [selectedPromptEngineering, setSelectedPromptEngineering] = useState<string>("rag_few");
-  const [selectedFeedbackFramework, setSelectedFeedbackFramework] = useState<string>("none");
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const [selectedPromptEngineering, setSelectedPromptEngineering] = useState<string>("rag_cot");
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const [selectedFeedbackFramework, setSelectedFeedbackFramework] = useState<string>("feature");
   const [slideTextArr, setSlideTextArr] = useState<string[]>([""]);
 
   const [course, setCourse] = useState<string>();  // Course Selection
@@ -79,7 +85,9 @@ function HomeChildren() {
   const [availableModules, setAvailableModules] = useState<Module[]>([]);  // Modules for the selected course
   const [availableSlides, setAvailableSlides] = useState<Slide[]>([]);    // Slides for the selected modules
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [preferredInfoType, setPreferredInfoType] = useState<string>("vision");
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const searchParams = useSearchParams();
   const question_id = searchParams.get('question_id');
@@ -96,12 +104,30 @@ function HomeChildren() {
   const answers = useSelector((state: RootState) => state.user.answers);
   const participantId = useSelector((state: RootState) => state.user.participantId);
   const [answer, setAnswer] = useState(answers[question_id || ''] || ''); // For Answer Input
+  const [saveStatus, setSaveStatus] = useState("Saved"); // Save status indicator
   const dispatch = useDispatch<AppDispatch>();
 
-  const handleSaveAnswer = (temp_answer: string) => {
-    if (question_id) {
-      dispatch(saveAnswer({ questionId: question_id, answer: temp_answer }));
-    }
+  // const handleSaveAnswer = (temp_answer: string) => {
+  //   if (question_id) {
+  //     dispatch(saveAnswer({ questionId: question_id, answer: temp_answer }));
+  //   }
+  // };
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const debouncedSaveAnswer = useCallback(
+    debounce((temp_answer: string) => {
+      if (question_id) {
+        dispatch(saveAnswer({ questionId: question_id, answer: temp_answer }));
+        setSaveStatus("Saved");
+      }
+    }, 500),
+    [dispatch, question_id]
+  );
+
+  const handleAnswerChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setAnswer(e.target.value);
+    setSaveStatus("Saving...");
+    debouncedSaveAnswer(e.target.value);
   };
 
   useEffect(() => {
@@ -118,7 +144,7 @@ function HomeChildren() {
         .get(`/api/questions/by_id/${question_id}`)
         .then((res) => {
           setQuestionPreset(res.data);
-          console.log(res.data)
+          // console.log(res.data)
           // no display input box question
         })
         .catch((err) => {
@@ -227,21 +253,35 @@ function HomeChildren() {
 
   const handleRetrieve = async () => {
     try {
+      // console.log(question_id)
+      // console.log(question)
+      // console.log(slide)
+      // console.log(preferredInfoType)
+
       const response = await axios.post(
         "/api/embed",
         {
-          question_id,
+          question_id: question_id || null,
           question: questionPreset.content || question, // TODO: revise for content editor
           slideIds: slide,
           preferredInfoType: preferredInfoType
         }
       );
-      const res = JSON.parse(response.data).result
+      // console.log(response.data)
+      const res = typeof response.data === "string" ? JSON.parse(response.data).result : response.data.result;
+
+      // console.log("embed")
+      // console.log(res)
+      // res[0].text = res[0]?.text.replace(/\n\s*\n/g, '\n');
+
       setReference(res[0]);
+      // console.log("REF")
+      // console.log(res[0])
+      
       if (preferredInfoType == "vision" && res[0].image_text) {
         setReference({
           ...res[0],
-          display: res[0].image_text
+          display: res[0].image_text.replace(/\n\s*\n+/g, '\n')
         })
       } else if (res[0].text) {
         setReference({
@@ -331,10 +371,8 @@ function HomeChildren() {
 
   const recordResultToDatabase = async (result: RecordResultInput) => {
     try {
-      await axios.post("/api/record_result", result, {
-        timeout: 60000
-      });
-      console.log("Successfully recorded result to db:", result);
+      await axios.post("/api/record_result", result);
+      // console.log("Successfully recorded result to db:", result);
     } catch (error) {
       console.error("Error recording result to database:", error);
     }
@@ -357,7 +395,40 @@ function HomeChildren() {
     const startTime = Date.now();
     let retrievalResult = null;
     if (course_version == 'a') {
-      // retrieve human feedback here
+      if (questionPreset) {
+        try {
+          const response = await axios.get(`/api/get_human_feedback/${questionPreset.question_id}`)
+          // console.log(response)
+          const endTime = Date.now();
+          const recordPayload: RecordResultInput = {
+            learner_id: participantId || "unidentifiable_learner",
+            // ip_address: "todo",
+            question_id: questionPreset.question_id,
+            answer: answer,
+            feedback: response.data.human_feedback,
+            prompt_engineering_method: selectedPromptEngineering,
+            preferred_info_type: preferredInfoType === "vision" && reference?.image_text ? "vision" : "text",
+            feedback_framework: selectedFeedbackFramework,
+            slide_retrieval_range: [],
+            reference_slide_page_number: -1,
+            reference_slide_content: "",
+            reference_slide_id: "", // to be updated
+            submission_time: startTime,
+            system_total_response_time: endTime - startTime
+          };
+          await recordResultToDatabase(recordPayload);
+          // console.log("Successfully recorded result:", recordPayload);
+          setResult(response.data.human_feedback);
+          setIsFeedbackLoading(false);
+          setIsImageLoading(false);
+          setIsReferenceLoading(false);
+        } catch (error) {
+          console.error("Failed to record result:", error);
+          setIsFeedbackLoading(false);
+          setIsImageLoading(false);
+          setIsReferenceLoading(false);
+        }
+      }
     } else {
       try {
         let response;
@@ -394,9 +465,9 @@ function HomeChildren() {
         }
 
         const endTime = Date.now();
-        console.log(endTime - startTime)
+        // console.log(endTime - startTime)
         if (questionPreset) {
-          console.log(retrievalResult)
+          // console.log(retrievalResult)
           const recordPayload: RecordResultInput = {
             learner_id: participantId || "unidentifiable_learner",
             // ip_address: "todo",
@@ -416,7 +487,7 @@ function HomeChildren() {
 
           try {
             await recordResultToDatabase(recordPayload);
-            console.log("Successfully recorded result:", recordPayload);
+            // console.log("Successfully recorded result:", recordPayload);
           } catch (error) {
             console.error("Failed to record result:", error);
           }
@@ -454,50 +525,15 @@ function HomeChildren() {
           animate={{ opacity: 1, y: 0 }} // 最终状态
           transition={{ duration: 0.8 }} // 动画持续时间
         >
-
-        {(course_version=="b" || course_version=="d") && <motion.div
-          className="mb-4 p-4 bg-gray-100 rounded-lg shadow-md h-[30vw] w-full flex justify-center items-center overflow-hidden"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: imageSrc ? 1 : 0.5 }}
-          transition={{ duration: 0.8 }}
-        >
-          {imageSrc && !isImageLoading ? (
-            <div
-              className="flex space-x-4 overflow-x-scroll w-[70vw] p-4"
-              style={{ scrollBehavior: "smooth" }}
-            >
-              {images?.map((src, index) => (
-                <div
-                  key={index}
-                  className="flex-shrink-0 flex justify-center items-center max-w-[90%]"
-                >
-                  <DynamicImage
-                    src={`data:image/png;base64,${src}`}
-                    alt={`PDF Page ${index}`}
-                    className="w-auto h-[90%] rounded-lg shadow-md mb-4"
-                    maxWidth={200}
-                  />
-                </div>
-              ))}
-            </div>
-          ) : (
-            <motion.p>
-              {isImageLoading
-                ? `Loading images...${totalCount > -1 ? `${loadedCount}/${totalCount}` : ``}`
-                : "No images available"}
-            </motion.p>
-          )}
-        </motion.div>}
-
           {/* Feedback and Answer */}
-          <motion.div
-            className="p-4 bg-gray-100 rounded-lg shadow-md w-full"
+          {(!course_version || course_version == "a" || course_version == "c" || course_version == "d") && <motion.div
+            className="mb-4 p-4 bg-gray-100 rounded-lg shadow-md w-full"
             initial={{ opacity: 0, y: 50 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.8 }}
           >
             {/* AI Feedback */}
-            {(course_version=="a" || course_version=="c" || course_version=="d") && <motion.div className="mb-4">
+            {(!course_version || course_version == "a" || course_version == "c" || course_version == "d") && <motion.div className="mb-4">
               <h3 className="text-xl font-semibold">Feedback:</h3>
               {result && !isFeedbackLoading ? (
                 <p>{result}</p>
@@ -505,15 +541,28 @@ function HomeChildren() {
                 <p>{isFeedbackLoading ? "Loading feedback..." : "No feedback yet"}</p>
               )}
             </motion.div>}
+          </motion.div>}
 
-            {/* Reference Display */}
-            {(course_version=="b" || course_version=="d") && <motion.div className="mt-4">
+          {(!course_version || course_version == "b" || course_version == "d") && <motion.div
+            className="mb-4 p-4 bg-gray-100 rounded-lg shadow-md h-fit w-full flex flex-col overflow-hidden"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: imageSrc ? 1 : 1 }}
+            transition={{ duration: 0.8 }}
+          >
+            <motion.div className="mt-4">
               <h3 className="text-xl font-semibold">Reference:</h3>
               {reference && !isReferenceLoading ? (
-                <div>
-                  <p>{
-                    reference.display
-                  } (page {reference.page_number + 1})</p>
+                <div className="prose prose-sm">
+                  <ReactMarkdown
+                    components={{
+                      ul: (props) => <ul className="list-disc pl-5" {...props} />,
+                      ol: (props) => <ol className="list-decimal pl-5" {...props} />,
+                      li: (props) => <li className="mb-1" {...props} />,
+                    }}
+                  >
+                    {reference.display}
+                  </ReactMarkdown>
+                  <p> (page {reference.page_number + 1})</p>
                   <p>For full slide:
                     <a href={`https://docs.google.com/presentation/d/${reference.slide_google_id}/edit?usp=sharing`} target="_blank" className="text-blue-500">
                       {reference.slide_title}
@@ -524,8 +573,13 @@ function HomeChildren() {
                 <p>{isReferenceLoading ? "Loading reference..." : "No reference available"}</p>
               )}
             </motion.div>
-            }
-          </motion.div>
+            <ImageGallery
+              images={images} 
+              isImageLoading={isImageLoading} 
+              loadedCount={loadedCount} 
+              totalCount={totalCount}
+            />
+          </motion.div>}
         </motion.div>
         {/* Right Input Area */}
         <motion.div
@@ -621,7 +675,7 @@ function HomeChildren() {
 {activeTab === "input" && (
   <motion.div>
     {/* Collapsible Card for Settings */}
-    <div className="mb-4 border rounded-lg shadow-md bg-white overflow-hidden">
+    {/* <div className="mb-4 border rounded-lg shadow-md bg-white overflow-hidden">
       <div
         onClick={() => setIsSettingsOpen(!isSettingsOpen)}
         className="cursor-pointer p-2 bg-gray-100 flex justify-between items-center"
@@ -692,7 +746,7 @@ function HomeChildren() {
           </div>
         </div>
       )}
-    </div>
+    </div> */}
 
     {/* Question Section */}
     <motion.div className="mt-4">
@@ -752,34 +806,24 @@ function HomeChildren() {
       <h3 className="text-l font-semibold">Answer</h3>
       <textarea
         value={answer}
-        onChange={(e) => {
-          setAnswer(e.target.value)
-          handleSaveAnswer(e.target.value)
-        }}
+        onChange={handleAnswerChange}
         placeholder="Enter your answer"
         className="border rounded p-2 w-full resize-none min-h-32"
         rows={1}
         onInput={handleInputResize}
       />
+      <p className="text-gray-500 text-sm mt-1">{saveStatus}</p>
     </motion.div>
-
-    <motion.button
+    <button
       onClick={handleSubmit}
       className={`
-        mt-4 w-full p-2  text-white rounded-lg
-        ${isFeedbackLoading || isImageLoading || isReferenceLoading ? 'bg-gray-500' : 'bg-blue-500'}
+        mt-4 w-full p-2 text-white rounded-lg transition-transform duration-200
+        ${isFeedbackLoading || isImageLoading || isReferenceLoading ? 'bg-gray-500 cursor-not-allowed' : 'bg-blue-500 hover:bg-[#1d40ae] hover:scale-105 active:scale-95'}
       `}
-      whileHover={{
-        scale: `${isFeedbackLoading || isImageLoading || isReferenceLoading ? 1.00 : 1.05 }`,
-        backgroundColor: `${isFeedbackLoading || isImageLoading || isReferenceLoading ? '#ccc' : "#1d40ae"}`,
-        color: "#fff",
-      }}
-      whileTap={{ scale: `${isFeedbackLoading || isImageLoading || isReferenceLoading ? 1.00 : 0.95 }`, }}
-      transition={{ duration: 0.2 }}
-      // disabled={isFeedbackLoading || isImageLoading || isReferenceLoading}
+      disabled={isFeedbackLoading || isImageLoading || isReferenceLoading}
     >
       {isFeedbackLoading || isImageLoading || isReferenceLoading ? 'Evaluating ...' : 'Submit'}
-    </motion.button>
+    </button>
   </motion.div>
 )}
 

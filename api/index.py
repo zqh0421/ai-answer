@@ -74,11 +74,12 @@ async def embed(embedModel: EmbedModel, settings: Annotated[Settings, Depends(ge
     ).first()
 
     if question and question.embed_result:
-        print("yes")
+        # print("yes")
         result = question.embed_result
-        print(result)
+        # print(result)
         return result
     else:
+        print("No question id.")
         result = embedController(embedModel, settings, db)
 
         # Serialize the result into a JSON string
@@ -563,36 +564,54 @@ async def upload_file(settings: Annotated[Settings, Depends(get_settings)], file
     except Exception as e:
         print("error")
         raise HTTPException(status_code=404, detail=str(e))
-
 @app.post('/api/record_result')
 def record_result(result: models.RecordResultModel, db: Session = Depends(get_db)):
     try:
-        # Create a new RecordResultModel instance
-        db_result = schema.RecordResult(
-            learner_id=result.learner_id,
-            question_id=result.question_id,
-            answer=result.answer,
-            preferred_info_type=result.preferred_info_type,
-            prompt_engineering_method=result.prompt_engineering_method,
-            feedback_framework=result.feedback_framework,
-            feedback=result.feedback,
-            # ip_address=result.ip_address,
-            reference_slide_id=result.reference_slide_id,
-            reference_slide_content=result.reference_slide_content,
-            reference_slide_page_number=result.reference_slide_page_number,
-            slide_retrieval_range=result.slide_retrieval_range,
+        # 创建新的 RecordResult 实例
+        record_data = {
+            "learner_id": result.learner_id,
+            "question_id": result.question_id,
+            "answer": result.answer,
+            "preferred_info_type": result.preferred_info_type,
+            "prompt_engineering_method": result.prompt_engineering_method,
+            "feedback_framework": result.feedback_framework,
+            "feedback": result.feedback,
+            "system_total_response_time": result.system_total_response_time,
+            "submission_time": result.submission_time,
+        }
 
-            system_total_response_time=result.system_total_response_time,
-            submission_time=result.submission_time,
-        )
+        # 只有 reference_slide_id 非空时才加入相关字段
+        if result.reference_slide_id:
+            record_data.update({
+                "reference_slide_id": result.reference_slide_id,
+                "reference_slide_content": result.reference_slide_content,
+                "reference_slide_page_number": result.reference_slide_page_number,
+                "slide_retrieval_range": result.slide_retrieval_range,
+            })
 
-        # Add the new result to the database session and commit
+        # 创建实例
+        db_result = schema.RecordResult(**record_data)
+
+        # 添加到数据库
         db.add(db_result)
         db.commit()
-        # db.refresh(db_result)
 
         return db_result
 
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=f"Error recording result: {str(e)}")
+
+
+@app.get("/api/get_human_feedback/{question_id}")
+def get_human_feedback(question_id: str, db: Session = Depends(get_db)):
+    try:
+        question = db.query(schema.Question).filter(schema.Question.question_id == question_id).first()
+        
+        if not question or not question.human_feedback:
+            raise HTTPException(status_code=404, detail="No human feedback found for this question_id")
+        
+        return {"human_feedback": question.human_feedback}
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
