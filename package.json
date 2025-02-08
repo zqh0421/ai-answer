@@ -9,7 +9,7 @@
     "dev": "concurrently \"pnpm run next-dev\" \"pnpm run fastapi-dev\"",
     "build": "next build",
     "fastapi-start": "python3 -m uvicorn api.index:app",
-    "fastapi-gstart": "gunicorn-k uvicorn.workers.UvicornWorker -t 120 api.index:app",
+    "fastapi-gstart": "gunicorn -k uvicorn.workers.UvicornWorker -t 120 api.index:app",
     "start": "concurrently \"next start\" \"pnpm fastapi-gstart\"",
     "lint": "next lint"
   },
