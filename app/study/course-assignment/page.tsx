@@ -7,8 +7,8 @@ const CourseAssignment: React.FC = () => {
     const urls: string[] = [
       "https://proton.oli.cmu.edu/sections/join/r5jc6", // Version A
       "https://proton.oli.cmu.edu/sections/join/r5jc6", // Version A
-      "https://proton.oli.cmu.edu/sections/join/e5zdv", // Version B
-      "https://proton.oli.cmu.edu/sections/join/pyr3x", // Version C
+      // "https://proton.oli.cmu.edu/sections/join/e5zdv", // Version B
+      // "https://proton.oli.cmu.edu/sections/join/pyr3x", // Version C
       // "https://proton.oli.cmu.edu/sections/join/y0s5y", // Version D
     ];
 
