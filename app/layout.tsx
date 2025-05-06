@@ -12,8 +12,8 @@ const lato = Lato({
 });
 
 export const metadata: Metadata = {
-  title: 'MuFIN: Information Retrieval',
-  description: 'MuFIN: Information Retrieval by Chloe Qianhui (qianhuiz@cs.cmu.edu)',
+  title: 'SlideItRight Feedback System',
+  description: 'SlideItRight Feedback System for  by Chloe Qianhui (qianhuiz@cs.cmu.edu)',
 };
 
 export default function RootLayout({

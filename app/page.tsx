@@ -17,12 +17,14 @@ import { debounce } from 'lodash';
 
 import { useSelector, useDispatch } from 'react-redux';
 import { RootState, AppDispatch } from '@/app/store/store';
-import { saveAnswer } from '@/app/slices/userSlice';
+import { saveAnswer, saveDraftAnswer, saveDraftQuestion } from '@/app/slices/userSlice';
 import ParticipantModal from '@/app/components/ParticipantModal';
 
 import ReactMarkdown from 'react-markdown';
 
 import ImageGallery from "@/app/components/ImageGallery"
+
+import ContentEditor from "@/app/components/ContentEditor";
 
 interface Course {
   course_id: string;
@@ -56,9 +58,9 @@ function HomeChildren() {
   // const base_wrong_answer = ""
   const [message, setMessage] = useState("Loading...");
   const [isDrawerOpen, setIsDrawerOpen] = useState(true); // Drawer state
-  const [question, setQuestion] = useState<QuestionContent[]>([
-    { type: "text", content: base_question },
-  ]);
+  // const [question, setQuestion] = useState<QuestionContent[]>([
+  //   { type: "text", content: base_question },
+  // ]);
   const [result, setResult] = useState(""); // For Result Display
   const [reference, setReference] = useState<Reference>(); // For Reference Display
   const [imageSrc, setImageSrc] = useState<string | null>(null);
@@ -100,12 +102,22 @@ function HomeChildren() {
   });
   const [isFullScreen, setIsFullScreen] = useState(false);
   const [questionLoading, setQuestionLoading] = useState(false);
+  const draftAnswer = useSelector((state: RootState) => state.user.draftAnswer);
+  const draftQuestion = useSelector((state: RootState) => state.user.draftQuestion);
 
   const answers = useSelector((state: RootState) => state.user.answers);
   const participantId = useSelector((state: RootState) => state.user.participantId);
-  const [answer, setAnswer] = useState(answers[question_id || ''] || ''); // For Answer Input
+  // const [answer, setAnswer] = useState(answers[question_id || ''] || ''); // For Answer Input
+  const [answer, setAnswer] = useState(
+    question_id ? (answers[question_id] || '') : (draftAnswer || '')
+  );
+  const [question, setQuestion] = useState<QuestionContent[]>(
+    question_id ? [{ type: "text", content: base_question }] : 
+    (draftQuestion ? [{ type: "text", content: draftQuestion }] : [{ type: "text", content: base_question }])
+  );
   const [saveStatus, setSaveStatus] = useState("Saved"); // Save status indicator
   const dispatch = useDispatch<AppDispatch>();
+
 
   // const handleSaveAnswer = (temp_answer: string) => {
   //   if (question_id) {
@@ -118,8 +130,10 @@ function HomeChildren() {
     debounce((temp_answer: string) => {
       if (question_id) {
         dispatch(saveAnswer({ questionId: question_id, answer: temp_answer }));
-        setSaveStatus("Saved");
+      } else {
+        dispatch(saveDraftAnswer(temp_answer));
       }
+      setSaveStatus("Saved");
     }, 500),
     [dispatch, question_id]
   );
@@ -149,6 +163,7 @@ function HomeChildren() {
         })
         .catch((err) => {
           console.error("Error fetching question:", err);
+          window.location.href = "/";
         })
         .finally(() => {
           setQuestionLoading(false);
@@ -512,7 +527,7 @@ function HomeChildren() {
 
   return (
     <main className="flex flex-col items-center justify-between">
-      <ParticipantModal isOpen={!participantId} />
+      <ParticipantModal isOpen={!participantId && !!course_version} />
 
       {/* Drawer for Testing Area */}
       <TestDrawer isOpen={isDrawerOpen} closeDrawer={closeDrawer} message={message} />
@@ -589,7 +604,7 @@ function HomeChildren() {
           transition={{ duration: 0.5 }}
         >
           {/* Tabs Header */}
-          {/* <div className="w-full flex justify-center mb-4">
+          {!question_id && (<div className="w-full flex justify-center mb-4">
             <button
               className={`px-4 py-2 border-b-2 ${activeTab === "selection" ? "border-blue-500" : "border-transparent"}`}
               onClick={() => setActiveTab("selection")}
@@ -602,7 +617,7 @@ function HomeChildren() {
             >
               Retrieval
             </button>
-          </div> */}
+          </div>)}
 
           {/* Tab Content */}
           <motion.div>
@@ -790,13 +805,23 @@ function HomeChildren() {
           </div>
         )
       ) : (
-        <textarea
-          value={question[0].content}
-          onChange={(e) => setQuestion([{ type: "text", content: e.target.value }])}
-          placeholder="Enter your question"
-          className="border rounded p-2 w-full resize-none min-h-32"
-          rows={1}
-          onInput={handleInputResize}
+        // <textarea
+        //   value={question[0].content}
+        //   onChange={(e) => setQuestion([{ type: "text", content: e.target.value }])}
+        //   placeholder="Enter your question"
+        //   className="border rounded p-2 w-full resize-none min-h-32"
+        //   rows={1}
+        //   onInput={handleInputResize}
+        // />
+        <ContentEditor
+          contents={question}
+          setContents={(newContent) => {
+            setQuestion(newContent);
+            if (!question_id) {
+              const textContent = newContent.find(item => item.type === 'text')?.content || '';
+              dispatch(saveDraftQuestion(textContent));
+            }
+          }}
         />
       )}
     </motion.div>

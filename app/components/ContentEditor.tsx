@@ -48,7 +48,7 @@ const ContentEditor: React.FC<ContentEditorProps> = ({ contents, setContents }) 
 
   return (
     <div>
-      <h3 className="text-lg font-bold mb-4">Content Editor</h3>
+      {/* <h3 className="text-lg font-bold mb-4">Content Editor</h3> */}
       {contents.map((content, index) => (
         <div key={index} className="mb-4 p-4 border rounded-md bg-gray-50">
           {content.type === "text" ? (

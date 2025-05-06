@@ -3,11 +3,15 @@ import { createSlice, PayloadAction } from '@reduxjs/toolkit';
 interface UserState {
   participantId: string | null; // 用户唯一标识
   answers: Record<string, string>; // question_id -> answer
+  draftAnswer: string | null; // 无 question_id 时的 answer
+  draftQuestion: string | null; // 无 question_id 时的 question
 }
 
 const initialState: UserState = {
   participantId: null,
   answers: {},
+  draftAnswer: null,
+  draftQuestion: null,
 };
 
 const userSlice = createSlice({
@@ -21,8 +25,14 @@ const userSlice = createSlice({
       const { questionId, answer } = action.payload;
       state.answers[questionId] = answer;
     },
+    saveDraftAnswer: (state, action: PayloadAction<string>) => {
+      state.draftAnswer = action.payload;
+    },
+    saveDraftQuestion: (state, action: PayloadAction<string>) => {
+      state.draftQuestion = action.payload;
+    },
   },
 });
 
-export const { setParticipantId, saveAnswer } = userSlice.actions;
+export const { setParticipantId, saveAnswer, saveDraftAnswer, saveDraftQuestion } = userSlice.actions;
 export default userSlice.reducer;

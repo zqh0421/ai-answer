@@ -152,7 +152,7 @@ const QuestionOverview = () => {
                     onClick={() => window.location.href = `/?question_id=${question.question_id}`}
                     className="py-2 px-4 text-white bg-green-600 hover:bg-green-700 rounded-md"
                   >
-                    Go to MuFIN
+                    Go to SlideItRight
                   </button>
                   <button
                     onClick={() => handleDeleteQuestion(question.question_id)}
