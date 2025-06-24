@@ -3,28 +3,20 @@
 import { useState, useEffect, Suspense, useCallback } from "react";
 import { motion } from "framer-motion";
 import axios from "axios";
-import TestDrawer from './components/TestDrawer';
-// import { Swiper, SwiperSlide } from 'swiper/react';
-// import { Navigation, Pagination, Scrollbar, A11y } from 'swiper/modules';
-// import 'swiper/css';
-// import 'swiper/css/navigation';
-// import 'swiper/css/pagination';
-// import 'swiper/css/scrollbar';
 import { useSearchParams } from 'next/navigation';
-import { Question, QuestionContent } from "./manage/question/page";
-import DynamicImage from "./components/DynamicImage";
 import { debounce } from 'lodash';
-
 import { useSelector, useDispatch } from 'react-redux';
+
 import { RootState, AppDispatch } from '@/app/store/store';
 import { saveAnswer, saveDraftAnswer, saveDraftQuestion } from '@/app/slices/userSlice';
+import { Question, QuestionContent } from "./manage/question/page";
+
+import TestDrawer from '@/app/components/TestDrawer';
+import DynamicImage from "@/app/components/DynamicImage";
 import ParticipantModal from '@/app/components/ParticipantModal';
-
-import ReactMarkdown from 'react-markdown';
-
-import ImageGallery from "@/app/components/ImageGallery"
-
 import ContentEditor from "@/app/components/ContentEditor";
+import FeedbackArea from "@/app/components/FeedbackArea";
+import ReferenceArea from "@/app/components/ReferenceArea";
 
 interface Course {
   course_id: string;
@@ -44,7 +36,7 @@ export interface Slide {
   slide_title: string;
 }
 
-interface Reference {
+export interface Reference {
   text: string;
   image_text: string;
   page_number: number;
@@ -54,7 +46,8 @@ interface Reference {
 }
 
 function HomeChildren() {
-  const base_question = "What are pitfalls of E-Learning Design Principles & Methods about?"
+  const base_question = ""
+  // const base_question = "What are pitfalls of E-Learning Design Principles & Methods about?"
   // const base_wrong_answer = ""
   const [message, setMessage] = useState("Loading...");
   const [isDrawerOpen, setIsDrawerOpen] = useState(true); // Drawer state
@@ -63,7 +56,7 @@ function HomeChildren() {
   // ]);
   const [result, setResult] = useState(""); // For Result Display
   const [reference, setReference] = useState<Reference>(); // For Reference Display
-  const [imageSrc, setImageSrc] = useState<string | null>(null);
+  // const [imageSrc, setImageSrc] = useState<string | null>(null);
   const [images, setImages] = useState<string[] | null>(null);
   const [totalCount, setTotalCount] = useState(-1);
   const [loadedCount, setLoadedCount] = useState(-1);
@@ -83,7 +76,7 @@ function HomeChildren() {
   const [courses, setCourses] = useState<Course[]>([]);  // Courses List View
   const [module, setModule] = useState<string[]>([]); // Multi-select modules
   const [slide, setSlide] = useState<string[]>([]);   // Multi-select slides
-  
+
   const [availableModules, setAvailableModules] = useState<Module[]>([]);  // Modules for the selected course
   const [availableSlides, setAvailableSlides] = useState<Slide[]>([]);    // Slides for the selected modules
 
@@ -112,8 +105,9 @@ function HomeChildren() {
     question_id ? (answers[question_id] || '') : (draftAnswer || '')
   );
   const [question, setQuestion] = useState<QuestionContent[]>(
-    question_id ? [{ type: "text", content: base_question }] : 
-    (draftQuestion ? [{ type: "text", content: draftQuestion }] : [{ type: "text", content: base_question }])
+    draftQuestion
+      ? [{ type: "text", content: draftQuestion }]
+      : [{ type: "text", content: base_question }]
   );
   const [saveStatus, setSaveStatus] = useState("Saved"); // Save status indicator
   const dispatch = useDispatch<AppDispatch>();
@@ -186,15 +180,15 @@ function HomeChildren() {
   useEffect(() => {
     if (course) {
       axios
-      .get(`/api/courses/by_id/${course}/modules`)
-      .then((response) => {
-        setAvailableModules(response.data.modules);
-        setModule(response.data.modules.map((mod: Module) => mod.module_id))
-      })
-      .catch((error) => {
-        console.error("Error fetching the courses:", error);
-        setMessage("Failed to load courses.");
-      });
+        .get(`/api/courses/by_id/${course}/modules`)
+        .then((response) => {
+          setAvailableModules(response.data.modules);
+          setModule(response.data.modules.map((mod: Module) => mod.module_id))
+        })
+        .catch((error) => {
+          console.error("Error fetching the courses:", error);
+          setMessage("Failed to load courses.");
+        });
     }
   }, [course])
 
@@ -234,7 +228,7 @@ function HomeChildren() {
       );
       // const imageBlob = response.data;
       // const imageUrl = URL.createObjectURL(imageBlob);
-      setImageSrc(response.data.img_base64);
+      // setImageSrc(response.data.img_base64);
       return response.data.img_base64
     } catch (error) {
       console.error('Error fetching image:', error);
@@ -272,12 +266,14 @@ function HomeChildren() {
       // console.log(question)
       // console.log(slide)
       // console.log(preferredInfoType)
-
+      console.log(questionPreset.content || question)
+      console.log(questionPreset.content)
+      console.log(question)
       const response = await axios.post(
         "/api/embed",
         {
           question_id: question_id || null,
-          question: questionPreset.content || question, // TODO: revise for content editor
+          question: questionPreset?.content?.length ? questionPreset.content : question, // TODO: revise for content editor
           slideIds: slide,
           preferredInfoType: preferredInfoType
         }
@@ -292,7 +288,7 @@ function HomeChildren() {
       setReference(res[0]);
       // console.log("REF")
       // console.log(res[0])
-      
+
       if (preferredInfoType == "vision" && res[0].image_text) {
         setReference({
           ...res[0],
@@ -343,7 +339,7 @@ function HomeChildren() {
       // Set all fetched images to the state
       setImages(temp);
       setIsImageLoading(false);
-      
+
       // console.log("images" + temp)
       setIsReferenceLoading(false);
 
@@ -396,10 +392,10 @@ function HomeChildren() {
   function isValidInput(input: string): boolean {
     // Regular expression to check if the string contains at least one alphanumeric character
     const alphanumericRegex = /[a-zA-Z0-9]/;
-  
+
     // Check if the input is not empty and matches the regex
     return input.trim() !== "" && alphanumericRegex.test(input);
-  }  
+  }
 
   const handleSubmit = async () => {
     if (!question && !questionPreset) return;
@@ -536,65 +532,29 @@ function HomeChildren() {
         {/* Left Feedback Area */}
         <motion.div
           className="col-span-7 flex flex-col w-full"
-          initial={{ opacity: 0, y: 50 }} // 初始位置
-          animate={{ opacity: 1, y: 0 }} // 最终状态
-          transition={{ duration: 0.8 }} // 动画持续时间
+          initial={{ opacity: 0, y: 50 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.8 }}
         >
           {/* Feedback and Answer */}
-          {(!course_version || course_version == "a" || course_version == "c" || course_version == "d") && <motion.div
-            className="mb-4 p-4 bg-gray-100 rounded-lg shadow-md w-full"
-            initial={{ opacity: 0, y: 50 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.8 }}
-          >
-            {/* AI Feedback */}
-            {(!course_version || course_version == "a" || course_version == "c" || course_version == "d") && <motion.div className="mb-4">
-              <h3 className="text-xl font-semibold">Feedback:</h3>
-              {result && !isFeedbackLoading ? (
-                <p>{result}</p>
-              ) : (
-                <p>{isFeedbackLoading ? "Loading feedback..." : "No feedback yet"}</p>
-              )}
-            </motion.div>}
-          </motion.div>}
+          {(!course_version || course_version == "a" || course_version == "c" || course_version == "d") &&
+            <FeedbackArea
+              result={result}
+              isFeedbackLoading={isFeedbackLoading}
+            />
+          }
 
-          {(!course_version || course_version == "b" || course_version == "d") && <motion.div
-            className="mb-4 p-4 bg-gray-100 rounded-lg shadow-md h-fit w-full flex flex-col overflow-hidden"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: imageSrc ? 1 : 1 }}
-            transition={{ duration: 0.8 }}
-          >
-            <motion.div className="mt-4">
-              <h3 className="text-xl font-semibold">Reference:</h3>
-              {reference && !isReferenceLoading ? (
-                <div className="prose prose-sm">
-                  <ReactMarkdown
-                    components={{
-                      ul: (props) => <ul className="list-disc pl-5" {...props} />,
-                      ol: (props) => <ol className="list-decimal pl-5" {...props} />,
-                      li: (props) => <li className="mb-1" {...props} />,
-                    }}
-                  >
-                    {reference.display}
-                  </ReactMarkdown>
-                  <p> (page {reference.page_number + 1})</p>
-                  <p>For full slide:
-                    <a href={`https://docs.google.com/presentation/d/${reference.slide_google_id}/edit?usp=sharing`} target="_blank" className="text-blue-500">
-                      {reference.slide_title}
-                    </a>
-                  </p>
-                </div>
-              ) : (
-                <p>{isReferenceLoading ? "Loading reference..." : "No reference available"}</p>
-              )}
-            </motion.div>
-            <ImageGallery
-              images={images} 
-              isImageLoading={isImageLoading} 
-              loadedCount={loadedCount} 
+          {(!course_version || course_version == "b" || course_version == "d") &&
+            <ReferenceArea
+              reference={reference}
+              isReferenceLoading={isReferenceLoading}
+              images={images}
+              isImageLoading={isImageLoading}
+              loadedCount={loadedCount}
               totalCount={totalCount}
             />
-          </motion.div>}
+          }
+
         </motion.div>
         {/* Right Input Area */}
         <motion.div
@@ -687,10 +647,10 @@ function HomeChildren() {
               </motion.div>
             )}
 
-{activeTab === "input" && (
-  <motion.div>
-    {/* Collapsible Card for Settings */}
-    {/* <div className="mb-4 border rounded-lg shadow-md bg-white overflow-hidden">
+            {activeTab === "input" && (
+              <motion.div>
+                {/* Collapsible Card for Settings */}
+                {/* <div className="mb-4 border rounded-lg shadow-md bg-white overflow-hidden">
       <div
         onClick={() => setIsSettingsOpen(!isSettingsOpen)}
         className="cursor-pointer p-2 bg-gray-100 flex justify-between items-center"
@@ -763,95 +723,86 @@ function HomeChildren() {
       )}
     </div> */}
 
-    {/* Question Section */}
-    <motion.div className="mt-4">
-      <div className="flex flex-row justify-between">
-        <h3 className="text-l font-semibold">Question</h3>
-        {!questionLoading && questionPreset?.content?.length > 0 ? (
-          <button
-            onClick={() => setIsFullScreen(true)}
-            className="mb-4 px-2 text-white bg-green-600 hover:bg-green-700 rounded-sm"
-          >
-            View
-          </button>
-        ) : null}
-      </div>
-      {questionPreset?.content?.length > 0 ? (
-        !isFullScreen ? (
-          <div>
-            <p className="text-gray-500 text-sm">Preloaded question available.</p>
-          </div>
-        ) : (
-          <div className="fixed inset-0 z-50 bg-white p-6 overflow-auto">
-            <button
-              onClick={() => setIsFullScreen(false)}
-              className="py-2 px-4 text-white bg-red-600 hover:bg-red-700 rounded-md absolute top-4 right-4"
-            >
-              Close Full-Screen
-            </button>
-            {questionPreset.content.map((item, index) => (
-              <div key={index} className="mb-4">
-                {item.type === "text" ? (
-                  <p className="text-lg">{item.content}</p>
-                ) : (
-                  <DynamicImage
-                    src={item.content}
-                    alt={`Content ${index}`}
-                    className="max-w-full h-auto rounded-lg"
-                  />
-                )}
-              </div>
-            ))}
-          </div>
-        )
-      ) : (
-        // <textarea
-        //   value={question[0].content}
-        //   onChange={(e) => setQuestion([{ type: "text", content: e.target.value }])}
-        //   placeholder="Enter your question"
-        //   className="border rounded p-2 w-full resize-none min-h-32"
-        //   rows={1}
-        //   onInput={handleInputResize}
-        // />
-        <ContentEditor
-          contents={question}
-          setContents={(newContent) => {
-            setQuestion(newContent);
-            if (!question_id) {
-              const textContent = newContent.find(item => item.type === 'text')?.content || '';
-              dispatch(saveDraftQuestion(textContent));
-            }
-          }}
-        />
-      )}
-    </motion.div>
+                {/* Question Section */}
+                <motion.div className="mt-4">
+                  <div className="flex flex-row justify-between">
+                    <h3 className="text-l font-semibold">Question</h3>
+                    {!questionLoading && questionPreset?.content?.length > 0 ? (
+                      <button
+                        onClick={() => setIsFullScreen(true)}
+                        className="mb-4 px-2 text-white bg-green-600 hover:bg-green-700 rounded-sm"
+                      >
+                        View
+                      </button>
+                    ) : null}
+                  </div>
+                  {questionPreset?.content?.length > 0 ? (
+                    !isFullScreen ? (
+                      <div>
+                        <p className="text-gray-500 text-sm">Preloaded question available.</p>
+                      </div>
+                    ) : (
+                      <div className="fixed inset-0 z-50 bg-white p-6 overflow-auto">
+                        <button
+                          onClick={() => setIsFullScreen(false)}
+                          className="py-2 px-4 text-white bg-red-600 hover:bg-red-700 rounded-md absolute top-4 right-4"
+                        >
+                          Close Full-Screen
+                        </button>
+                        {questionPreset.content.map((item, index) => (
+                          <div key={index} className="mb-4">
+                            {item.type === "text" ? (
+                              <p className="text-lg">{item.content}</p>
+                            ) : (
+                              <DynamicImage
+                                src={item.content}
+                                alt={`Content ${index}`}
+                                className="max-w-full h-auto rounded-lg"
+                              />
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )
+                  ) : (
+                    <ContentEditor
+                      contents={question}
+                      setContents={(newContent) => {
+                        setQuestion(newContent);
+                        if (!question_id) {
+                          const textContent = newContent.find(item => item.type === 'text')?.content || '';
+                          dispatch(saveDraftQuestion(textContent));
+                        }
+                      }}
+                    />
+                  )}
+                </motion.div>
 
-    {/* Answer Section */}
-    <motion.div className="mt-4">
-      <h3 className="text-l font-semibold">Answer</h3>
-      <textarea
-        value={answer}
-        onChange={handleAnswerChange}
-        placeholder="Enter your answer"
-        className="border rounded p-2 w-full resize-none min-h-32"
-        rows={1}
-        onInput={handleInputResize}
-      />
-      <p className="text-gray-500 text-sm mt-1">{saveStatus}</p>
-    </motion.div>
-    <button
-      onClick={handleSubmit}
-      className={`
+                {/* Answer Section */}
+                <motion.div className="mt-4">
+                  <h3 className="text-l font-semibold">Answer</h3>
+                  <textarea
+                    value={answer}
+                    onChange={handleAnswerChange}
+                    placeholder="Enter your answer"
+                    className="border rounded p-2 w-full resize-none min-h-32"
+                    rows={1}
+                    onInput={handleInputResize}
+                  />
+                  <p className="text-gray-500 text-sm mt-1">{saveStatus}</p>
+                </motion.div>
+                <button
+                  onClick={handleSubmit}
+                  className={`
         mt-4 w-full p-2 text-white rounded-lg transition-transform duration-200
         ${isFeedbackLoading || isImageLoading || isReferenceLoading ? 'bg-gray-500 cursor-not-allowed' : 'bg-blue-500 hover:bg-[#1d40ae] hover:scale-105 active:scale-95'}
       `}
-      disabled={isFeedbackLoading || isImageLoading || isReferenceLoading}
-    >
-      {isFeedbackLoading || isImageLoading || isReferenceLoading ? 'Evaluating ...' : 'Submit'}
-    </button>
-  </motion.div>
-)}
-
+                  disabled={isFeedbackLoading || isImageLoading || isReferenceLoading}
+                >
+                  {isFeedbackLoading || isImageLoading || isReferenceLoading ? 'Evaluating ...' : 'Submit'}
+                </button>
+              </motion.div>
+            )}
           </motion.div>
         </motion.div>
       </div>

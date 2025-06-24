@@ -23,6 +23,9 @@ def embedController(embedModel: EmbedModel, settings: Annotated[Settings, Depend
     init_time = time.time()
     # Step 1: Create the embedding for the input question
     q_vector = create_embedding(embedModel.question, settings)
+    print("Controller")
+    print(embedModel)
+    print(embedModel.question)
     
     # Step 2: Query the `page` table to get documents with matching slide_ids
     docs = db.query(schema.Page).filter(cast(schema.Page.slide_id, UUID).in_(embedModel.slideIds)).all()

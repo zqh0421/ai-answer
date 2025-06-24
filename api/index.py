@@ -68,36 +68,40 @@ def serialize_with_uuid(obj):
 
 @app.post("/api/embed")
 async def embed(embedModel: EmbedModel, settings: Annotated[Settings, Depends(get_settings)], db: Session = Depends(get_db)):
-    question = db.query(schema.Question).filter(
-        schema.Question.question_id == embedModel.question_id,
-        schema.Question.embed_result.isnot(None),
-    ).first()
+    result = None
 
-    if question and question.embed_result:
-        # print("yes")
-        result = question.embed_result
-        # print(result)
-        return result
-    else:
-        print("No question id.")
-        result = embedController(embedModel, settings, db)
+    if embedModel.question_id:
+        question = db.query(schema.Question).filter(
+            schema.Question.question_id == embedModel.question_id,
+            schema.Question.embed_result.isnot(None),
+        ).first()
 
-        # Serialize the result into a JSON string
-        escaped_json = json.dumps(result, default=serialize_with_uuid)
+        if question and question.embed_result:
+            result = json.loads(question.embed_result)
+            return result
+        else:
+            print("No cached embed result found, computing new embedding.")
 
-        # Save the escaped_json to the database for the specified question_id
+    # 即使 question_id 不存在或为空，也允许继续
+    result = embedController(embedModel, settings, db)
+
+    # 如果传入了 question_id 且数据库有记录，更新 embed_result
+    if embedModel.question_id:
         question_to_update = db.query(schema.Question).filter(
             schema.Question.question_id == embedModel.question_id
         ).first()
 
         if question_to_update:
+            escaped_json = json.dumps(result, default=serialize_with_uuid)
             question_to_update.embed_result = escaped_json
             db.add(question_to_update)
             db.commit()
             print("Embed result saved to database.")
         else:
-            print("Question not found in database. Unable to save embed result.")
-        return result
+            print("Question not found in database. Embed result not saved.")
+
+    return result
+
 
 @app.post("/api/pdf-to-image")
 async def convert(convertModel: ConvertModel, db: Session = Depends(get_db)):
