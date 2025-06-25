@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
 import { ZoomIn, X } from "lucide-react";
-import DynamicImage from "./DynamicImage";
+import DynamicImage from "@/app/components/DynamicImage";
 
 interface ImageGalleryProps {
   images: string[] | null;

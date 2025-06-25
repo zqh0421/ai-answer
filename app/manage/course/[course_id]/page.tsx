@@ -6,36 +6,7 @@ import { AxiosError } from 'axios';
 import { usePathname } from 'next/navigation';
 import { Disclosure, DisclosureButton, DisclosurePanel } from '@headlessui/react';
 import DynamicImage from '@/app/components/DynamicImage';
-
-interface Course {
-  course_id: string;
-  course_title: string;
-  course_description?: string;
-  created_at?: string;
-}
-
-interface Module {
-  module_id: string;
-  module_title: string;
-}
-
-interface Slide {
-  id: string;
-  slide_google_id: string;
-  slide_title: string;
-  slide_url: string;
-  slide_cover: string;
-  published: boolean; // New field to track publish status
-  publishing?: boolean; // Temporary state for ongoing publishing
-  gotVision: boolean;
-  gettingVision?: boolean;
-}
-
-interface modulesNslides {
-  module_id: string;
-  module_title: string;
-  slides: Slide[];
-}
+import { Course, Module, Slide, modulesNslides } from "@/app/types";
 
 const CoursePage = () => {
   const pathname = usePathname();

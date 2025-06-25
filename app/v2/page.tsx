@@ -10,7 +10,6 @@ import { useSelector, useDispatch } from 'react-redux';
 import { RootState, AppDispatch } from '@/app/store/store';
 import { saveAnswer, saveDraftAnswer, saveDraftQuestion } from '@/app/slices/userSlice';
 import { Question, QuestionContent } from "@/app/manage/question/page";
-import { Reference, Course, Module, Slide } from "@/app/types";
 
 import TestDrawer from '@/app/components/TestDrawer';
 import DynamicImage from "@/app/components/DynamicImage";
@@ -18,6 +17,7 @@ import ParticipantModal from '@/app/components/ParticipantModal';
 import ContentEditor from "@/app/components/ContentEditor";
 import FeedbackArea from "@/app/components/FeedbackArea";
 import ReferenceArea from "@/app/components/ReferenceArea";
+import { Reference, Course, Module, Slide } from "@/app/types";
 
 function HomeChildren() {
   const base_question = ""
@@ -57,7 +57,7 @@ function HomeChildren() {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [preferredInfoType, setPreferredInfoType] = useState<string>("vision");
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
+  // const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const searchParams = useSearchParams();
   const question_id = searchParams.get('question_id');
   const course_version = searchParams.get('version')

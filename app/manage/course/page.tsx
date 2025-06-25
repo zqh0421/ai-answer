@@ -3,13 +3,7 @@ import axios from "axios";
 import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { useSession } from "next-auth/react"
-
-interface Course {
-  course_id: string;
-  course_title: string;
-  course_description?: string;
-  created_at?: string;
-}
+import { Course } from "@/app/types";
 
 const CourseOverview = () => {
   const [courses, setCourses] = useState<Course[]>([]);

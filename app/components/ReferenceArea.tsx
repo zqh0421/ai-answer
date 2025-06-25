@@ -1,6 +1,6 @@
 import ReactMarkdown from 'react-markdown';
-import ImageGallery from './ImageGallery';
-import { Reference } from '../page';
+import ImageGallery from '@/app/components/ImageGallery';
+import { Reference } from '@/app/types';
 
 interface ReferenceAreaProps {
   reference: Reference | undefined;

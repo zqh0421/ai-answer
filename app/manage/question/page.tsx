@@ -3,7 +3,7 @@ import axios from "axios";
 import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { useSession } from "next-auth/react";
-import { Slide } from "@/app/page";
+import { Slide } from "@/app/types";
 import ContentEditor from "@/app/components/ContentEditor";
 import DynamicImage from "@/app/components/DynamicImage";
 

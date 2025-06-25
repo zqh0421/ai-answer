@@ -1,7 +1,7 @@
 import { createSlice, PayloadAction } from '@reduxjs/toolkit';
 
 interface UserState {
-  participantId: string | null; // 用户唯一标识
+  participantId: string | null;
   answers: Record<string, string>; // question_id -> answer
   draftAnswer: string | null; // 无 question_id 时的 answer
   draftQuestion: string | null; // 无 question_id 时的 question

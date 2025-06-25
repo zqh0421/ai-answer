@@ -1,8 +1,8 @@
-'use client'; // 页面本身需要使用客户端组件
+'use client';
 
 import { useSelector, useDispatch } from 'react-redux';
 import { RootState, AppDispatch } from '@/app/store/store';
-import { increment, decrement, reset, setCounter } from '../slices/couterSlice';
+import { increment, decrement, reset, setCounter } from '@/app/slices/couterSlice';
 
 export default function CounterPage() {
   const count = useSelector((state: RootState) => state.counter.value);
