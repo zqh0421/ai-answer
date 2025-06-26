@@ -11,9 +11,6 @@ class FeedbackRequestModel(BaseModel):
     question: List[dict]
     answer: str
 
-class FeedbackRequestRagModel(BaseModel):
-    promptEngineering: str
-    feedbackFramework: str
-    question: List[dict]
-    answer: str
+class FeedbackRequestRagModel(FeedbackRequestModel):
     slide_text_arr: List[str]
+    isStructured: bool

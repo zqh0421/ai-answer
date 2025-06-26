@@ -31,6 +31,7 @@ from .controllers.vision import setVision
 import re
 import time
 import json
+from .controllers.format import process_feedback_to_json
 
 app = FastAPI()
 
@@ -222,9 +223,23 @@ async def generate_feedback_rag(request: FeedbackRequestRagModel, settings: Anno
         feedback = "Generate Feedback Error: Invalid Request."
         print("Generate Feedback Error: Invalid Request.")
 
-    return {
-        "feedback": feedback
-    }
+    if request.isStructured:
+        structured_feedback = process_feedback_to_json(
+            question=request.question,
+            answer=request.answer,
+            slide_text_arr=request.slide_text_arr, 
+            feedback_text=feedback,
+            settings=settings
+        )
+        return structured_feedback
+        # return {
+        #     "feedback": feedback
+        # }
+    else:
+        return {
+            "feedback": feedback
+        }
+
 
 @app.get("/api/courses/createdby/{creater_email}")
 def get_courses_created_by(creater_email: str, db: Session = Depends(get_db)):

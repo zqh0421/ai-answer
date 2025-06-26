@@ -10,7 +10,7 @@ import { useSelector, useDispatch } from 'react-redux';
 import { RootState, AppDispatch } from '@/app/store/store';
 import { saveAnswer, saveDraftAnswer, saveDraftQuestion } from '@/app/slices/userSlice';
 import { Question, QuestionContent } from "@/app/manage/question/page";
-import { Reference, Course, Module, Slide } from "@/app/types";
+import { Reference, Course, Module, Slide, RecordResultInput } from "@/app/types";
 
 import TestDrawer from '@/app/components/TestDrawer';
 import DynamicImage from "@/app/components/DynamicImage";
@@ -86,13 +86,6 @@ function HomeChildren() {
   const [saveStatus, setSaveStatus] = useState("Saved"); // Save status indicator
   const dispatch = useDispatch<AppDispatch>();
 
-
-  // const handleSaveAnswer = (temp_answer: string) => {
-  //   if (question_id) {
-  //     dispatch(saveAnswer({ questionId: question_id, answer: temp_answer }));
-  //   }
-  // };
-
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const debouncedSaveAnswer = useCallback(
     debounce((temp_answer: string) => {
@@ -114,7 +107,7 @@ function HomeChildren() {
 
   useEffect(() => {
     if (courses.length > 0 && !course) {
-      setCourse(courses[0].course_id); // 默认选择第一个课程
+      setCourse(courses[0].course_id);
     }
   }, [courses, course]);
 
@@ -236,10 +229,6 @@ function HomeChildren() {
 
   const handleRetrieve = async () => {
     try {
-      // console.log(question_id)
-      // console.log(question)
-      // console.log(slide)
-      // console.log(preferredInfoType)
       console.log(questionPreset.content || question)
       console.log(questionPreset.content)
       console.log(question)
@@ -337,23 +326,6 @@ function HomeChildren() {
     }
   }
 
-  type RecordResultInput = {
-    learner_id: string
-    ip_address?: string,
-    question_id: string,
-    answer: string,
-    feedback: string,
-    prompt_engineering_method: string,
-    preferred_info_type: string,
-    feedback_framework: string,
-    slide_retrieval_range?: string[],
-    reference_slide_page_number?: number,
-    reference_slide_content?: string,
-    reference_slide_id?: string,
-    system_total_response_time?: number,
-    submission_time?: number,
-  }
-
   const recordResultToDatabase = async (result: RecordResultInput) => {
     try {
       await axios.post("/api/record_result", result);
@@ -430,7 +402,8 @@ function HomeChildren() {
             feedbackFramework: selectedFeedbackFramework,
             question: questionPreset.content || question,
             answer: isValidInput(answer) ? answer : "The student haven't provided any answer yet.",
-            slide_text_arr: slideTextArr
+            slide_text_arr: slideTextArr,
+            isStructured: false,
           });
           // console.log("time2")
           // console.log(Date.now() - startTime)
@@ -496,291 +469,300 @@ function HomeChildren() {
   const closeDrawer = () => setIsDrawerOpen(false);
 
   return (
-    <main className="flex flex-col items-center justify-between">
+    <div className="">
       <ParticipantModal isOpen={!participantId && !!course_version} />
 
       {/* Drawer for Testing Area */}
       <TestDrawer isOpen={isDrawerOpen} closeDrawer={closeDrawer} message={message} />
 
-      <div className="grid grid-cols-11 gap-4 w-full">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 h-full">
         {/* Left Feedback Area */}
         <motion.div
-          className="col-span-7 flex flex-col w-full"
-          initial={{ opacity: 0, y: 50 }}
+          className="lg:col-span-8 space-y-6"
+          initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.8 }}
+          transition={{ duration: 0.6 }}
         >
           {/* Feedback and Answer */}
-          {(!course_version || course_version == "a" || course_version == "c" || course_version == "d") &&
-            <FeedbackArea
-              result={result}
-              isFeedbackLoading={isFeedbackLoading}
-            />
-          }
+          {(!course_version || course_version == "a" || course_version == "c" || course_version == "d") && (
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+              <FeedbackArea
+                result={result}
+                isFeedbackLoading={isFeedbackLoading}
+              />
+            </div>
+          )}
 
-          {(!course_version || course_version == "b" || course_version == "d") &&
-            <ReferenceArea
-              reference={reference}
-              isReferenceLoading={isReferenceLoading}
-              images={images}
-              isImageLoading={isImageLoading}
-              loadedCount={loadedCount}
-              totalCount={totalCount}
-            />
-          }
-
+          {(!course_version || course_version == "b" || course_version == "d") && (
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+              <ReferenceArea
+                reference={reference}
+                isReferenceLoading={isReferenceLoading}
+                images={images}
+                isImageLoading={isImageLoading}
+                loadedCount={loadedCount}
+                totalCount={totalCount}
+              />
+            </div>
+          )}
         </motion.div>
+
         {/* Right Input Area */}
         <motion.div
-          className="col-span-4 w-full p-4 bg-white rounded-lg shadow-md"
-          initial={{ opacity: 0, x: 100 }}
+          className="lg:col-span-4"
+          initial={{ opacity: 0, x: 20 }}
           animate={{ opacity: 1, x: 0 }}
-          transition={{ duration: 0.5 }}
+          transition={{ duration: 0.6, delay: 0.2 }}
         >
-          {/* Tabs Header */}
-          {!question_id && (<div className="w-full flex justify-center mb-4">
-            <button
-              className={`px-4 py-2 border-b-2 ${activeTab === "selection" ? "border-blue-500" : "border-transparent"}`}
-              onClick={() => setActiveTab("selection")}
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 sticky top-24">
+            {/* Tabs Header */}
+            {!question_id && (
+              <div className="flex bg-slate-100 rounded-xl p-1 mb-6">
+                <button
+                  className={`flex-1 py-2 px-4 rounded-lg text-sm font-medium transition-all duration-200 ${
+                    activeTab === "selection" 
+                      ? "bg-white text-blue-600 shadow-sm" 
+                      : "text-slate-600 hover:text-slate-900"
+                  }`}
+                  onClick={() => setActiveTab("selection")}
+                >
+                  Content Selection
+                </button>
+                <button
+                  className={`flex-1 py-2 px-4 rounded-lg text-sm font-medium transition-all duration-200 ${
+                    activeTab === "input" 
+                      ? "bg-white text-blue-600 shadow-sm" 
+                      : "text-slate-600 hover:text-slate-900"
+                  }`}
+                  onClick={() => setActiveTab("input")}
+                >
+                  Question & Answer
+                </button>
+              </div>
+            )}
+
+            {/* Tab Content */}
+            <motion.div
+              key={activeTab}
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.3 }}
             >
-              Content
-            </button>
-            <button
-              className={`px-4 py-2 border-b-2 ${activeTab === "input" ? "border-blue-500" : "border-transparent"}`}
-              onClick={() => setActiveTab("input")}
-            >
-              Retrieval
-            </button>
-          </div>)}
-
-          {/* Tab Content */}
-          <motion.div>
-            {activeTab === "selection" && (
-              <motion.div>
-                <div className="mb-4 flex flex-col">
-                  <label htmlFor="course-select" className="mr-2">Select Course:</label>
-                  <select id="course-select" value={course} onChange={(e) => setCourse(e.target.value)} className="border rounded p-2">
-                    <option value="">Select a course</option>
-                    {courses.length && courses.map(course => (
-                      <option key={course.course_id} value={course.course_id}>{course.course_title}</option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Modules Selection */}
-                {course && <div className="mb-4 flex flex-col">
-                  <div className="mb-4 flex justify-between items-center">
-                    <label htmlFor="module-select" className="mr-2">Select Modules:</label>
-                    {/* Checkbox for selecting all modules */}
-                    <div className="flex items-center">
-                      <input
-                        type="checkbox"
-                        id="select-all-modules"
-                        checked={module.length === availableModules.length} // 默认全选
-                        onChange={(e) => setModule(e.target.checked ? availableModules.map((mod: Module) => mod.module_id) : [])}
-                        className="mr-2"
-                      />
-                      <label htmlFor="select-all-modules" className="text-blue-500">Select All</label>
-                    </div>
-                  </div>
-                  <select multiple id="module-select" value={module} onChange={(e) => setModule(Array.from(e.target.selectedOptions, option => option.value))} className="border rounded p-2">
-                    {availableModules?.length && availableModules.map((mod: Module) => (
-                      <option key={mod.module_id} value={mod.module_id}>{mod.module_title}</option>
-                    ))}
-                  </select>
-                </div>}
-
-                {/* Slides Selection */}
-                {module.length > 0 && (
-                  <div className="mb-4 flex flex-col">
-                    <div className="mb-4 flex justify-between items-center">
-                      <label htmlFor="slide-select" className="mr-2">Select Slides:</label>
-                      {/* Checkbox for selecting all slides */}
-                      <div className="flex items-center">
-                        <input
-                          type="checkbox"
-                          id="select-all-slides"
-                          checked={availableSlides.length > 0 && slide.length === availableSlides.length} // 确保availableSlides加载完成
-                          onChange={(e) => setSlide(e.target.checked ? availableSlides.map(sld => sld.id) : [])}
-                          className="mr-2"
-                        />
-                        <label htmlFor="select-all-slides" className="text-blue-500">Select All</label>
-                      </div>
-                    </div>
-                    <select multiple id="slide-select" value={slide.map(s => s)} onChange={(e) => setSlide(Array.from(e.target.selectedOptions, option => option.value))} className="border rounded p-2">
-                      {availableSlides?.length && availableSlides.map((sld: Slide) => (
-                        <option key={sld.id} value={sld.id}>{sld.slide_title}</option>
+              {activeTab === "selection" && (
+                <div className="space-y-4">
+                  {/* Course Selection */}
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-2">
+                      Select Course
+                    </label>
+                    <select 
+                      value={course} 
+                      onChange={(e) => setCourse(e.target.value)} 
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200"
+                    >
+                      <option value="">Choose a course...</option>
+                      {courses.length && courses.map(course => (
+                        <option key={course.course_id} value={course.course_id}>
+                          {course.course_title}
+                        </option>
                       ))}
                     </select>
-                  </div>)
-                }
-
-                <motion.button onClick={() => setActiveTab('input')} className="mt-4 w-full p-2 bg-blue-500 text-white rounded-lg">
-                  Next Session
-                </motion.button>
-              </motion.div>
-            )}
-
-            {activeTab === "input" && (
-              <motion.div>
-                {/* Collapsible Card for Settings */}
-                {/* <div className="mb-4 border rounded-lg shadow-md bg-white overflow-hidden">
-      <div
-        onClick={() => setIsSettingsOpen(!isSettingsOpen)}
-        className="cursor-pointer p-2 bg-gray-100 flex justify-between items-center"
-      >
-        <h3 className="font-semibold text-sm">Settings</h3>
-        <span className={`transform transition-transform duration-300 ${isSettingsOpen ? "rotate-180" : "rotate-0"}`}>
-          ▼
-        </span>
-      </div>
-      {isSettingsOpen && (
-        <div className="p-4 space-y-4">
-          <div>
-            <p className="mb-2">Please select preferred information type:</p>
-            <label className="mr-4">
-              <input
-                type="radio"
-                name="infoType"
-                value="text"
-                checked={preferredInfoType === "text"}
-                onChange={(e) => setPreferredInfoType(e.target.value)}
-              />
-              Text
-            </label>
-            <label>
-              <input
-                type="radio"
-                name="infoType"
-                value="vision"
-                checked={preferredInfoType === "vision"}
-                onChange={(e) => setPreferredInfoType(e.target.value)}
-              />
-              Vision
-            </label>
-          </div>
-
-          <div>
-            <label htmlFor="prompt-engineering" className="mb-2 block">
-              Please select one way of prompt engineering:
-            </label>
-            <select
-              id="prompt-engineering"
-              value={selectedPromptEngineering}
-              onChange={(e) => setSelectedPromptEngineering(e.target.value)}
-              className="border rounded p-2 w-full"
-            >
-              <option value="zero">Zero</option>
-              <option value="few">Few</option>
-              <option value="rag_zero">RAG Zero</option>
-              <option value="rag_few">RAG Few</option>
-              <option value="rag_cot">RAG CoT</option>
-            </select>
-          </div>
-
-          <div>
-            <label htmlFor="feedback-framework" className="mb-2 block">
-              Please select a framework of feedback:
-            </label>
-            <select
-              id="feedback-framework"
-              value={selectedFeedbackFramework}
-              onChange={(e) => setSelectedFeedbackFramework(e.target.value)}
-              className="border rounded p-2 w-full"
-            >
-              <option value="none">None</option>
-              <option value="component">Component</option>
-              <option value="feature">Feature</option>
-            </select>
-          </div>
-        </div>
-      )}
-    </div> */}
-
-                {/* Question Section */}
-                <motion.div className="mt-4">
-                  <div className="flex flex-row justify-between">
-                    <h3 className="text-l font-semibold">Question</h3>
-                    {!questionLoading && questionPreset?.content?.length > 0 ? (
-                      <button
-                        onClick={() => setIsFullScreen(true)}
-                        className="mb-4 px-2 text-white bg-green-600 hover:bg-green-700 rounded-sm"
-                      >
-                        View
-                      </button>
-                    ) : null}
                   </div>
-                  {questionPreset?.content?.length > 0 ? (
-                    !isFullScreen ? (
-                      <div>
-                        <p className="text-gray-500 text-sm">Preloaded question available.</p>
-                      </div>
-                    ) : (
-                      <div className="fixed inset-0 z-50 bg-white p-6 overflow-auto">
-                        <button
-                          onClick={() => setIsFullScreen(false)}
-                          className="py-2 px-4 text-white bg-red-600 hover:bg-red-700 rounded-md absolute top-4 right-4"
-                        >
-                          Close Full-Screen
-                        </button>
-                        {questionPreset.content.map((item, index) => (
-                          <div key={index} className="mb-4">
-                            {item.type === "text" ? (
-                              <p className="text-lg">{item.content}</p>
-                            ) : (
-                              <DynamicImage
-                                src={item.content}
-                                alt={`Content ${index}`}
-                                className="max-w-full h-auto rounded-lg"
-                              />
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    )
-                  ) : (
-                    <ContentEditor
-                      contents={question}
-                      setContents={(newContent) => {
-                        setQuestion(newContent);
-                        if (!question_id) {
-                          const textContent = newContent.find(item => item.type === 'text')?.content || '';
-                          dispatch(saveDraftQuestion(textContent));
-                        }
-                      }}
-                    />
-                  )}
-                </motion.div>
 
-                {/* Answer Section */}
-                <motion.div className="mt-4">
-                  <h3 className="text-l font-semibold">Answer</h3>
-                  <textarea
-                    value={answer}
-                    onChange={handleAnswerChange}
-                    placeholder="Enter your answer"
-                    className="border rounded p-2 w-full resize-none min-h-32"
-                    rows={1}
-                    onInput={handleInputResize}
-                  />
-                  <p className="text-gray-500 text-sm mt-1">{saveStatus}</p>
-                </motion.div>
-                <button
-                  onClick={handleSubmit}
-                  className={`
-        mt-4 w-full p-2 text-white rounded-lg transition-transform duration-200
-        ${isFeedbackLoading || isImageLoading || isReferenceLoading ? 'bg-gray-500 cursor-not-allowed' : 'bg-blue-500 hover:bg-[#1d40ae] hover:scale-105 active:scale-95'}
-      `}
-                  disabled={isFeedbackLoading || isImageLoading || isReferenceLoading}
-                >
-                  {isFeedbackLoading || isImageLoading || isReferenceLoading ? 'Evaluating ...' : 'Submit'}
-                </button>
-              </motion.div>
-            )}
-          </motion.div>
+                  {/* Modules Selection */}
+                  {course && (
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <label className="block text-sm font-medium text-slate-700">
+                          Select Modules
+                        </label>
+                        <div className="flex items-center space-x-2">
+                          <input
+                            type="checkbox"
+                            id="select-all-modules"
+                            checked={module.length === availableModules.length}
+                            onChange={(e) => setModule(e.target.checked ? availableModules.map((mod: Module) => mod.module_id) : [])}
+                            className="w-4 h-4 text-blue-600 border-slate-300 rounded focus:ring-blue-500"
+                          />
+                          <label htmlFor="select-all-modules" className="text-sm text-blue-600 font-medium">
+                            Select All
+                          </label>
+                        </div>
+                      </div>
+                      <select 
+                        multiple 
+                        value={module} 
+                        onChange={(e) => setModule(Array.from(e.target.selectedOptions, option => option.value))} 
+                        className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 min-h-24"
+                      >
+                        {availableModules?.length && availableModules.map((mod: Module) => (
+                          <option key={mod.module_id} value={mod.module_id}>
+                            {mod.module_title}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  {/* Slides Selection */}
+                  {module.length > 0 && (
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <label className="block text-sm font-medium text-slate-700">
+                          Select Slides
+                        </label>
+                        <div className="flex items-center space-x-2">
+                          <input
+                            type="checkbox"
+                            id="select-all-slides"
+                            checked={availableSlides.length > 0 && slide.length === availableSlides.length}
+                            onChange={(e) => setSlide(e.target.checked ? availableSlides.map(sld => sld.id) : [])}
+                            className="w-4 h-4 text-blue-600 border-slate-300 rounded focus:ring-blue-500"
+                          />
+                          <label htmlFor="select-all-slides" className="text-sm text-blue-600 font-medium">
+                            Select All
+                          </label>
+                        </div>
+                      </div>
+                      <select 
+                        multiple 
+                        value={slide.map(s => s)} 
+                        onChange={(e) => setSlide(Array.from(e.target.selectedOptions, option => option.value))} 
+                        className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 min-h-24"
+                      >
+                        {availableSlides?.length && availableSlides.map((sld: Slide) => (
+                          <option key={sld.id} value={sld.id}>
+                            {sld.slide_title}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  <button 
+                    onClick={() => setActiveTab('input')} 
+                    className="relative w-full py-3 px-4 bg-gradient-to-r from-blue-600 to-purple-600 text-white font-medium rounded-lg shadow-lg hover:shadow-xl transition-all duration-300 overflow-hidden"
+                  >
+                    {/* Animated gradient overlay on hover */}
+                    <div className="absolute inset-0 bg-gradient-to-r from-emerald-500 via-blue-600 to-purple-600 opacity-0 hover:opacity-100 transition-all duration-500 animate-gradient-x"></div>
+                    
+                    {/* Button content */}
+                    <div className="relative z-10 flex items-center justify-center">
+                      Continue to Questions
+                    </div>
+                  </button>
+                </div>
+              )}
+
+              {activeTab === "input" && (
+                <div className="space-y-4">
+                  {/* Question Section */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <h3 className="text-lg font-semibold text-slate-800">Question</h3>
+                      {!questionLoading && questionPreset?.content?.length > 0 && (
+                        <button
+                          onClick={() => setIsFullScreen(true)}
+                          className="px-3 py-1 text-sm bg-emerald-100 text-emerald-700 rounded-full hover:bg-emerald-200 transition-colors duration-200"
+                        >
+                          View Full
+                        </button>
+                      )}
+                    </div>
+                    
+                    {questionPreset?.content?.length > 0 ? (
+                      !isFullScreen ? (
+                        <div className="p-4 bg-slate-50 rounded-lg border border-slate-200">
+                          <p className="text-sm text-slate-600">Preloaded question available</p>
+                        </div>
+                      ) : (
+                        <div className="fixed inset-0 z-50 bg-white p-6 overflow-auto">
+                          <button
+                            onClick={() => setIsFullScreen(false)}
+                            className="py-2 px-4 text-white bg-red-500 hover:bg-red-600 rounded-lg absolute top-4 right-4 transition-colors duration-200"
+                          >
+                            Close
+                          </button>
+                          {questionPreset.content.map((item, index) => (
+                            <div key={index} className="mb-4">
+                              {item.type === "text" ? (
+                                <p className="text-lg">{item.content}</p>
+                              ) : (
+                                <DynamicImage
+                                  src={item.content}
+                                  alt={`Content ${index}`}
+                                  className="max-w-full h-auto rounded-lg"
+                                />
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )
+                    ) : (
+                      <ContentEditor
+                        contents={question}
+                        setContents={(newContent) => {
+                          setQuestion(newContent);
+                          if (!question_id) {
+                            const textContent = newContent.find(item => item.type === 'text')?.content || '';
+                            dispatch(saveDraftQuestion(textContent));
+                          }
+                        }}
+                      />
+                    )}
+                  </div>
+
+                  {/* Answer Section */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <h3 className="text-lg font-semibold text-slate-800">Your Answer</h3>
+                      <p className="text-sm text-slate-500">{saveStatus}</p>
+                    </div>
+                    <textarea
+                      value={answer}
+                      onChange={handleAnswerChange}
+                      placeholder="Enter your answer here..."
+                      className="w-full px-3 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 resize-none min-h-32"
+                      rows={1}
+                      onInput={handleInputResize}
+                    />
+                  </div>
+
+                  <button
+                    onClick={handleSubmit}
+                    disabled={isFeedbackLoading || isImageLoading || isReferenceLoading}
+                    className={`
+                      relative w-full py-3 px-4 rounded-lg font-medium transition-all duration-300 overflow-hidden
+                      ${isFeedbackLoading || isImageLoading || isReferenceLoading 
+                        ? 'bg-slate-300 text-slate-500 cursor-not-allowed' 
+                        : 'bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow-lg hover:shadow-xl'
+                      }
+                    `}
+                  >
+                    {/* Animated gradient overlay on hover */}
+                    {!isFeedbackLoading && !isImageLoading && !isReferenceLoading && (
+                      <div className="absolute inset-0 bg-gradient-to-r from-emerald-500 via-blue-600 to-purple-600 opacity-0 hover:opacity-100 transition-all duration-500 animate-gradient-x"></div>
+                    )}
+                    
+                    {/* Button content */}
+                    <div className="relative z-10 flex items-center justify-center">
+                      {isFeedbackLoading || isImageLoading || isReferenceLoading ? (
+                        <div className="flex items-center justify-center space-x-2">
+                          <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                          <span>Evaluating...</span>
+                        </div>
+                      ) : (
+                        'Submit Answer'
+                      )}
+                    </div>
+                  </button>
+                </div>
+              )}
+            </motion.div>
+          </div>
         </motion.div>
       </div>
-    </main>
+    </div>
   );
 }
 

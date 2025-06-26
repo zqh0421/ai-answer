@@ -35,3 +35,4 @@ def askController(question, answer, settings: Annotated[Settings, Depends(get_se
                 print(chunk.choices[0].delta.content, end="")
             result += chunk.choices[0].delta.content
     return result
+

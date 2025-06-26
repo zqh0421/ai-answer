@@ -39,3 +39,29 @@ export interface modulesNslides {
   module_title: string;
   slides: Slide[];
 }
+
+export type RecordResultInput = {
+  learner_id: string
+  ip_address?: string,
+  question_id: string,
+  answer: string,
+  feedback: string,
+  prompt_engineering_method: string,
+  preferred_info_type: string,
+  feedback_framework: string,
+  slide_retrieval_range?: string[],
+  reference_slide_page_number?: number,
+  reference_slide_content?: string,
+  reference_slide_id?: string,
+  system_total_response_time?: number,
+  submission_time?: number,
+}
+
+export interface StructuredFeedback {
+  concised_feedback: string;
+  terms: { [key: string]: string }[];
+  quotes: {
+    section: string;
+    quotes: string[];
+  }[];
+}
