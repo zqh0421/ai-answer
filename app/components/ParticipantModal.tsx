@@ -31,7 +31,7 @@ export default function ParticipantModal({ isOpen }: { isOpen: boolean }) {
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-50 backdrop-blur-sm z-[98] p-4 transition-all duration-300">
+    <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-50 backdrop-blur-sm z-20 p-4 transition-all duration-300">
       <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden transition-all duration-300">
         {/* Header */}
         <div className="flex items-center justify-between p-6 border-b border-slate-200">

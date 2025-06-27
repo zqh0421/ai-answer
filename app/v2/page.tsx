@@ -6,6 +6,7 @@ import axios from "axios";
 import { useSearchParams } from 'next/navigation';
 import { debounce } from 'lodash';
 import { useSelector, useDispatch } from 'react-redux';
+import { X, ChevronLeft, ChevronRight } from 'lucide-react';
 
 import { RootState, AppDispatch } from '@/app/store/store';
 import { saveAnswer, saveDraftAnswer, saveDraftQuestion } from '@/app/slices/userSlice';
@@ -17,7 +18,22 @@ import ParticipantModal from '@/app/components/ParticipantModal';
 import ContentEditor from "@/app/components/ContentEditor";
 import FeedbackArea from "@/app/components/FeedbackArea";
 import ReferenceArea from "@/app/components/ReferenceArea";
-import { Reference, Course, Module, Slide, RecordResultInput } from "@/app/types";
+import { Reference, Course, Module, Slide, RecordResultInput, StructuredFeedback, StructuredFeedbackWithSpace, FeedbackResult } from "@/app/types";
+
+// Helper function to safely access concised feedback
+const getConcisedFeedback = (data: StructuredFeedback | StructuredFeedbackWithSpace): string => {
+  if ('concised feedback' in data) {
+    return data['concised feedback'];
+  }
+  return data.concised_feedback;
+};
+
+// Helper function to check if object has structured feedback format
+const isStructuredFeedback = (obj: unknown): obj is StructuredFeedback | StructuredFeedbackWithSpace => {
+  return typeof obj === 'object' && obj !== null && (
+    'concised feedback' in obj || 'concised_feedback' in obj
+  );
+};
 
 function HomeChildren() {
   const base_question = ""
@@ -28,7 +44,7 @@ function HomeChildren() {
   // const [question, setQuestion] = useState<QuestionContent[]>([
   //   { type: "text", content: base_question },
   // ]);
-  const [result, setResult] = useState(""); // For Result Display
+  const [result, setResult] = useState<FeedbackResult>(""); // For Result Display
   const [reference, setReference] = useState<Reference>(); // For Reference Display
   // const [imageSrc, setImageSrc] = useState<string | null>(null);
   const [images, setImages] = useState<string[] | null>(null);
@@ -69,6 +85,8 @@ function HomeChildren() {
   });
   const [isFullScreen, setIsFullScreen] = useState(false);
   const [questionLoading, setQuestionLoading] = useState(false);
+  const [enlargedImage, setEnlargedImage] = useState<string | null>(null);
+  const [currentImageIndex, setCurrentImageIndex] = useState<number>(0);
   const draftAnswer = useSelector((state: RootState) => state.user.draftAnswer);
   const draftQuestion = useSelector((state: RootState) => state.user.draftQuestion);
 
@@ -464,6 +482,14 @@ function HomeChildren() {
         }
 
         setResult(response.data);
+        console.log("Full response data:", response.data);
+        console.log("Response data type:", typeof response.data);
+        if (typeof response.data === 'object') {
+          console.log("Response data keys:", Object.keys(response.data));
+          if (isStructuredFeedback(response.data)) {
+            console.log("Concised feedback:", getConcisedFeedback(response.data));
+          }
+        }
         setIsFeedbackLoading(false);
       } catch (error) {
         console.error("Error generating feedback:", error);
@@ -480,6 +506,25 @@ function HomeChildren() {
 
   const closeDrawer = () => setIsDrawerOpen(false);
 
+  const handleImageClick = (image: string, index: number) => {
+    setEnlargedImage(image);
+    setCurrentImageIndex(index);
+  };
+
+  const handlePrevious = () => {
+    if (currentImageIndex > 0 && images) {
+      setCurrentImageIndex(currentImageIndex - 1);
+      setEnlargedImage(images[currentImageIndex - 1]);
+    }
+  };
+
+  const handleNext = () => {
+    if (currentImageIndex < (images?.length || 0) - 1 && images) {
+      setCurrentImageIndex(currentImageIndex + 1);
+      setEnlargedImage(images[currentImageIndex + 1]);
+    }
+  };
+
   return (
     <div className="">
       <ParticipantModal isOpen={!participantId && !!course_version} />
@@ -487,10 +532,10 @@ function HomeChildren() {
       {/* Drawer for Testing Area */}
       <TestDrawer isOpen={isDrawerOpen} closeDrawer={closeDrawer} message={message} />
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 h-full">
+      <div className="grid grid-cols-11 gap-2 h-full">
         {/* Left Feedback Area */}
         <motion.div
-          className="lg:col-span-8 space-y-6"
+          className="col-span-6 space-y-6"
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.6 }}
@@ -511,18 +556,19 @@ function HomeChildren() {
               isImageLoading={isImageLoading}
               loadedCount={loadedCount}
               totalCount={totalCount}
+              onImageClick={handleImageClick}
             />
           )}
         </motion.div>
 
         {/* Right Input Area */}
         <motion.div
-          className="lg:col-span-4"
+          className="col-span-5 z-1"
           initial={{ opacity: 0, x: 20 }}
           animate={{ opacity: 1, x: 0 }}
           transition={{ duration: 0.6, delay: 0.2 }}
         >
-          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 sticky top-24">
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 sticky top-24 z-0">
             {/* Tabs Header */}
             {!question_id && (
               <div className="flex bg-slate-100 rounded-xl p-1 mb-6">
@@ -649,10 +695,12 @@ function HomeChildren() {
 
                   <button 
                     onClick={() => setActiveTab('input')} 
-                    className="relative w-full py-3 px-4 bg-gradient-to-r from-blue-600 to-purple-600 text-white font-medium rounded-lg shadow-lg hover:shadow-xl transition-all duration-300 overflow-hidden"
+                    className="relative w-full py-3 px-4 bg-gradient-to-r from-blue-600 to-purple-600 text-white font-medium rounded-lg shadow-lg hover:shadow-xl transition-all duration-300 overflow-hidden group"
                   >
-                    {/* Animated gradient overlay on hover */}
-                    <div className="absolute inset-0 bg-gradient-to-r from-emerald-500 via-blue-600 to-purple-600 opacity-0 hover:opacity-100 transition-all duration-500 animate-gradient-x"></div>
+                    {/* Subtle skewed background overlay on hover */}
+                    {!isFeedbackLoading && !isImageLoading && !isReferenceLoading && (
+                      <div className="absolute inset-0 bg-white opacity-0 group-hover:opacity-10 transition-all duration-500 transform -skew-x-6 scale-x-0 group-hover:scale-x-100 origin-left"></div>
+                    )}
                     
                     {/* Button content */}
                     <div className="relative z-10 flex items-center justify-center">
@@ -684,26 +732,80 @@ function HomeChildren() {
                           <p className="text-sm text-slate-600">Preloaded question available</p>
                         </div>
                       ) : (
-                        <div className="fixed inset-0 z-50 bg-white p-6 overflow-auto">
-                          <button
-                            onClick={() => setIsFullScreen(false)}
-                            className="py-2 px-4 text-white bg-red-500 hover:bg-red-600 rounded-lg absolute top-4 right-4 transition-colors duration-200"
-                          >
-                            Close
-                          </button>
-                          {questionPreset.content.map((item, index) => (
-                            <div key={index} className="mb-4">
-                              {item.type === "text" ? (
-                                <p className="text-lg">{item.content}</p>
-                              ) : (
-                                <DynamicImage
-                                  src={item.content}
-                                  alt={`Content ${index}`}
-                                  className="max-w-full h-auto rounded-lg"
-                                />
-                              )}
+                        <div 
+                          className="fixed z-50 bg-gradient-to-br from-slate-50 to-blue-50 overflow-auto" 
+                          style={{ 
+                            top: 'var(--header-height, 60px)', 
+                            bottom: 'var(--footer-height, 60px)', 
+                            left: 0, 
+                            right: 0 
+                          }}
+                        >
+                          {/* Header */}
+                          <div className="sticky top-0 bg-white/80 backdrop-blur-md border-b border-slate-200 shadow-sm z-10">
+                            <div className="flex items-center justify-between p-6">
+                              <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 bg-gradient-to-r from-emerald-500 to-teal-500 rounded-xl flex items-center justify-center shadow-sm">
+                                  <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                  </svg>
+                                </div>
+                                <div>
+                                  <h2 className="text-xl font-bold text-slate-800">Question Details</h2>
+                                  <p className="text-sm text-slate-600">Full question content and materials</p>
+                                </div>
+                              </div>
+                              <button
+                                onClick={() => setIsFullScreen(false)}
+                                className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-red-500 to-red-600 text-white rounded-lg hover:from-red-600 hover:to-red-700 transition-all duration-200 shadow-sm hover:shadow-md"
+                              >
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                                Close
+                              </button>
                             </div>
-                          ))}
+                          </div>
+
+                          {/* Content */}
+                          <div className="max-w-4xl mx-auto p-6 space-y-6">
+                            {questionPreset.content.map((item, index) => (
+                              <div key={index} className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                                {/* Block Counter */}
+                                <div className="bg-gradient-to-r from-slate-50 to-slate-100 px-6 py-3 border-b border-slate-200">
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-sm font-medium text-slate-600">
+                                      Content Block {index + 1} of {questionPreset.content.length}
+                                    </span>
+                                    <div className="flex items-center gap-2">
+                                      <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
+                                      <span className="text-xs text-slate-500 uppercase tracking-wide">
+                                        {item.type}
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
+                                
+                                {item.type === "text" ? (
+                                  <div className="p-8">
+                                    <div className="prose prose-slate max-w-none">
+                                      <p className="text-lg leading-relaxed text-slate-700">{item.content}</p>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div className="p-8">
+                                    <div className="flex justify-center">
+                                      <DynamicImage
+                                        src={item.content}
+                                        alt={`Question content ${index + 1}`}
+                                        className="max-w-full h-auto rounded-xl shadow-lg border border-slate-200"
+                                      />
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
                         </div>
                       )
                     ) : (
@@ -740,16 +842,16 @@ function HomeChildren() {
                     onClick={handleSubmit}
                     disabled={isFeedbackLoading || isImageLoading || isReferenceLoading}
                     className={`
-                      relative w-full py-3 px-4 rounded-lg font-medium transition-all duration-300 overflow-hidden
+                      relative w-full py-3 px-4 rounded-lg font-medium transition-all duration-300 overflow-hidden group
                       ${isFeedbackLoading || isImageLoading || isReferenceLoading 
                         ? 'bg-slate-300 text-slate-500 cursor-not-allowed' 
                         : 'bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow-lg hover:shadow-xl'
                       }
                     `}
                   >
-                    {/* Animated gradient overlay on hover */}
+                    {/* Subtle skewed background overlay on hover */}
                     {!isFeedbackLoading && !isImageLoading && !isReferenceLoading && (
-                      <div className="absolute inset-0 bg-gradient-to-r from-emerald-500 via-blue-600 to-purple-600 opacity-0 hover:opacity-100 transition-all duration-500 animate-gradient-x"></div>
+                      <div className="absolute inset-0 bg-white opacity-0 group-hover:opacity-10 transition-all duration-500 transform -skew-x-6 scale-x-0 group-hover:scale-x-100 origin-left"></div>
                     )}
                     
                     {/* Button content */}
@@ -770,6 +872,54 @@ function HomeChildren() {
           </div>
         </motion.div>
       </div>
+
+      {/* Global Image Modal */}
+      {enlargedImage && (
+        <div
+          className="fixed inset-0 bg-black bg-opacity-75 z-[999999] flex items-center justify-center p-4"
+          style={{ position: 'fixed', top: '45px', left: 0, right: 0, bottom: 0 }}
+          onClick={() => setEnlargedImage(null)}
+        >
+          <div
+            className="relative max-w-[90vw] max-h-[90vh] flex items-center justify-center"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Close Button */}
+            <button
+              onClick={() => setEnlargedImage(null)}
+              className="absolute -top-12 right-0 bg-white bg-opacity-90 p-2 rounded-full shadow-lg hover:bg-opacity-100 transition-all duration-200 z-10"
+            >
+              <X className="w-5 h-5 text-slate-700" />
+            </button>
+
+            {/* Navigation Buttons */}
+            {currentImageIndex > 0 && (
+              <button
+                onClick={handlePrevious}
+                className="absolute left-4 top-1/2 -translate-y-1/2 bg-white bg-opacity-90 p-3 rounded-full shadow-lg hover:bg-opacity-100 transition-all duration-200 z-10"
+              >
+                <ChevronLeft className="w-5 h-5 text-slate-700" />
+              </button>
+            )}
+            
+            {currentImageIndex < (images?.length || 0) - 1 && (
+              <button
+                onClick={handleNext}
+                className="absolute right-4 top-1/2 -translate-y-1/2 bg-white bg-opacity-90 p-3 rounded-full shadow-lg hover:bg-opacity-100 transition-all duration-200 z-10"
+              >
+                <ChevronRight className="w-5 h-5 text-slate-700" />
+              </button>
+            )}
+
+            {/* Image */}
+            <DynamicImage
+              src={`data:image/png;base64,${enlargedImage}`}
+              alt={`Slide ${currentImageIndex + 1}`}
+              className="max-w-full max-h-[85vh] object-contain rounded-lg"
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

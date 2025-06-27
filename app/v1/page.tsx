@@ -615,35 +615,106 @@ function HomeChildren() {
                         <p className="text-gray-500 text-sm">Preloaded question available.</p>
                       </div>
                     ) : (
-                      <div className="fixed inset-0 z-50 bg-white p-6 overflow-auto">
-                        <button
-                          onClick={() => setIsFullScreen(false)}
-                          className="py-2 px-4 text-white bg-red-600 hover:bg-red-700 rounded-md absolute top-4 right-4"
-                        >
-                          Close Full-Screen
-                        </button>
-                        {questionPreset.content.map((item, index) => (
-                          <div key={index} className="mb-4">
-                            {item.type === "text" ? (
-                              <p className="text-lg">{item.content}</p>
-                            ) : (
-                              <DynamicImage
-                                src={item.content}
-                                alt={`Content ${index}`}
-                                className="max-w-full h-auto rounded-lg"
-                              />
-                            )}
+                      <div 
+                        className="fixed z-50 bg-gradient-to-br from-slate-50 to-blue-50 overflow-auto" 
+                        style={{ 
+                          top: 'var(--header-height, 60px)', 
+                          bottom: 'var(--footer-height, 60px)', 
+                          left: 0, 
+                          right: 0 
+                        }}
+                      >
+                        {/* Header */}
+                        <div className="sticky top-0 bg-white/80 backdrop-blur-md border-b border-slate-200 shadow-sm z-10">
+                          <div className="flex items-center justify-between p-6">
+                            <div className="flex items-center gap-3">
+                              <div className="w-10 h-10 bg-gradient-to-r from-emerald-500 to-teal-500 rounded-xl flex items-center justify-center shadow-sm">
+                                <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                </svg>
+                              </div>
+                              <div>
+                                <h2 className="text-xl font-bold text-slate-800">Question Details</h2>
+                                <p className="text-sm text-slate-600">Full question content and materials</p>
+                              </div>
+                            </div>
+                            <button
+                              onClick={() => setIsFullScreen(false)}
+                              className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-red-500 to-red-600 text-white rounded-lg hover:from-red-600 hover:to-red-700 transition-all duration-200 shadow-sm hover:shadow-md"
+                            >
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                              </svg>
+                              Close
+                            </button>
                           </div>
-                        ))}
+                        </div>
+
+                        {/* Content */}
+                        <div className="max-w-4xl mx-auto p-6 space-y-6">
+                          {questionPreset.content.map((item, index) => (
+                            <div key={index} className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                              {/* Block Counter */}
+                              <div className="bg-gradient-to-r from-slate-50 to-slate-100 px-6 py-3 border-b border-slate-200">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-sm font-medium text-slate-600">
+                                    Content Block {index + 1} of {questionPreset.content.length}
+                                  </span>
+                                  <div className="flex items-center gap-2">
+                                    <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
+                                    <span className="text-xs text-slate-500 uppercase tracking-wide">
+                                      {item.type}
+                                    </span>
+                                  </div>
+                                </div>
+                              </div>
+                              
+                              {item.type === "text" ? (
+                                <div className="p-8">
+                                  <div className="flex items-center gap-3 mb-4">
+                                    <div className="w-8 h-8 bg-gradient-to-r from-blue-500 to-indigo-500 rounded-lg flex items-center justify-center">
+                                      <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                      </svg>
+                                    </div>
+                                    <h3 className="text-lg font-semibold text-slate-800">Question Text</h3>
+                                  </div>
+                                  <div className="prose prose-slate max-w-none">
+                                    <p className="text-lg leading-relaxed text-slate-700">{item.content}</p>
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="p-6">
+                                  <div className="flex items-center gap-3 mb-4">
+                                    <div className="w-8 h-8 bg-gradient-to-r from-emerald-500 to-teal-500 rounded-lg flex items-center justify-center">
+                                      <svg className="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                                      </svg>
+                                    </div>
+                                    <h3 className="text-lg font-semibold text-slate-800">Question Image</h3>
+                                  </div>
+                                  <div className="flex justify-center">
+                                    <DynamicImage
+                                      src={item.content}
+                                      alt={`Question content ${index + 1}`}
+                                      className="max-w-full h-auto rounded-xl shadow-lg border border-slate-200"
+                                    />
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     )
                   ) : (
                     <ContentEditor
                       contents={question}
-                      setContents={(newContent: any[] | ((prevState: QuestionContent[]) => QuestionContent[])) => {
+                      setContents={(newContent: QuestionContent[] | ((prevState: QuestionContent[]) => QuestionContent[])) => {
                         setQuestion(newContent);
                         if (!question_id) {
-                          const textContent = newContent.find(item => item.type === 'text')?.content || '';
+                          const contentArray = typeof newContent === 'function' ? newContent(question) : newContent;
+                          const textContent = contentArray.find((item: QuestionContent) => item.type === 'text')?.content || '';
                           dispatch(saveDraftQuestion(textContent));
                         }
                       }}

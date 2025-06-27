@@ -16,7 +16,7 @@ export default function TestDrawer({ isOpen, closeDrawer, message }: TestDrawerP
 
   return (
     <Transition show={isOpen} as={Fragment}>
-      <Dialog as="div" className="relative z-[99]" onClose={closeDrawer}>
+      <Dialog as="div" className="relative z-20" onClose={closeDrawer}>
         <Transition.Child
           as={Fragment}
           enter="transition ease-out duration-300"

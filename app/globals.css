@@ -6,6 +6,8 @@
   --background: #ffffff;
   --foreground: #171717;
   --font-inter: 'Inter', sans-serif;
+  --header-height: 45px;
+  --footer-height: 60px;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -29,22 +31,22 @@ body {
 
 @layer components {
   /* Custom scrollbar */
-  ::-webkit-scrollbar {
+  /* ::-webkit-scrollbar {
     width: 6px;
-  }
+  } */
   
-  ::-webkit-scrollbar-track {
+  /* ::-webkit-scrollbar-track {
     background: #f1f5f9;
-  }
+  } */
   
-  ::-webkit-scrollbar-thumb {
+  /* ::-webkit-scrollbar-thumb {
     background: #cbd5e1;
     border-radius: 3px;
-  }
+  } */
   
-  ::-webkit-scrollbar-thumb:hover {
+  /* ::-webkit-scrollbar-thumb:hover {
     background: #94a3b8;
-  }
+  } */
   
   /* Smooth transitions */
   * {
