@@ -1,4 +1,4 @@
-import { BookOpen, Sparkles } from 'lucide-react';
+// import { BookOpen, Sparkles } from 'lucide-react';
 
 export default function Header() {
   return (

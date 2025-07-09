@@ -20,43 +20,43 @@ const isFeedbackWrapper = (obj: unknown): obj is { feedback: string | Structured
   return typeof obj === 'object' && obj !== null && 'feedback' in obj;
 };
 
-function highlightTerms(text: string, terms: string[], className: string = 'highlight-term') {
-  // Sort terms by length descending to avoid partial overlaps
-  const sortedTerms = [...terms].sort((a, b) => b.length - a.length);
-  let pattern = sortedTerms.map(term => term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
-  if (!pattern) return text;
-  const regex = new RegExp(`(${pattern})`, 'gi');
-  const parts = text.split(regex);
-  return parts.map((part, i) =>
-    sortedTerms.some(term => part.toLowerCase() === term.toLowerCase())
-      ? <span key={i} className={className}>{part}</span>
-      : part
-  );
-}
+// function highlightTerms(text: string, terms: string[], className: string = 'highlight-term') {
+//   // Sort terms by length descending to avoid partial overlaps
+//   const sortedTerms = [...terms].sort((a, b) => b.length - a.length);
+//   let pattern = sortedTerms.map(term => term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+//   if (!pattern) return text;
+//   const regex = new RegExp(`(${pattern})`, 'gi');
+//   const parts = text.split(regex);
+//   return parts.map((part, i) =>
+//     sortedTerms.some(term => part.toLowerCase() === term.toLowerCase())
+//       ? <span key={i} className={className}>{part}</span>
+//       : part
+//   );
+// }
 
-// Highlight function for terms and phrases
-function highlightTermsAndPhrases(text: string, terms: string[], phrases: string[]) {
-  // Combine all terms and phrases, sort by length descending
-  const all = [
-    ...terms.map(t => ({ value: t, type: 'term' })),
-    ...phrases.map(p => ({ value: p, type: 'phrase' }))
-  ].sort((a, b) => b.value.length - a.value.length);
-  if (all.length === 0) return text;
-  // Build regex
-  const pattern = all.map(obj => obj.value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
-  const regex = new RegExp(`(${pattern})`, 'gi');
-  // Split and wrap
-  const parts = text.split(regex);
-  return parts.map((part, i) => {
-    const match = all.find(obj => part.toLowerCase() === obj.value.toLowerCase());
-    if (match) {
-      return (
-        <span key={i} className={match.type === 'term' ? 'highlight-term' : 'highlight-phrase'}>{part}</span>
-      );
-    }
-    return part;
-  });
-}
+// // Highlight function for terms and phrases
+// function highlightTermsAndPhrases(text: string, terms: string[], phrases: string[]) {
+//   // Combine all terms and phrases, sort by length descending
+//   const all = [
+//     ...terms.map(t => ({ value: t, type: 'term' })),
+//     ...phrases.map(p => ({ value: p, type: 'phrase' }))
+//   ].sort((a, b) => b.value.length - a.value.length);
+//   if (all.length === 0) return text;
+//   // Build regex
+//   const pattern = all.map(obj => obj.value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+//   const regex = new RegExp(`(${pattern})`, 'gi');
+//   // Split and wrap
+//   const parts = text.split(regex);
+//   return parts.map((part, i) => {
+//     const match = all.find(obj => part.toLowerCase() === obj.value.toLowerCase());
+//     if (match) {
+//       return (
+//         <span key={i} className={match.type === 'term' ? 'highlight-term' : 'highlight-phrase'}>{part}</span>
+//       );
+//     }
+//     return part;
+//   });
+// }
 
 function highlightTermsAndPhrasesWithTooltip(
   text: string,
@@ -212,10 +212,10 @@ const CustomTooltip = ({ children, content, isVisible, position }: {
   if (!isVisible) return <>{children}</>;
   
   // 计算气泡应该显示的位置，避免被遮挡
-  const tooltipHeight = 80; // 估算气泡高度
+  // const tooltipHeight = 80; // 估算气泡高度
   const tooltipWidth = 300; // 估算气泡宽度
   const viewportWidth = window.innerWidth;
-  const viewportHeight = window.innerHeight;
+  // const viewportHeight = window.innerHeight;
   
   // 默认位置（向上显示）
   let finalTop = position.y - 70; // 向上移动更多
@@ -396,7 +396,7 @@ export default function FeedbackArea({ result, isFeedbackLoading }: { result: Fe
                             <Quote className="w-3 h-3 text-white" />
                           </div>
                           <div className="flex-1">
-                            <span className="text-slate-700 text-sm leading-normal italic">"{quote}"</span>
+                            <span className="text-slate-700 text-sm leading-normal italic">&quot;{quote}&quot;</span>
                           </div>
                         </div>
                       </div>

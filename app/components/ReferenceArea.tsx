@@ -1,6 +1,6 @@
 import ReactMarkdown from 'react-markdown';
 import { Reference } from '@/app/types';
-import { Layers, ExternalLink, Loader2, Image as ImageIcon, ZoomIn } from 'lucide-react';
+import { Layers, ExternalLink, Loader2, ZoomIn } from 'lucide-react';
 import DynamicImage from "@/app/components/DynamicImage";
 
 interface ReferenceAreaProps {

@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useDispatch } from 'react-redux';
-import { User, AlertTriangle, CheckCircle, X } from 'lucide-react';
+import { User, AlertTriangle, CheckCircle } from 'lucide-react';
 import { setParticipantId } from '@/app/slices/userSlice';
 
 export default function ParticipantModal({ isOpen }: { isOpen: boolean }) {
