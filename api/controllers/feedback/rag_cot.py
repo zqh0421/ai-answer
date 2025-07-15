@@ -1,13 +1,71 @@
 from typing import List
 from fastapi import Depends
-from openai import OpenAI
 from ...config import Settings, get_settings
 from typing_extensions import Annotated
 from .call_gpt import call_gpt, format_question
 
-def generate_feedback_using_rag_cot(question: List[dict], answer: str, slide_text_arr: List[str], feedbackFramework: str, settings: Annotated[Settings, Depends(get_settings)]) -> str:
+def generate_feedback_using_rag_cot(question: List[dict], answer: str, slide_text_arr: List[str], feedbackFramework: str, isStructured: bool, settings: Annotated[Settings, Depends(get_settings)]) -> str:
     api_key = settings.openai_api_key  # Corrected to access openai_api_key
     print("slide_text_arr:",slide_text_arr)
+    
+    # Combined structured JSON + HTML format prompts (when isStructured is True)
+    if isStructured:
+        prompt_combined = (
+            f"You are an expert in providing feedback for students' answers. Generate clear, effective feedback and format it into a combined structured output.\n\n"
+            f"## Task 1: Generate Feedback\n"
+            f"Generate feedback that meets all five criteria:\n\n"
+            f"**Required Criteria:**\n"
+            f"1. **Judgment Statement**: Begin by clearly stating whether the student's answer is correct or incorrect.\n"
+            f"2. **Explain the Student's Answer with Context**:\n"
+            f"   - If incorrect: Provide the correct answer directly to the student, and explain why this answer is correct and why the one they chose is incorrect.\n"
+            f"   - If correct: Briefly explain why their choice fits and reference specific elements from the question.\n"
+            f"3. **Use Specific Details from the Question**: Connect explanations to concrete elements from the question scenario—avoid abstract or generalized definitions.\n"
+            f"4. **Provide suggestions for further study**: Include at least one strategy to help the student improve on similar future questions.\n"
+            f"5. **Clarity and Brevity**: Keep the entire feedback clear, constructive, and under 100 words.\n\n"
+            f"## Task 2: Format Output\n"
+            f"Format your response as a JSON object with this exact structure:\n\n"
+            f"```json\n"
+            f"{{\n"
+            f"  \"score\": \"[0 for incorrect, 1 for correct]\",\n"
+            f"  \"feedback\": \"[A clear, concise revision of the original feedback, retaining key points and removing redundancy. Tooltips are integrated as plain terms.]\",\n"
+            f"  \"structured_feedback\": \"<statement>[Your assessment - whether answer is correct or incorrect].</statement> <explanation>[Detailed explanation with <term explanation='[tooltip text]'>[highlighted terms]</term>].</explanation> <advice>[Actionable advice for improvement].</advice>\"\n"
+            f"}}\n"
+            f"```\n\n"
+            f"**Formatting Instructions:**\n"
+            f"- First, Identify terms from the feedback that require explanation (key concepts or technical terms) and extract their tooltip-style explanations\n"
+            f"- Do not repeat tooltip details within the feedback body\n"
+            f"- Extract strictly quotable phrases from the concised feedback, categorized into:\n"
+            f"  - **statement**: Phrases about whether the answer is correct or incorrect\n"
+            f"  - **explanation**: Reasoning that explains the mistake or correct logic  \n"
+            f"  - **advice**: Actionable suggestions for improvement\n"
+            f"- The terms in the \"terms\" array must use the exact wording as it appears in the feedback text\n"
+            f"- The \"structured_feedback\" field MUST contain proper HTML with semantic tags:\n"
+            f"  - Use <statement> tags for assessment (correct/incorrect)\n"
+            f"  - Use <explanation> tags for detailed reasoning\n"
+            f"  - Use <advice> tags for improvement suggestions\n"
+            f"  - Use <term explanation='tooltip text'> tags for highlighted terms with tooltips\n"
+            f"- IMPORTANT: The structured_feedback field must be valid HTML, not plain text\n"
+            f"- You are not required to provide terms all the time, only provide terms when they are necessary for the learner to understand the feedback and improve their answer.\n"
+            f"- For term explanation, not just providing the definition, but also provide the context of the term in the feedback, that is resonated with the learner's answer.\n"
+            f"\n"
+            f"**Example structured_feedback format:**\n"
+            f"\"<statement>Your answer is incorrect.</statement> <explanation>The correct answer is <term explanation='A specific term that matches the question requirements'>test</term>. This matches the question's requirement for a specific term.</explanation> <advice>To improve, review the question carefully to ensure your answer aligns with the expected response.</advice>\"\n"
+            f"\n"
+            f"**Final Output**: Provide only the JSON object in the exact format specified above. No additional explanation, comments, or plain text are allowed.\n\n"
+            f"Slides Content: {slide_text_arr}\n\n"
+        )
+        
+        question_message = format_question(question)
+        user_prompt = question_message
+        user_prompt.append({
+            "type": "text",
+            "text": f"Answer: {answer}"
+        })
+        
+        result = call_gpt(prompt_combined, user_prompt, settings)
+        return result
+    
+    # Original prompts for non-HTML format
     prompt_none = (
         f"You are an expert in providing feedback using 2-3 sentences for students' answer based on the questions"
         f"Based on the following question, student's answer, and Slides Content, provide feedback accurately and relevantly in 2-3 sentences. Please think step by step using the following approach:\n\n"
@@ -16,7 +74,7 @@ def generate_feedback_using_rag_cot(question: List[dict], answer: str, slide_tex
         f"Step 2: Evaluate the student's answer and determine if it addresses the key concepts and aligns with the content in the slides.\n"
         f"Step 3: Generate feedback that highlights any strengths or areas for improvement based on the comparison. Ensure the feedback is clear and actionable.\n"
         f"Here are some examples of feedback:\n"
-        f"1. Your answer is quite broad and doesn’t address the specific learning objectives of the course. According to the slides, try focusing on how design principles guide e-learning strategies. This will make your response more relevant and targeted.\n"
+        f"1. Your answer is quite broad and doesn't address the specific learning objectives of the course. According to the slides, try focusing on how design principles guide e-learning strategies. This will make your response more relevant and targeted.\n"
         f"2. Your answer is not correct. According to the slides, the link between learning and engineering is an interesting angle, but it needs more substance. Think about what aspects of e-learning design are critical to achieving effective learning outcomes. This could help make your answer more comprehensive.\n"
         f"3. Your answer is correct and consistent with the content in the slides. You did a great job!\n\n"
         f"Slides Content: {slide_text_arr}\n\n"

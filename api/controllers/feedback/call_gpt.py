@@ -41,7 +41,7 @@ def call_gpt(system_prompt: str, user_prompt: List[dict], settings: Annotated[Se
 
     init_time = time.time()
     stream = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-4o",
         messages=[
             {
                 "role":"system",

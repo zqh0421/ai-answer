@@ -19,19 +19,20 @@ from .controllers import generate_feedback_using_graph_rag, generate_feedback_us
 # from google.auth.transport import requests
 # from pydantic import BaseModel
 from .utils import fetch_pdf_from_drive
-from typing import List
+# from typing import List
 from . import schema, models
 from langchain_community.document_loaders import PyPDFLoader
 from pdf2image import convert_from_path, convert_from_bytes
 import base64
 import os
 from uuid import UUID
-from sqlalchemy import cast
+# from sqlalchemy import cast
 from .controllers.vision import setVision
 import re
-import time
+# import time
 import json
-from .controllers.format import process_feedback_to_json
+import traceback
+# from .controllers.format import process_feedback_to_json
 
 app = FastAPI()
 
@@ -77,7 +78,7 @@ async def embed(embedModel: EmbedModel, settings: Annotated[Settings, Depends(ge
             schema.Question.embed_result.isnot(None),
         ).first()
 
-        if question and question.embed_result:
+        if question and question.embed_result is not None:
             result = json.loads(question.embed_result)
             return result
         else:
@@ -123,16 +124,13 @@ async def convert(convertModel: ConvertModel, db: Session = Depends(get_db)):
             "text": result.text,
             "img_base64": result.img_base64
         }
-        return {
-
-        }
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("api/openai-vision")
-def vision(visionModel: VisionModel):
-    result = visionController(visionModel)
+@app.post("/api/openai-vision")
+def vision(visionModel: VisionModel, settings: Annotated[Settings, Depends(get_settings)]):
+    result = setVision(visionModel.base64_image_arr, settings)
     return result
 
 @app.post("/api/pdf-to-img-rephrase")
@@ -216,25 +214,49 @@ async def generate_feedback_rag(request: FeedbackRequestRagModel, settings: Anno
     elif request.promptEngineering == "rag_few":
         feedback = await generate_feedback_using_rag_few(request.question, request.answer, request.slide_text_arr, request.feedbackFramework, settings)
     elif request.promptEngineering == "rag_cot":
-        feedback = generate_feedback_using_rag_cot(request.question, request.answer, request.slide_text_arr, request.feedbackFramework, settings)
-    elif request.promptEngineering == "graph_rag":
-        feedback = generate_feedback_using_graph_rag(request.question, request.answer, request.slide_text_arr, request.feedbackFramework, settings)
+        feedback = generate_feedback_using_rag_cot(request.question, request.answer, request.slide_text_arr, request.feedbackFramework, request.isStructured, settings)
+    # elif request.promptEngineering == "graph_rag":
+    #     feedback = generate_feedback_using_graph_rag(request.question, request.answer, request.slide_text_arr, request.feedbackFramework, settings)
     else:
         feedback = "Generate Feedback Error: Invalid Request."
         print("Generate Feedback Error: Invalid Request.")
 
     if request.isStructured:
-        structured_feedback = process_feedback_to_json(
-            question=request.question,
-            answer=request.answer,
-            slide_text_arr=request.slide_text_arr, 
-            feedback_text=feedback,
-            settings=settings
-        )
-        return structured_feedback
-        # return {
-        #     "feedback": feedback
-        # }
+        # parse feedback to json
+        try:
+            # Try to parse the feedback as JSON directly
+            parsed_feedback = json.loads(feedback)
+            return {
+                "score": parsed_feedback.get("score", ""),
+                "feedback": parsed_feedback.get("feedback", ""),
+                "structured_feedback": parsed_feedback.get("structured_feedback", {})
+            }
+        except json.JSONDecodeError:
+            # If direct parsing fails, try to extract JSON from markdown code blocks
+            import re
+            json_match = re.search(r'```json\s*(\{.*?\})\s*```', feedback, re.DOTALL)
+            if json_match:
+                try:
+                    parsed_feedback = json.loads(json_match.group(1))
+                    return {
+                        "score": parsed_feedback.get("score", ""),
+                        "feedback": parsed_feedback.get("feedback", ""),
+                        "structured_feedback": parsed_feedback.get("structured_feedback", {})
+                    }
+                except json.JSONDecodeError:
+                    # If still fails, return default structure
+                    return {
+                        "score": "",
+                        "feedback": feedback,
+                        "structured_feedback": {}
+                    }
+            else:
+                # No JSON found, return default structure
+                return {
+                    "score": "",
+                    "feedback": feedback,
+                    "structured_feedback": {}
+                }
     else:
         return {
             "feedback": feedback
@@ -417,6 +439,9 @@ def get_public_courses(db: Session = Depends(get_db)):
 @app.post("/api/slides/{slide_id}/{slide_google_id}/publish")
 async def publish_slide(slide_id: str, slide_google_id: str, settings: Annotated[Settings, Depends(get_settings)], db: Session = Depends(get_db)):
     pdfstream = fetch_pdf_from_drive(slide_google_id, settings)
+    if pdfstream is None:
+        raise HTTPException(status_code=404, detail="Failed to fetch PDF from drive")
+    
     print("Slide ID:", slide_id, "Slide Google ID:", slide_google_id)
     try:
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as temp_pdf_file:
@@ -489,13 +514,17 @@ async def set_vision(slide_id: str, slide_google_id: str, settings: Annotated[Se
     # Process vision for each page
     page_visions = []
     for page in pages:
-        vision_info = setVision([page.img_base64], settings=settings)
-        page_visions.append(vision_info)
-        page.image_text = vision_info  # Save vision info to each page (ensure `vision_info` column exists in Page model)
+        if page.img_base64 is not None:
+            vision_info = setVision([page.img_base64], settings=settings)
+            page_visions.append(vision_info)
+            page.image_text = vision_info  # Save vision info to each page
 
     # Optional: Aggregate vision information for the entire slide
-    sum_vision_info = setVision([page.img_base64 for page in pages], settings=settings)
-    slide.vision_summary = sum_vision_info  # Ensure `vision_info` column exists in Slide model
+    if pages:
+        img_base64_list = [page.img_base64 for page in pages if page.img_base64 is not None]
+        if img_base64_list:
+            sum_vision_info = setVision(img_base64_list, settings=settings)
+            slide.vision_summary = sum_vision_info
 
     # Save changes to the database
     db.commit()
@@ -560,6 +589,8 @@ def delete_question_by_id(question_id: str, db: Session = Depends(get_db)):
 async def upload_file(settings: Annotated[Settings, Depends(get_settings)], file: UploadFile = File(...)):
     try:
         file.file.seek(0)
+        if file.filename is None:
+            raise HTTPException(status_code=400, detail="Filename is required")
         file_extension = file.filename.split(".")[-1]
         file_name_sanitized = re.sub(r"[^a-zA-Z0-9._-]", "_", file.filename)
         file_key = f"uploads/{uuid.uuid4()}_{file_name_sanitized}"
@@ -627,7 +658,7 @@ def get_human_feedback(question_id: str, db: Session = Depends(get_db)):
     try:
         question = db.query(schema.Question).filter(schema.Question.question_id == question_id).first()
         
-        if not question or not question.human_feedback:
+        if not question or question.human_feedback is None:
             raise HTTPException(status_code=404, detail="No human feedback found for this question_id")
         
         return {"human_feedback": question.human_feedback}

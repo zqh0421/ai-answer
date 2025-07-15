@@ -16,24 +16,9 @@ import TestDrawer from '@/app/components/TestDrawer';
 import DynamicImage from "@/app/components/DynamicImage";
 import ParticipantModal from '@/app/components/ParticipantModal';
 import ContentEditor from "@/app/components/ContentEditor";
-import FeedbackArea from "@/app/components/FeedbackArea";
+import HTMLFeedbackArea from "@/app/components/HTMLFeedbackArea";
 import ReferenceArea from "@/app/components/ReferenceArea";
-import { Reference, Course, Module, Slide, RecordResultInput, StructuredFeedback, StructuredFeedbackWithSpace, FeedbackResult } from "@/app/types";
-
-// Helper function to safely access concised feedback
-const getConcisedFeedback = (data: StructuredFeedback | StructuredFeedbackWithSpace): string => {
-  if ('concised feedback' in data) {
-    return data['concised feedback'];
-  }
-  return data.concised_feedback;
-};
-
-// Helper function to check if object has structured feedback format
-const isStructuredFeedback = (obj: unknown): obj is StructuredFeedback | StructuredFeedbackWithSpace => {
-  return typeof obj === 'object' && obj !== null && (
-    'concised feedback' in obj || 'concised_feedback' in obj
-  );
-};
+import { Reference, Course, Module, Slide, RecordResultInput, StructuredFeedback, FeedbackResult } from "@/app/types";
 
 function HomeChildren() {
   const base_question = ""
@@ -402,7 +387,8 @@ function HomeChildren() {
             submission_time: startTime,
             system_total_response_time: endTime - startTime
           };
-          await recordResultToDatabase(recordPayload);
+          // TODO: record result to database to be updated
+          // await recordResultToDatabase(recordPayload);
           // console.log("Successfully recorded result:", recordPayload);
           setResult(response.data.human_feedback);
           setIsFeedbackLoading(false);
@@ -454,6 +440,7 @@ function HomeChildren() {
 
         const endTime = Date.now();
         // console.log(endTime - startTime)
+
         if (questionPreset) {
           // console.log(retrievalResult)
           const recordPayload: RecordResultInput = {
@@ -474,22 +461,16 @@ function HomeChildren() {
           };
 
           try {
-            await recordResultToDatabase(recordPayload);
+            // TODO: record result to database to be updated
+            // await recordResultToDatabase(recordPayload);
             // console.log("Successfully recorded result:", recordPayload);
           } catch (error) {
             console.error("Failed to record result:", error);
           }
         }
-
         setResult(response.data);
-        console.log("Full response data:", response.data);
-        console.log("Response data type:", typeof response.data);
-        if (typeof response.data === 'object') {
-          console.log("Response data keys:", Object.keys(response.data));
-          if (isStructuredFeedback(response.data)) {
-            console.log("Concised feedback:", getConcisedFeedback(response.data));
-          }
-        }
+        console.log("Full response data:", response.data.structured_feedback);
+        console.log("Grading:", response.data.score);
         setIsFeedbackLoading(false);
       } catch (error) {
         console.error("Error generating feedback:", error);
@@ -542,10 +523,11 @@ function HomeChildren() {
         >
           {/* Feedback and Answer */}
           {(!course_version || course_version == "a" || course_version == "c" || course_version == "d") && (
-            <FeedbackArea
-              result={result}
-              isFeedbackLoading={isFeedbackLoading}
-            />
+              <HTMLFeedbackArea
+                html={(result as StructuredFeedback).structured_feedback}
+                isFeedbackLoading={isFeedbackLoading}
+                score={(result as StructuredFeedback).score}
+              />
           )}
 
           {(!course_version || course_version == "b" || course_version == "d") && (

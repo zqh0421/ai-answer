@@ -58,33 +58,18 @@ export type RecordResultInput = {
 }
 
 export interface StructuredFeedback {
-  concised_feedback: string;
-  terms: { [key: string]: string }[];
-  quotes: {
-    section: string;
-    quotes: string[];
-  }[];
-}
-
-// Extended interface to handle both field name formats
-export interface StructuredFeedbackWithSpace {
-  "concised feedback": string;
-  terms: { [key: string]: string }[];
-  quotes: {
-    section: string;
-    quotes: string[];
-  }[];
+  score: string;
+  feedback: string;
+  structured_feedback: string;
 }
 
 // Union type for all possible feedback formats
 export type FeedbackResult = 
   | string 
   | StructuredFeedback 
-  | StructuredFeedbackWithSpace
-  | { feedback: string | StructuredFeedback | StructuredFeedbackWithSpace };
+  | { feedback: string | StructuredFeedback };
 
 // Helper type for the processed feedback data
 export type ProcessedFeedbackData = 
   | string 
-  | StructuredFeedback 
-  | StructuredFeedbackWithSpace;
+  | StructuredFeedback;
