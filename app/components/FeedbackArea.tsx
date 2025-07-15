@@ -1,22 +1,17 @@
-import { StructuredFeedback, StructuredFeedbackWithSpace, FeedbackResult, ProcessedFeedbackData } from "@/app/types";
-import { MessageSquare, Loader2, Sparkles, Target, Quote } from 'lucide-react';
+import { StructuredFeedback, FeedbackResult, ProcessedFeedbackData } from "@/app/types";
+import { MessageSquare, Loader2, Sparkles, Target, Quote, ThumbsUp, ThumbsDown } from 'lucide-react';
 import React, { useState, useCallback } from "react";
 
 // Helper functions to safely access feedback data
-const getConcisedFeedback = (data: StructuredFeedback | StructuredFeedbackWithSpace): string => {
-  if ('concised feedback' in data) {
-    return data['concised feedback'];
-  }
-  return data.concised_feedback;
+const getConcisedFeedback = (data: StructuredFeedback): string => {
+  return data.structured_feedback;
 };
 
-const isStructuredFeedback = (obj: unknown): obj is StructuredFeedback | StructuredFeedbackWithSpace => {
-  return typeof obj === 'object' && obj !== null && (
-    'concised feedback' in obj || 'concised_feedback' in obj
-  );
+const isStructuredFeedback = (obj: unknown): obj is StructuredFeedback => {
+  return typeof obj === 'object' && obj !== null && 'structured_feedback' in obj;
 };
 
-const isFeedbackWrapper = (obj: unknown): obj is { feedback: string | StructuredFeedback | StructuredFeedbackWithSpace } => {
+const isFeedbackWrapper = (obj: unknown): obj is { feedback: string | StructuredFeedback } => {
   return typeof obj === 'object' && obj !== null && 'feedback' in obj;
 };
 
@@ -295,6 +290,9 @@ const CustomTooltip = ({ children, content, isVisible, position }: {
 };
 
 export default function FeedbackArea({ result, isFeedbackLoading }: { result: FeedbackResult, isFeedbackLoading: boolean }) {
+  const [feedbackRating, setFeedbackRating] = useState<'good' | 'bad' | null>(null);
+  const [hasRated, setHasRated] = useState(false);
+
   console.log("FeedbackArea received result:", result);
   console.log("Result type:", typeof result);
   if (typeof result === 'object' && result !== null) {
@@ -303,6 +301,26 @@ export default function FeedbackArea({ result, isFeedbackLoading }: { result: Fe
       console.log("Concised feedback in component:", getConcisedFeedback(result));
     }
   }
+
+  // Handle feedback rating
+  const handleFeedbackRating = (rating: 'good' | 'bad') => {
+    setFeedbackRating(rating);
+    setHasRated(true);
+    
+    // Here you can add logic to send the rating to your backend
+    console.log(`User rated feedback as: ${rating}`);
+    
+    // Example: Send to backend
+    // sendFeedbackRating(rating, result);
+  };
+
+  // Reset rating when new feedback is received
+  React.useEffect(() => {
+    if (result && !isFeedbackLoading) {
+      setFeedbackRating(null);
+      setHasRated(false);
+    }
+  }, [result, isFeedbackLoading]);
 
   // Handle different result formats
   const getFeedbackData = (): ProcessedFeedbackData => {
@@ -329,7 +347,7 @@ export default function FeedbackArea({ result, isFeedbackLoading }: { result: Fe
   const renderContent = () => {
     if (typeof feedbackData === "string") {
       return (
-        <div className="p-6 bg-gradient-to-br from-blue-50 to-indigo-50 rounded-xl border border-blue-200">
+        <div className="p-6 bg-gradient-to-br from-blue-50 to-indigo-50 rounded-xl border border-blue-200 relative">
           <div className="flex items-start gap-3">
             <div className="flex-shrink-0 w-8 h-8 bg-gradient-to-r from-blue-500 to-indigo-500 rounded-full flex items-center justify-center">
               <Sparkles className="w-4 h-4 text-white" />
@@ -338,74 +356,98 @@ export default function FeedbackArea({ result, isFeedbackLoading }: { result: Fe
               <p className="text-slate-700 leading-normal text-base">{feedbackData}</p>
             </div>
           </div>
+          
+          {/* Feedback Rating Buttons - Bottom Right */}
+          <div className="absolute bottom-3 right-3 flex items-center gap-3">
+            <span className="text-xs text-slate-500 font-medium">Rate this feedback:</span>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => handleFeedbackRating('good')}
+                className={`
+                  p-1.5 rounded-md transition-all duration-200
+                  ${feedbackRating === 'good' 
+                    ? 'text-blue-600 bg-blue-50 border border-blue-200' 
+                    : hasRated 
+                      ? 'text-slate-400 hover:text-slate-600 hover:bg-slate-50' 
+                      : 'text-slate-600 hover:text-slate-800 hover:bg-slate-100'
+                  }
+                `}
+              >
+                <ThumbsUp className="w-4 h-4" />
+              </button>
+              
+              <button
+                onClick={() => handleFeedbackRating('bad')}
+                className={`
+                  p-1.5 rounded-md transition-all duration-200
+                  ${feedbackRating === 'bad' 
+                    ? 'text-blue-600 bg-blue-50 border border-blue-200' 
+                    : hasRated 
+                      ? 'text-slate-400 hover:text-slate-600 hover:bg-slate-50' 
+                      : 'text-slate-600 hover:text-slate-800 hover:bg-slate-100'
+                  }
+                `}
+              >
+                <ThumbsDown className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
         </div>
       );
     } else {
-      // Prepare terms and phrases for highlighting
-      const terms = isStructuredFeedback(feedbackData) && feedbackData.terms
-        ? feedbackData.terms.map(termObj => Object.keys(termObj)[0])
-        : [];
-      const phrases = isStructuredFeedback(feedbackData) && feedbackData.quotes
-        ? feedbackData.quotes.flatMap(q => q.quotes)
-        : [];
-      
-      console.log("Prepared terms for highlighting:", terms);
-      console.log("Prepared phrases for highlighting:", phrases);
-      console.log("Is structured feedback:", isStructuredFeedback(feedbackData));
-      
       return (
         <div className="space-y-6">
-          {/* Concised Feedback - Main Highlight */}
-          <div className="p-6 bg-gradient-to-br from-emerald-50 to-teal-50 rounded-xl border border-emerald-200">
+          {/* Structured Feedback */}
+          <div className="p-6 bg-gradient-to-br from-emerald-50 to-teal-50 rounded-xl border border-emerald-200 relative">
             <div className="flex items-start gap-3">
               <div className="flex-shrink-0 w-8 h-8 bg-gradient-to-r from-emerald-500 to-teal-500 rounded-full flex items-center justify-center">
                 <Target className="w-4 h-4 text-white" />
               </div>
               <div className="flex-1">
-                <h4 className="text-sm font-semibold text-emerald-700 mb-2 uppercase tracking-wide">Summary Feedback</h4>
+                <h4 className="text-sm font-semibold text-emerald-700 mb-2 uppercase tracking-wide">Feedback</h4>
                 <p className="text-slate-700 leading-normal text-base">
-                  {isStructuredFeedback(feedbackData)
-                    ? highlightTermsAndPhrasesWithTooltip(
-                        getConcisedFeedback(feedbackData),
-                        feedbackData.terms ?? [],
-                        feedbackData.quotes?.flatMap(q => q.quotes) ?? []
-                      )
-                    : feedbackData}
+                  {isStructuredFeedback(feedbackData) ? getConcisedFeedback(feedbackData) : feedbackData}
                 </p>
               </div>
             </div>
-          </div>
-
-          {isStructuredFeedback(feedbackData) && feedbackData.quotes && feedbackData.quotes.length > 0 && (
-            <div className="space-y-4">
-              <h4 className="text-lg font-semibold text-slate-800 flex items-center gap-2">
-                <div className="w-2 h-2 bg-purple-500 rounded-full"></div>
-                Key Phrases
-              </h4>
-              {feedbackData.quotes.map((sectionObj, idx) => (
-                <div key={idx} className="space-y-3">
-                  <div className="flex items-center gap-2">
-                    <div className="w-1 h-4 bg-purple-500 rounded-full"></div>
-                    <p className="font-semibold text-purple-700 text-sm uppercase tracking-wide">{sectionObj.section}</p>
-                  </div>
-                  <div className="space-y-2">
-                    {sectionObj.quotes.map((quote, qIdx) => (
-                      <div key={qIdx} className="p-4 bg-gradient-to-r from-purple-50 to-pink-50 rounded-lg border border-purple-200 hover:border-purple-300 transition-all duration-200">
-                        <div className="flex items-start gap-3">
-                          <div className="flex-shrink-0 w-6 h-6 bg-purple-500 rounded-full flex items-center justify-center">
-                            <Quote className="w-3 h-3 text-white" />
-                          </div>
-                          <div className="flex-1">
-                            <span className="text-slate-700 text-sm leading-normal italic">&quot;{quote}&quot;</span>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ))}
+            
+            {/* Feedback Rating Buttons - Bottom Right */}
+            <div className="absolute bottom-3 right-3 flex items-center gap-2">
+              <button
+                onClick={() => handleFeedbackRating('good')}
+                disabled={hasRated}
+                className={`
+                  flex items-center gap-1 px-2 py-1 rounded-md transition-all duration-200 text-xs font-medium
+                  ${feedbackRating === 'good' 
+                    ? 'bg-green-100 text-green-700 border border-green-300' 
+                    : hasRated 
+                      ? 'bg-slate-100 text-slate-400 cursor-not-allowed' 
+                      : 'bg-white/80 text-slate-600 border border-slate-300 hover:bg-green-50 hover:border-green-300 hover:text-green-700'
+                  }
+                `}
+              >
+                <ThumbsUp className={`w-3 h-3 ${feedbackRating === 'good' ? 'text-green-600' : ''}`} />
+                Good
+              </button>
+              
+              <button
+                onClick={() => handleFeedbackRating('bad')}
+                disabled={hasRated}
+                className={`
+                  flex items-center gap-1 px-2 py-1 rounded-md transition-all duration-200 text-xs font-medium
+                  ${feedbackRating === 'bad' 
+                    ? 'bg-red-100 text-red-700 border border-red-300' 
+                    : hasRated 
+                      ? 'bg-slate-100 text-slate-400 cursor-not-allowed' 
+                      : 'bg-white/80 text-slate-600 border border-slate-300 hover:bg-red-50 hover:border-red-300 hover:text-red-700'
+                  }
+                `}
+              >
+                <ThumbsDown className={`w-3 h-3 ${feedbackRating === 'bad' ? 'text-red-600' : ''}`} />
+                Bad
+              </button>
             </div>
-          )}
+          </div>
         </div>
       );
     }

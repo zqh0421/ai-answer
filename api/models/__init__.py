@@ -5,3 +5,4 @@ from .visionModel import *
 from .userModel import *
 from .questionModel import *
 from .resultModel import *
+from .ttsModel import *

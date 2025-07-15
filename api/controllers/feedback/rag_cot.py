@@ -5,12 +5,10 @@ from typing_extensions import Annotated
 from .call_gpt import call_gpt, format_question
 
 def generate_feedback_using_rag_cot(question: List[dict], answer: str, slide_text_arr: List[str], feedbackFramework: str, isStructured: bool, settings: Annotated[Settings, Depends(get_settings)]) -> str:
-    api_key = settings.openai_api_key  # Corrected to access openai_api_key
     print("slide_text_arr:",slide_text_arr)
-    
-    # Combined structured JSON + HTML format prompts (when isStructured is True)
+
     if isStructured:
-        prompt_combined = (
+        prompt_corrective = (
             f"You are an expert in providing feedback for students' answers. Generate clear, effective feedback and format it into a combined structured output.\n\n"
             f"## Task 1: Generate Feedback\n"
             f"Generate feedback that meets all five criteria:\n\n"
@@ -62,7 +60,7 @@ def generate_feedback_using_rag_cot(question: List[dict], answer: str, slide_tex
             "text": f"Answer: {answer}"
         })
         
-        result = call_gpt(prompt_combined, user_prompt, settings)
+        result = call_gpt(prompt_corrective, user_prompt, settings)
         return result
     
     # Original prompts for non-HTML format

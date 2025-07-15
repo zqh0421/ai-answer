@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from 'react';
-import { MessageSquare, Loader2, CheckCircle, XCircle } from 'lucide-react';
+import { MessageSquare, Loader2, CheckCircle, XCircle, ThumbsUp, ThumbsDown } from 'lucide-react';
 
 interface HTMLFeedbackAreaProps {
   html: string;
@@ -9,6 +9,29 @@ interface HTMLFeedbackAreaProps {
 
 // Component to render HTML feedback as a coherent paragraph with inline formatting
 const HTMLFeedbackArea: React.FC<HTMLFeedbackAreaProps> = ({ html, isFeedbackLoading, score }) => {
+  const [feedbackRating, setFeedbackRating] = useState<'good' | 'bad' | null>(null);
+  const [hasRated, setHasRated] = useState(false);
+
+  // Handle feedback rating
+  const handleFeedbackRating = (rating: 'good' | 'bad') => {
+    setFeedbackRating(rating);
+    setHasRated(true);
+    
+    // Here you can add logic to send the rating to your backend
+    console.log(`User rated feedback as: ${rating}`);
+    
+    // Example: Send to backend
+    // sendFeedbackRating(rating, html);
+  };
+
+  // Reset rating when new feedback is received
+  React.useEffect(() => {
+    if (html && !isFeedbackLoading) {
+      setFeedbackRating(null);
+      setHasRated(false);
+    }
+  }, [html, isFeedbackLoading]);
+
   // Function to clean up the HTML string by removing code block markers
   const cleanHTMLString = (htmlString: string): string => {
     // Remove code block markers if present
@@ -145,7 +168,7 @@ const HTMLFeedbackArea: React.FC<HTMLFeedbackAreaProps> = ({ html, isFeedbackLoa
           </div>
         </div>
       ) : html ? (
-        <div className="p-6 bg-gradient-to-br from-slate-50 to-blue-50 rounded-xl border border-slate-200 shadow-sm">
+        <div className="p-6 bg-gradient-to-br from-slate-50 to-blue-50 rounded-xl border border-slate-200 shadow-sm relative">
           <div className="flex items-start gap-3">
             <div className={`flex-shrink-0 w-8 h-8 ${iconStyle.color} rounded-full flex items-center justify-center shadow-sm`}>
               {iconStyle.icon}
@@ -154,6 +177,42 @@ const HTMLFeedbackArea: React.FC<HTMLFeedbackAreaProps> = ({ html, isFeedbackLoa
               <p className="text-slate-700 leading-relaxed text-base space-x-1">
                 {renderHTMLFeedback(html)}
               </p>
+            </div>
+          </div>
+          
+          {/* Feedback Rating Buttons - Bottom Right */}
+          <div className="absolute bottom-3 right-3 flex items-center gap-3">
+            <span className="text-xs text-slate-500 font-medium">Rate this feedback:</span>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => handleFeedbackRating('good')}
+                className={`
+                  p-1.5 rounded-md transition-all duration-200
+                  ${feedbackRating === 'good' 
+                    ? 'text-blue-600 bg-blue-50 border border-blue-200' 
+                    : hasRated 
+                      ? 'text-slate-400 hover:text-slate-600 hover:bg-slate-50' 
+                      : 'text-slate-600 hover:text-slate-800 hover:bg-slate-100'
+                  }
+                `}
+              >
+                <ThumbsUp className="w-4 h-4" />
+              </button>
+              
+              <button
+                onClick={() => handleFeedbackRating('bad')}
+                className={`
+                  p-1.5 rounded-md transition-all duration-200
+                  ${feedbackRating === 'bad' 
+                    ? 'text-blue-600 bg-blue-50 border border-blue-200' 
+                    : hasRated 
+                      ? 'text-slate-400 hover:text-slate-600 hover:bg-slate-50' 
+                      : 'text-slate-600 hover:text-slate-800 hover:bg-slate-100'
+                  }
+                `}
+              >
+                <ThumbsDown className="w-4 h-4" />
+              </button>
             </div>
           </div>
         </div>

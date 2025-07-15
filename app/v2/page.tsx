@@ -539,6 +539,8 @@ function HomeChildren() {
               loadedCount={loadedCount}
               totalCount={totalCount}
               onImageClick={handleImageClick}
+              studentAnswer={answer}
+              feedback={typeof result === 'string' ? result : (result as StructuredFeedback)?.feedback || ''}
             />
           )}
         </motion.div>

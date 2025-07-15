@@ -1,7 +1,9 @@
 import ReactMarkdown from 'react-markdown';
 import { Reference } from '@/app/types';
-import { Layers, ExternalLink, Loader2, ZoomIn } from 'lucide-react';
+import { Layers, ExternalLink, Loader2, ZoomIn, Volume2, VolumeX } from 'lucide-react';
 import DynamicImage from "@/app/components/DynamicImage";
+import { useState, useRef, useEffect } from 'react';
+import axios from 'axios';
 
 interface ReferenceAreaProps {
   reference: Reference | undefined;
@@ -11,6 +13,9 @@ interface ReferenceAreaProps {
   loadedCount: number;
   totalCount: number;
   onImageClick?: (image: string, index: number) => void;
+  autoPlayNarration?: boolean; // Optional: auto-play narration when reference loads
+  studentAnswer?: string; // Student's answer for contextual guidance
+  feedback?: string; // Feedback to guide attention to specific areas
 }
 
 export default function ReferenceArea({
@@ -21,20 +26,222 @@ export default function ReferenceArea({
   loadedCount,
   totalCount,
   onImageClick,
+  autoPlayNarration = false,
+  studentAnswer,
+  feedback,
 }: ReferenceAreaProps) {
   const validImages = images ?? [];
+  const [isAudioLoading, setIsAudioLoading] = useState(false);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [audioError, setAudioError] = useState<string | null>(null);
+  const [audioContextInitialized, setAudioContextInitialized] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  // Generate interactive teaching assistant narration using GPT-4o
+  const generateNarration = async () => {
+    if (!reference) return;
+
+    setIsAudioLoading(true);
+    setAudioError(null);
+
+    try {
+      console.log('Generating interactive narration with GPT-4o...');
+
+      // Use the new interactive narration API
+      const response = await axios.post('/api/interactive-narration', {
+        student_answer: studentAnswer || "No answer provided",
+        feedback: feedback || "No feedback provided",
+        reference_content: reference.display,
+        slide_title: reference.slide_title,
+        page_number: reference.page_number + 1,
+        has_images: validImages.length > 0,
+        voice: 'alloy',
+        slide_images: validImages // Pass the slide images for visual analysis
+      });
+
+      console.log('Interactive narration API response received:', response.status);
+
+      if (response.data.audio_base64) {
+        console.log('Interactive audio base64 received, length:', response.data.audio_base64.length);
+        // Create audio blob and play it
+        const audioBlob = new Blob([
+          Uint8Array.from(atob(response.data.audio_base64), c => c.charCodeAt(0))
+        ], { type: 'audio/mpeg' });
+        
+        const audioUrl = URL.createObjectURL(audioBlob);
+        
+        if (audioRef.current) {
+          audioRef.current.src = audioUrl;
+          
+          // Add event listeners for better debugging
+          audioRef.current.onloadeddata = () => {
+            console.log('Audio loaded successfully');
+          };
+          
+          audioRef.current.oncanplay = () => {
+            console.log('Audio can play');
+          };
+          
+          // Try to play with error handling and user interaction
+          try {
+            const playPromise = audioRef.current.play();
+            if (playPromise !== undefined) {
+              playPromise
+                .then(() => {
+                  console.log('Audio started playing');
+                  setIsPlaying(true);
+                })
+                .catch((error) => {
+                  console.error('Audio play failed:', error);
+                  
+                  // Handle autoplay policy errors
+                  if (error.name === 'NotAllowedError' || error.message.includes('user agent') || error.message.includes('permission')) {
+                    setAudioError('Audio blocked by browser. Please click the button again to enable audio playback.');
+                  } else {
+                    setAudioError(`Audio playback failed: ${error.message}`);
+                  }
+                  setIsPlaying(false);
+                });
+            }
+          } catch (error) {
+            console.error('Audio play error:', error);
+            setAudioError(`Audio playback error: ${error}`);
+            setIsPlaying(false);
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Audio generation error:', error);
+      setAudioError('Failed to generate audio narration');
+    } finally {
+      setIsAudioLoading(false);
+    }
+  };
+
+  // Initialize audio context on first user interaction
+  const initializeAudioContext = () => {
+    if (!audioContextInitialized) {
+      try {
+        // Create and resume audio context to enable audio playback
+        const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
+        if (AudioContext) {
+          const audioContext = new AudioContext();
+          if (audioContext.state === 'suspended') {
+            audioContext.resume();
+          }
+        }
+        setAudioContextInitialized(true);
+      } catch (error) {
+        console.log('Audio context initialization:', error);
+      }
+    }
+  };
+
+  // Handle audio play/pause
+  const handleAudioToggle = () => {
+    // Initialize audio context on first click
+    initializeAudioContext();
+    
+    if (isPlaying && audioRef.current) {
+      audioRef.current.pause();
+      setIsPlaying(false);
+    } else if (!isPlaying) {
+      generateNarration();
+    }
+  };
+
+  // Handle audio ended
+  const handleAudioEnded = () => {
+    setIsPlaying(false);
+  };
+
+  // Auto-play narration when reference loads (if enabled)
+  useEffect(() => {
+    if (autoPlayNarration && reference && !isReferenceLoading && !isAudioLoading && !isPlaying) {
+      generateNarration();
+    }
+  }, [reference, isReferenceLoading, autoPlayNarration]);
 
   return (
     <div className="z-[99]">
-      <div className="flex items-center gap-2 mb-4">
-        <div className="flex items-center justify-center w-8 h-8 bg-gradient-to-r from-blue-500 to-blue-600 rounded-lg">
-          <Layers className="w-4 h-4 text-white" />
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2">
+          <div className="flex items-center justify-center w-8 h-8 bg-gradient-to-r from-blue-500 to-blue-600 rounded-lg">
+            <Layers className="w-4 h-4 text-white" />
+          </div>
+          <div>
+            <h3 className="text-lg font-bold text-slate-800">Reference Material</h3>
+            <p className="text-xs text-slate-600">Supporting content and slides</p>
+          </div>
         </div>
-        <div>
-          <h3 className="text-lg font-bold text-slate-800">Reference Material</h3>
-          <p className="text-xs text-slate-600">Supporting content and slides</p>
-        </div>
+        
+                 {/* Audio Narration Buttons */}
+         <div className="flex items-center gap-2">
+           
+           {/* Main Audio Narration Button */}
+           {reference && !isReferenceLoading && (
+             <button
+               onClick={handleAudioToggle}
+               disabled={isAudioLoading}
+               aria-label={isAudioLoading ? 'Generating interactive narration...' : isPlaying ? 'Stop audio narration' : 'Play interactive teaching assistant narration'}
+               className={`
+                 flex items-center gap-2 px-3 py-2 rounded-lg transition-all duration-200
+                 ${isAudioLoading 
+                   ? 'bg-slate-100 text-slate-400 cursor-not-allowed' 
+                   : isPlaying 
+                     ? 'bg-blue-100 text-blue-700 hover:bg-blue-200' 
+                     : 'bg-slate-100 text-slate-600 hover:bg-slate-200 hover:text-slate-800'
+                 }
+               `}
+               title="Listen to interactive teaching assistant narration"
+             >
+               {isAudioLoading ? (
+                 <Loader2 className="w-4 h-4 animate-spin" />
+               ) : isPlaying ? (
+                 <VolumeX className="w-4 h-4" />
+               ) : (
+                 <Volume2 className="w-4 h-4" />
+               )}
+               <span className="text-sm font-medium">
+                 {isAudioLoading ? 'Generating...' : isPlaying ? 'Stop' : 'Listen'}
+               </span>
+             </button>
+           )}
+         </div>
       </div>
+      
+      {/* Audio Error Message */}
+      {audioError && (
+        <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg">
+          <p className="text-sm text-red-600">{audioError}</p>
+          {audioError.includes('blocked by browser') && (
+            <div className="mt-2 p-2 bg-blue-50 border border-blue-200 rounded">
+              <p className="text-xs text-blue-700">
+                <strong>解决方案:</strong> 点击浏览器地址栏左侧的锁图标 → 网站设置 → 声音 → 允许
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+      
+      {/* Hidden Audio Element */}
+      <audio
+        ref={audioRef}
+        onEnded={handleAudioEnded}
+        onError={(e) => {
+          console.error('Audio element error:', e);
+          setIsPlaying(false);
+          setAudioError('Audio playback failed');
+        }}
+        onLoadStart={() => console.log('Audio loading started')}
+        onLoadedMetadata={() => console.log('Audio metadata loaded')}
+        onCanPlay={() => console.log('Audio can play')}
+        onPlay={() => console.log('Audio play event fired')}
+        onPause={() => console.log('Audio pause event fired')}
+        style={{ display: 'none' }}
+        controls={false}
+        preload="auto"
+      />
       
       {isReferenceLoading ? (
         <div className="flex items-center justify-center py-8">

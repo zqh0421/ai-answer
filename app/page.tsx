@@ -10,7 +10,7 @@ import { useSelector, useDispatch } from 'react-redux';
 import { RootState, AppDispatch } from '@/app/store/store';
 import { saveAnswer, saveDraftAnswer, saveDraftQuestion } from '@/app/slices/userSlice';
 import { Question, QuestionContent } from "@/app/manage/question/page";
-import { Reference, Course, Module, Slide, RecordResultInput } from "@/app/types";
+import { Reference, Course, Module, Slide, RecordResultInput, StructuredFeedback } from "@/app/types";
 
 import TestDrawer from '@/app/components/TestDrawer';
 import DynamicImage from "@/app/components/DynamicImage";
@@ -502,6 +502,8 @@ function HomeChildren() {
                 isImageLoading={isImageLoading}
                 loadedCount={loadedCount}
                 totalCount={totalCount}
+                studentAnswer={answer}
+                feedback={typeof result === 'string' ? result : (result as StructuredFeedback)?.feedback || ''}
               />
             </div>
           )}
