@@ -358,7 +358,7 @@ export default function FeedbackArea({ result, isFeedbackLoading }: { result: Fe
           </div>
           
           {/* Feedback Rating Buttons - Bottom Right */}
-          <div className="absolute bottom-3 right-3 flex items-center gap-3">
+          <div className="absolute bottom-3 right-3 flex items-center">
             <span className="text-xs text-slate-500 font-medium">Rate this feedback:</span>
             <div className="flex items-center gap-1">
               <button

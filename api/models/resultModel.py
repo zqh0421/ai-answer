@@ -3,6 +3,8 @@ from typing import Optional, List
 from datetime import datetime
 class RecordResultModel(BaseModel):
     learner_id: str
+    session_id: str
+    study_id: str
     # ip_address: Optional[str] = None
     question_id: str
     answer: str

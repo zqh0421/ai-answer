@@ -41,7 +41,9 @@ export interface modulesNslides {
 }
 
 export type RecordResultInput = {
-  learner_id: string
+  learner_id: string,
+  study_id: string,
+  session_id: string,
   ip_address?: string,
   question_id: string,
   answer: string,

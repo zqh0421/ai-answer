@@ -169,7 +169,7 @@ const HTMLFeedbackArea: React.FC<HTMLFeedbackAreaProps> = ({ html, isFeedbackLoa
         </div>
       ) : html ? (
         <div className="p-6 bg-gradient-to-br from-slate-50 to-blue-50 rounded-xl border border-slate-200 shadow-sm relative">
-          <div className="flex items-start gap-3">
+          <div className="flex items-start gap-3 mb-4">
             <div className={`flex-shrink-0 w-8 h-8 ${iconStyle.color} rounded-full flex items-center justify-center shadow-sm`}>
               {iconStyle.icon}
             </div>

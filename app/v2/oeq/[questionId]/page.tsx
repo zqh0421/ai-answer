@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, Suspense, useCallback } from "react";
+import { useState, useEffect, Suspense, useCallback, useMemo } from "react";
 import axios from "axios";
 import { useSearchParams, useParams } from "next/navigation";
 import { debounce } from "lodash";
@@ -22,9 +22,16 @@ function PageChildren() {
   const params = useParams() as { questionId?: string };
   const question_id = params?.questionId || "";
 
-  // Optional query param (still supported)
+  // Optional query params (still supported)
   const searchParams = useSearchParams();
   const course_version = searchParams.get("version");
+
+  // 🔎 Collect Prolific params from the URL if present
+  const { prolificPid, studyId, sessionId } = useMemo(() => ({
+    prolificPid: searchParams.get("PROLIFIC_PID") || undefined,
+    studyId: searchParams.get("STUDY_ID") || undefined,
+    sessionId: searchParams.get("SESSION_ID") || undefined,
+  }), [searchParams]);
 
   const dispatch = useDispatch<AppDispatch>();
 
@@ -170,8 +177,6 @@ function PageChildren() {
       })
       .catch((err) => {
         console.error("Error fetching question:", err);
-        // Optional: navigate away if invalid
-        // window.location.href = "/";
       })
       .finally(() => setQuestionLoading(false));
   }, [question_id]);
@@ -197,6 +202,7 @@ function PageChildren() {
         { slide_id: slideId, page_number: pageNumber },
         { timeout: 60000 }
       );
+    
       return response.data.img_base64 as string | null;
     } catch (error) {
       console.error("Error fetching image:", error);
@@ -276,9 +282,9 @@ function PageChildren() {
     }
   };
 
-  const recordResultToDatabase = async (result: RecordResultInput) => {
+  const recordResultToDatabase = async (payload: RecordResultInput) => {
     try {
-      await axios.post("/api/record_result", result);
+      await axios.post("/api/record_result", payload);
     } catch (error) {
       console.error("Error recording result to database:", error);
     }
@@ -304,7 +310,9 @@ function PageChildren() {
           const response = await axios.get(`/api/get_human_feedback/${questionPreset.question_id}`);
           const endTime = Date.now();
           const recordPayload: RecordResultInput = {
-            learner_id: participantId || "unidentifiable_learner",
+            learner_id: prolificPid || participantId || "unidentifiable_learner",
+            study_id: studyId || "unidentifiable_study",
+            session_id: sessionId || "unidentifiable_session",
             question_id: questionPreset.question_id,
             answer: answer,
             feedback: response.data.human_feedback,
@@ -318,7 +326,8 @@ function PageChildren() {
             submission_time: startTime,
             system_total_response_time: endTime - startTime,
           };
-          // await recordResultToDatabase(recordPayload);
+          await recordResultToDatabase(recordPayload);
+
           setResult(response.data.human_feedback);
           setIsFeedbackLoading(false);
           setIsImageLoading(false);
@@ -361,7 +370,9 @@ function PageChildren() {
 
         if (questionPreset) {
           const recordPayload: RecordResultInput = {
-            learner_id: participantId || "unidentifiable_learner",
+            learner_id: prolificPid || participantId || "unidentifiable_learner",
+            study_id: studyId || "unidentifiable_study",
+            session_id: sessionId || "unidentifiable_session",
             question_id: questionPreset.question_id,
             answer: answer,
             feedback: response.data.feedback,
@@ -378,7 +389,7 @@ function PageChildren() {
             submission_time: startTime,
             system_total_response_time: endTime - startTime,
           };
-          // await recordResultToDatabase(recordPayload);
+          await recordResultToDatabase(recordPayload);
         }
 
         setResult(response.data);
@@ -413,7 +424,8 @@ function PageChildren() {
 
   return (
     <div className="">
-      <ParticipantModal isOpen={!participantId && !!course_version} />
+      {/* If you only want to show the participant modal for Prolific flows, you can also gate this by prolificPid */}
+      <ParticipantModal isOpen={!prolificPid && !participantId && !!course_version} />
 
       <TestDrawer isOpen={isDrawerOpen} closeDrawer={closeDrawer} message={message} />
 

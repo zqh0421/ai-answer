@@ -9,6 +9,8 @@ class RecordResult(Base):
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)  # Unique ID for each record
     learner_id = Column(String, nullable=False)  # Learner ID who submitted the result
+    study_id = Column(String, nullable=True)
+    session_id = Column(String, nullable=True)
     # ip_address = Column(String, nullable=True)  # Optional IP address of the learner
     question_id = Column(String, nullable=False)  # Associated question ID
     answer = Column(Text, nullable=False)  # User's answer (text format)
