@@ -2,7 +2,7 @@
 
 import { useState, useEffect, Suspense, useCallback } from "react";
 import axios from "axios";
-import { useSearchParams } from "next/navigation";
+import { useSearchParams, useParams } from "next/navigation";
 import { debounce } from "lodash";
 import { useSelector, useDispatch } from "react-redux";
 
@@ -17,9 +17,13 @@ import LeftFeedbackPanel from "@/app/components/v2/LeftFeedbackPanel";
 import RightInputPanel from "@/app/components/v2/RightInputPanel";
 import { Reference, Course, Module, Slide, RecordResultInput, FeedbackResult } from "@/app/types";
 
-function HomeChildren() {
+function PageChildren() {
+  // Dynamic route param: /v2/oeq/[questionId]
+  const params = useParams() as { questionId?: string };
+  const question_id = params?.questionId || "";
+
+  // Optional query param (still supported)
   const searchParams = useSearchParams();
-  const question_id = searchParams.get("question_id") || "";
   const course_version = searchParams.get("version");
 
   const dispatch = useDispatch<AppDispatch>();
@@ -101,75 +105,90 @@ function HomeChildren() {
     debouncedSaveAnswer(e.target.value);
   };
 
-  useEffect(() => {
-    if (courses.length > 0 && !course) {
-      setCourse(courses[0].course_id);
-    }
-  }, [courses, course]);
-
-  useEffect(() => {
-    if (question_id) {
-      setQuestionLoading(true);
-      axios
-        .get(`/api/questions/by_id/${question_id}`)
-        .then((res) => {
-          setQuestionPreset(res.data);
-        })
-        .catch((err) => {
-          console.error("Error fetching question:", err);
-          window.location.href = "/";
-        })
-        .finally(() => {
-          setQuestionLoading(false);
-        });
-    }
-  }, [question_id]);
-
+  // Load initial courses (for selectors)
   useEffect(() => {
     axios
       .get("/api/courses/public")
-      .then((response) => {
-        setCourses(response.data);
-      })
+      .then((response) => setCourses(response.data))
       .catch((error) => {
         console.error("Error fetching the courses:", error);
         setMessage("Failed to load courses.");
       });
   }, []);
 
+  // Auto-pick the first course when courses arrive
   useEffect(() => {
-    if (course) {
-      axios
-        .get(`/api/courses/by_id/${course}/modules`)
-        .then((response) => {
-          setAvailableModules(response.data.modules);
-          setModule(response.data.modules.map((mod: Module) => mod.module_id));
-        })
-        .catch((error) => {
-          console.error("Error fetching the courses:", error);
-          setMessage("Failed to load courses.");
-        });
-    }
+    if (courses.length > 0 && !course) setCourse(courses[0].course_id);
+  }, [courses, course]);
+
+  // Load modules for the selected course
+  useEffect(() => {
+    if (!course) return;
+    axios
+      .get(`/api/courses/by_id/${course}/modules`)
+      .then((response) => {
+        setAvailableModules(response.data.modules);
+        setModule(response.data.modules.map((mod: Module) => mod.module_id));
+      })
+      .catch((error) => {
+        console.error("Error fetching modules:", error);
+        setMessage("Failed to load courses.");
+      });
   }, [course]);
 
+  // Load slides for selected modules
   useEffect(() => {
-    if (module.length) {
-      const fetchSlides = async () => {
-        try {
-          const slideRequests = module.map((modId) => axios.get(`/api/modules/${modId}/slides`));
-          const slideResponses = await Promise.all(slideRequests);
-          const allSlides = slideResponses.flatMap((res) => res.data.slides);
-          setAvailableSlides(allSlides);
-          setSlide(allSlides.map((sld: Slide) => sld.id));
-        } catch (error) {
-          console.error("Error fetching the slides:", error);
-        }
-      };
-      fetchSlides();
-    } else {
+    if (!module.length) {
       setAvailableSlides([]);
+      return;
     }
+    const fetchSlides = async () => {
+      try {
+        const slideRequests = module.map((modId) => axios.get(`/api/modules/${modId}/slides`));
+        const slideResponses = await Promise.all(slideRequests);
+        const allSlides = slideResponses.flatMap((res) => res.data.slides);
+        setAvailableSlides(allSlides);
+        setSlide(allSlides.map((sld: Slide) => sld.id));
+      } catch (error) {
+        console.error("Error fetching the slides:", error);
+      }
+    };
+    fetchSlides();
   }, [module]);
+
+  // 🔑 Fetch question data from DB using dynamic route param question_id
+  useEffect(() => {
+    if (!question_id) return;
+    setQuestionLoading(true);
+    axios
+      .get(`/api/questions/by_id/${question_id}`)
+      .then((res) => {
+        setQuestionPreset(res.data);
+        // If needed, prefill question input for non-preset usage
+        if (!res.data?.content?.length) return;
+        // Keep the original behavior of showing preset content and no free-input box
+      })
+      .catch((err) => {
+        console.error("Error fetching question:", err);
+        // Optional: navigate away if invalid
+        // window.location.href = "/";
+      })
+      .finally(() => setQuestionLoading(false));
+  }, [question_id]);
+
+  // Connectivity ping (unchanged)
+  useEffect(() => {
+    axios
+      .get("/api/test")
+      .then((response) => {
+        setMessage(response.data.message);
+        setIsDrawerOpen(false);
+      })
+      .catch((error) => {
+        console.error("Error fetching the API:", error);
+        setMessage("Failed to load message.");
+      });
+  }, []);
 
   const handlePdfImage = async (pageNumber: number, slideId: string) => {
     try {
@@ -186,9 +205,7 @@ function HomeChildren() {
   };
 
   useEffect(() => {
-    if (!isImageLoading) {
-      setLoadedCount(-1);
-    }
+    if (!isImageLoading) setLoadedCount(-1);
   }, [isImageLoading]);
 
   function handleInputResize(e: React.ChangeEvent<HTMLTextAreaElement>) {
@@ -204,9 +221,7 @@ function HomeChildren() {
         slideIds: slide,
         preferredInfoType: preferredInfoType,
       });
-
       const res = typeof response.data === "string" ? JSON.parse(response.data).result : response.data.result;
-
       setReference(res[0]);
 
       if (preferredInfoType === "vision" && res[0].image_text) {
@@ -457,10 +472,10 @@ function HomeChildren() {
   );
 }
 
-export default function Home() {
+export default function Page() {
   return (
     <Suspense fallback={<div>Loading...</div>}>
-      <HomeChildren />
+      <PageChildren />
     </Suspense>
   );
 }
