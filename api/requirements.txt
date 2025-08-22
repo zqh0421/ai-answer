@@ -1,5 +1,6 @@
 aiohappyeyeballs==2.4.0
 aiohttp==3.10.5
+httpx==0.27.2
 aiosignal==1.3.1
 aniso8601==9.0.1
 annotated-types==0.7.0
@@ -32,7 +33,7 @@ langsmith==0.1.125
 marshmallow==3.22.0
 multidict==6.1.0
 numpy==1.26.4
-openai==1.54.3
+openai==1.101.0
 orjson==3.10.7
 paramiko==3.5.0
 pdf2image==1.17.0
@@ -40,7 +41,6 @@ pillow==10.4.0
 pip-autoremove==0.10.0
 pip-tools==7.4.1
 pipdeptree==2.23.4
-psycopg2==2.9.10
 psycopg2-binary==2.9.9
 pydantic==2.9.1
 pydantic-settings==2.5.2

@@ -1,0 +1,51 @@
+{
+  "name": "ai-answer",
+  "build": {
+    "context": ".",
+    "dockerfile": "Dockerfile"
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "lts",
+      "packageManager": "pnpm"
+    },
+    "ghcr.io/devcontainers/features/python:1": {
+      "version": "3.12"
+    }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-python.isort",
+        "esbenp.prettier-vscode",
+        "dbaeumer.vscode-eslint",
+        "bradlc.vscode-tailwindcss"
+      ],
+      "settings": {
+        "editor.formatOnSave": true,
+        "python.analysis.typeCheckingMode": "basic",
+        "terminal.integrated.defaultProfile.linux": "bash"
+      }
+    }
+  },
+  "forwardPorts": [3000, 8000],
+  "portsAttributes": {
+    "3000": {
+      "label": "Next.js (frontend)",
+      "onAutoForward": "notify"
+    },
+    "8000": {
+      "label": "FastAPI (backend)",
+      "onAutoForward": "notify"
+    }
+  },
+  "remoteEnv": {
+    "PYTHONUNBUFFERED": "1",
+    "NODE_ENV": "development"
+  },
+  "postCreateCommand": "bash -lc 'corepack enable && pnpm -v && pnpm install && if [ -f api/requirements.txt ]; then pip install -r api/requirements.txt; fi'",
+  "postStartCommand": "bash -lc 'echo \"Tip: run \\\"pnpm dev\\\" to启动前后端\"'",
+  "workspaceFolder": "/workspaces/ai-answer"
+}

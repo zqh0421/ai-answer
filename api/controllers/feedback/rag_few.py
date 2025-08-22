@@ -1,17 +1,17 @@
 from typing import List
 from fastapi import Depends
-from openai import OpenAI
 from ...config import Settings, get_settings
 from typing_extensions import Annotated
 from .call_gpt import call_gpt, format_question
 import time
+
 
 async def generate_feedback_using_rag_few(question: List[dict], answer: str, slide_text_arr: List[str], feedbackFramework: str, settings: Annotated[Settings, Depends(get_settings)]) -> str:
     api_key = settings.openai_api_key  # Corrected to access openai_api_key
     # print("slide_text_arr:",slide_text_arr)
     prompt_none = (
         f"You are an expert in providing feedback using 2-3 sentences for students' answer based on the questions"
-        f"Based on the following questions, and students' answers, and Slides Content,  provide feedback  accurately and relevantly in 2-3 sentence.\n\n" 
+        f"Based on the following questions, and students' answers, and Slides Content,  provide feedback  accurately and relevantly in 2-3 sentence.\n\n"
         f"Here are some examples:"
         f"1. Your answer is quite broad and doesn’t address the specific learning objectives of the course. According to slides,Try focusing on how design principles guide e-learning strategies. This will make your response more relevant and targeted."
         f"2. Your answer is not conrrect. According to slides,The link between learning and engineering is an interesting angle, but it needs more substance. Think about what aspects of e-learning design are critical to achieving effective learning outcomes. This could help make your answer more comprehensive."
@@ -20,13 +20,13 @@ async def generate_feedback_using_rag_few(question: List[dict], answer: str, sli
     )
     prompt_component = (
         f"You are an expert in providing feedback using 2-3 sentences for students' answer based on the questions"
-        f"Based on the following questions, and students' answers, and Slides Content,provide feedback step-by-step, accurately and relevantly, following the four feedback levels (task, process, self-regulatory, and self). each feedback level only contain 2-3 sentences\n\n"  
+        f"Based on the following questions, and students' answers, and Slides Content,provide feedback step-by-step, accurately and relevantly, following the four feedback levels (task, process, self-regulatory, and self). each feedback level only contain 2-3 sentences\n\n"
         f" the output format must be: For Task:XXX\n For Process:XXX\n  For Self-Regulatory:XXX\n  For Self:XXX\n  "
         f"Here are some examples:"
         f"Example 1:\n"
         f"Question: What is Simple Regression?\n"
         f"PPT Content: Simple regression, also known as simple linear regression, is a statistical method used to model the relationship between two variables by fitting a linear equation to observed data. The two variables in simple regression are:\n"
-        f"- Dependent variable (Y): The outcome or response variable that you are trying to predict or explain.\n" 
+        f"- Dependent variable (Y): The outcome or response variable that you are trying to predict or explain.\n"
         f"- Independent variable (X): The predictor or explanatory variable that you use to predict the dependent variable.\n"
         f"Student's Answer: Simple regression is about the relationship between X and Y.\n"
         f"Step-by-step feedback:\n"
@@ -50,7 +50,7 @@ async def generate_feedback_using_rag_few(question: List[dict], answer: str, sli
         f"- Self: Excellent work! You have a strong understanding of simple regression. Keep exploring advanced concepts to sharpen your skills!\n"
         f"- Overall: Your answer is accurate.  Next, you should explore how errors can be minimized when fitting the linear model to data.\n"
         f"- Improved Answer: No need, the answer is already correct.\n"
-        
+
         f"Now, apply the same process to the Slides Content, provided question and answer."
 
         f"Slides Content: {slide_text_arr}\n\n"
@@ -77,19 +77,19 @@ async def generate_feedback_using_rag_few(question: List[dict], answer: str, sli
         "text": f"Answer: {answer}"
     })
 
-    if feedbackFramework=="none":
+    if feedbackFramework == "none":
         result = call_gpt(
             prompt_none,
             user_prompt,
             settings
         )
-    if feedbackFramework=="component":
+    if feedbackFramework == "component":
         result = call_gpt(
             prompt_component,
             user_prompt,
             settings
         )
-    if feedbackFramework=="feature":
+    if feedbackFramework == "feature":
         result = call_gpt(
             prompt_feature,
             user_prompt,
@@ -99,5 +99,5 @@ async def generate_feedback_using_rag_few(question: List[dict], answer: str, sli
     print(result)
     # time.sleep(3)
     # result="Your response is currently missing, so it's important to provide an answer to the question about which e-learning case, A or B, is better for student learning. According to the slides, learning from words and graphics (B) is more effective than words alone (A) because it helps students visualize the concepts, which is crucial for understanding complex mechanisms like a bicycle pump. Consider explaining why the combination of visuals and text enhances comprehension, especially for beginners."
-    
+
     return f"{result}"

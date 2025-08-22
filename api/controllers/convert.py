@@ -7,7 +7,8 @@ from fastapi.responses import StreamingResponse
 from ..models import ConvertModel, ConvertBatchModel
 
 from fastapi import Depends
-from openai import OpenAI
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage, SystemMessage
 from ..config import Settings, get_settings
 from typing_extensions import Annotated
 import base64
@@ -16,6 +17,8 @@ from fastapi.responses import StreamingResponse
 from io import BytesIO
 
 # Function to encode the image
+
+
 def encode_image(image_byte_arr):
     # Make sure to reset the pointer to the start of the byte array
     image_byte_arr.seek(0)
@@ -26,56 +29,55 @@ def encode_image(image_byte_arr):
     # Return the base64 encoded string
     return img_base64
 
+
 def vision(img_byte_arr, settings: Annotated[Settings, Depends(get_settings)], print_stream=False):
     print("Finding API KEY ...")
     api_key = settings.openai_api_key  # Corrected to access openai_api_key
 
     if not api_key:
-        raise ValueError("OPENAI_API_KEY is not set in the environment variables")
+        raise ValueError(
+            "OPENAI_API_KEY is not set in the environment variables")
 
-    # Initialize the OpenAI API
-    client = OpenAI(
-        api_key=api_key
+    # Initialize the LangChain ChatOpenAI
+    client = ChatOpenAI(
+        openai_api_key=api_key,
+        model="gpt-4o",
+        streaming=True
     )
     print("Encoding ...")
     # Getting the base64 string
     base64_image = encode_image(img_byte_arr)
     print("Encoding Finished.")
-    stream = client.chat.completions.create(
-        model="gpt-4o",
-        messages=[
+
+    # Create messages using LangChain message classes
+    messages = [
+        SystemMessage(
+            content="You are a helpful assistant that analyzes contents in course slide images."),
+        HumanMessage(content=[
             {
-                "role":"system",
-                "content": "You are a helpful assistant that analyzes contents in course slide images."
+                "type": "text",
+                "text": "What's in this image?"
             },
             {
-                "role": "user",
-                "content": [
-                  {
-                    "type": "text",
-                    "text": "What's in this image?"
-                  },
-                  {
-                    "type": "image_url",
-                    "image_url": {
-                      "url": f"data:image/png;base64,{base64_image}"
-                    }
-                  }
-                ]
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/png;base64,{base64_image}"
+                }
             }
-        ],
-        stream=True,
-    )
+        ])
+    ]
 
+    # Use streaming with LangChain
     result = ""
-    for chunk in stream:
-        if chunk.choices[0].delta.content is not None:
+    for chunk in client.stream(messages):
+        if chunk.content is not None:
             if print_stream:
-                print(chunk.choices[0].delta.content, end="")
-            result += chunk.choices[0].delta.content
+                print(chunk.content, end="")
+            result += chunk.content
     return {
         "understandings": result
     }
+
 
 async def convertController(convertModel: ConvertModel):
     # Get content of slide PDF file by page
@@ -98,10 +100,11 @@ async def convertController(convertModel: ConvertModel):
         img_byte_arr.seek(0)
         # return image stream
         return StreamingResponse(img_byte_arr, media_type="image/png")
-        
-    
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing PDF: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Error processing PDF: {e}")
+
 
 async def convertBatchController(convertBatchModel: ConvertBatchModel, settings: Annotated[Settings, Depends(get_settings)]):
     # Get content of slide PDF file by page
@@ -124,6 +127,7 @@ async def convertBatchController(convertBatchModel: ConvertBatchModel, settings:
         img_byte_arr.seek(0)
         print("Undestanding ...")
         return vision(img_byte_arr, settings)
-    
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error processing PDF: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Error processing PDF: {e}")

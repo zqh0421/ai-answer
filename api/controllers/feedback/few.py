@@ -1,13 +1,13 @@
 from fastapi import Depends
-from openai import OpenAI
 from ...config import Settings, get_settings
 from typing_extensions import Annotated, List
 from .call_gpt import call_gpt, format_question
 
+
 def generate_feedback_using_few(question: List[dict], answer: str, feedbackFramework: str, settings: Annotated[Settings, Depends(get_settings)]) -> str:
     prompt_none = (
         f"You are an expert in providing feedback using 2-3 sentences for students' answer based on the questions"
-        f"Based on the following questions, and students' answers, and feedback examples,  provide feedback  accurately and relevantly in 2-3 sentence.\n\n" 
+        f"Based on the following questions, and students' answers, and feedback examples,  provide feedback  accurately and relevantly in 2-3 sentence.\n\n"
         f"Here are some examples:"
         f"1. Your answer is quite broad and doesn’t address the specific learning objectives of the course. Try focusing on how design principles guide e-learning strategies. This will make your response more relevant and targeted."
         f"2. Your answer is not conrrect. The link between learning and engineering is an interesting angle, but it needs more substance. Think about what aspects of e-learning design are critical to achieving effective learning outcomes. This could help make your answer more comprehensive."
@@ -15,7 +15,7 @@ def generate_feedback_using_few(question: List[dict], answer: str, feedbackFrame
     )
     prompt_component = (
         f"You are an expert in providing feedback using 2-3 sentences for students' answer based on the questions"
-        f"Based on the following questions, and students' answers, and feedback examples,provide feedback step-by-step, accurately and relevantly, following the four feedback levels (task, process, self-regulatory, and self). each feedback level only contain 2-3 sentences\n\n"  
+        f"Based on the following questions, and students' answers, and feedback examples,provide feedback step-by-step, accurately and relevantly, following the four feedback levels (task, process, self-regulatory, and self). each feedback level only contain 2-3 sentences\n\n"
         f" the output format must be: For Task:XXX\n For Process:XXX\n  For Self-Regulatory:XXX\n  For Self:XXX\n  "
         f"Here are some examples:"
         f"questions:what is Simple Regression? ;students' answers: simple regression is about the relationship between X and Y;    Feedback: For Task:your answer is not completely correct, simple regression is not just the basic relationship between X with Y, it has more detailed information ; For process:to improve your answer, you need read the content in provided slides, and consider the complete definition, it refers to the linear regression, modeling the relationship between two variables by fitting a linear equation to observed data; For Self-regulatory: now, you may already know the complete definition of Simple regression, to write it down using words yourself; For:Self:good job! but there's still room for improvement. Keep studying and practicing, and you'll get there!   Improved Answer:XX "
@@ -42,23 +42,23 @@ def generate_feedback_using_few(question: List[dict], answer: str, feedbackFrame
         "text": f"Answer: {answer}"
     })
 
-    if feedbackFramework=="none":
+    if feedbackFramework == "none":
         result = call_gpt(
             prompt_none,
             user_prompt,
             settings
         )
-    if feedbackFramework=="component":
+    if feedbackFramework == "component":
         result = call_gpt(
             prompt_component,
             user_prompt,
             settings
         )
-    if feedbackFramework=="feature":
+    if feedbackFramework == "feature":
         result = call_gpt(
             prompt_feature,
             user_prompt,
             settings
         )
-    
+
     return f"{result}"

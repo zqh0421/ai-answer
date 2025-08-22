@@ -1,0 +1,11 @@
+{
+  "name": "ai-answer-api",
+  "version": "1.1.1",
+  "private": true,
+  "scripts": {
+    "fastapi-dev": "python3 -m uvicorn index:app --reload",
+    "fastapi-start": "python3 -m uvicorn index:app",
+    "fastapi-gdev": "python3 -m gunicorn -k uvicorn.workers.UvicornWorker -t 120 index:app",
+    "fastapi-gstart": "gunicorn -k uvicorn.workers.UvicornWorker -t 120 index:app"
+  }
+}

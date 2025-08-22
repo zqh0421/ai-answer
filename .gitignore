@@ -5,20 +5,21 @@
 venv/
 
 # dependencies
-/node_modules
+*/node_modules
 /.pnp
 .pnp.js
 .yarn/install-state.gz
+.pnpm-store
 
 # testing
 /coverage
 
 # next.js
-/.next/
+.next/
 /out/
 
 # production
-/build
+*/build
 
 # misc
 .DS_Store
@@ -42,3 +43,4 @@ next-env.d.ts
 # cache files
 __pycache__/
 data/
+/node_modules/

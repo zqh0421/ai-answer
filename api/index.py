@@ -33,9 +33,11 @@ import re
 import json
 import traceback
 # from .controllers.format import process_feedback_to_json
-import openai
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage, SystemMessage
 
 app = FastAPI()
+
 
 def get_db():
     db = SessionLocal()
@@ -44,10 +46,12 @@ def get_db():
     finally:
         db.close()
 
+
 @app.on_event("shutdown")
 async def shutdown_event():
     if tunnel:
         tunnel.stop()
+
 
 @app.get("/api/test")
 def test():
@@ -55,34 +59,39 @@ def test():
         "message": "Backend Connected!"
     }
 
+
 @app.post("/api/text-to-speech")
 async def text_to_speech(request: TTSRequestModel, settings: Annotated[Settings, Depends(get_settings)]):
     """
     Generate audio narration for reference material using OpenAI TTS
+    Note: LangChain doesn't have built-in TTS, so we'll need to use OpenAI directly for this feature
     """
     try:
-        # Initialize OpenAI client
+        # For TTS, we still need to use OpenAI directly as LangChain doesn't support audio generation
+        import openai
         client = openai.OpenAI(api_key=settings.openai_api_key)
-        
+
         # Generate speech using OpenAI TTS
         response = client.audio.speech.create(
             model="tts-1",
             voice="alloy",  # You can change to "echo", "fable", "onyx", "nova", "shimmer"
             input=request.text
         )
-        
+
         # Convert the audio to base64
         audio_bytes = response.content
         audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
-        
+
         return {
             "audio_base64": audio_base64,
             "text": request.text,
             "voice": "alloy"
         }
-        
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"TTS generation failed: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"TTS generation failed: {str(e)}")
+
 
 @app.post("/api/interactive-narration")
 async def interactive_narration(request: InteractiveNarrationModel, settings: Annotated[Settings, Depends(get_settings)]):
@@ -90,9 +99,14 @@ async def interactive_narration(request: InteractiveNarrationModel, settings: An
     Generate interactive, conversational narration using GPT-4o with visual analysis
     """
     try:
-        # Initialize OpenAI client
-        client = openai.OpenAI(api_key=settings.openai_api_key)
-        
+        # Initialize LangChain ChatOpenAI
+        client = ChatOpenAI(
+            openai_api_key=settings.openai_api_key,
+            model="gpt-4o",
+            max_tokens=300,
+            temperature=0.3
+        )
+
         # First, analyze the slide images if available to understand visual content
         visual_analysis = ""
         if request.has_images and hasattr(request, 'slide_images') and request.slide_images:
@@ -106,36 +120,26 @@ async def interactive_narration(request: InteractiveNarrationModel, settings: An
                             "url": f"data:image/png;base64,{img_base64}"
                         }
                     })
-                
-                vision_response = client.chat.completions.create(
-                    model="gpt-4o",
-                    messages=[
+
+                # Create messages using LangChain message classes
+                vision_messages = [
+                    SystemMessage(content="You are an teaching expert at analyzing educational slide images. Describe the visual elements, their locations, and what they illustrate in a structured way that can be used for audio narration guidance within in 50 words."),
+                    HumanMessage(content=[
                         {
-                            "role": "system",
-                            "content": "You are an teaching expert at analyzing educational slide images. Describe the visual elements, their locations, and what they illustrate in a structured way that can be used for audio narration guidance within in 50 words."
+                            "type": "text",
+                            "text": "Analyze this slide image and describe: 1) What visual elements are present (diagrams, charts, text, images, etc.) 2) Their specific locations (top-left, center, bottom-right, etc.) 3) What each element illustrates or demonstrates. Be very specific about locations and content."
                         },
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": "Analyze this slide image and describe: 1) What visual elements are present (diagrams, charts, text, images, etc.) 2) Their specific locations (top-left, center, bottom-right, etc.) 3) What each element illustrates or demonstrates. Be very specific about locations and content."
-                                },
-                                *vision_content
-                            ]
-                        }
-                    ],
-                    max_tokens=300,
-                    temperature=0.3
-                )
-                
-                visual_analysis = vision_response.choices[0].message.content
-                print(f"Visual analysis generated: {visual_analysis[:100]}...")
-                
-            except Exception as vision_error:
-                print(f"Vision analysis failed: {vision_error}")
-                visual_analysis = "Visual elements are present but could not be analyzed in detail."
-        
+                        *vision_content
+                    ])
+                ]
+
+                vision_response = client.invoke(vision_messages)
+                visual_analysis = vision_response.content
+
+            except Exception as e:
+                print(f"Vision analysis failed: {str(e)}")
+                visual_analysis = "Unable to analyze visual content"
+
         # Create a conversational prompt for GPT-4o
         system_prompt = """You are an expert teaching assistant who analyzes student answers, understands their learning gaps, and provides targeted guidance by pointing to specific visual elements on slides. Your role is to:
 
@@ -194,33 +198,32 @@ IMPORTANT REQUIREMENTS:
 Generate a response that directly helps this specific student solve their specific learning problems."""
 
         # Generate interactive text using GPT-4o
-        chat_response = client.chat.completions.create(
-            model="gpt-4o",
+        chat_response = client.invoke(
             messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            max_tokens=200,
-            temperature=0.7
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_prompt)
+            ]
         )
-        
-        interactive_text = chat_response.choices[0].message.content
+
+        interactive_text = chat_response.content
         if interactive_text:
             interactive_text = interactive_text.strip()
         else:
             interactive_text = "Let me help you understand this material better."
-        
-        # Generate speech using OpenAI TTS
-        speech_response = client.audio.speech.create(
+
+        # Generate speech using OpenAI TTS (LangChain doesn't support audio generation)
+        import openai
+        tts_client = openai.OpenAI(api_key=settings.openai_api_key)
+        speech_response = tts_client.audio.speech.create(
             model="tts-1",
-            voice="alloy",  # Use default voice to avoid type issues
+            voice="alloy",  # You can change to "echo", "fable", "onyx", "nova", "shimmer"
             input=interactive_text
         )
-        
+
         # Convert the audio to base64
         audio_bytes = speech_response.content
         audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
-        
+
         return {
             "audio_base64": audio_base64,
             "text": interactive_text,
@@ -228,14 +231,17 @@ Generate a response that directly helps this specific student solve their specif
             "interactive": True,
             "visual_analysis": visual_analysis
         }
-        
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Interactive narration generation failed: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Interactive narration generation failed: {str(e)}")
+
 
 @app.post("/api/ask")
 def ask(askModel: AskModel, settings: Annotated[Settings, Depends(get_settings)]):
     result = askController(askModel.question, askModel.answer, settings)
     return {"result": f"{result}"}
+
 
 def serialize_with_uuid(obj):
     """
@@ -243,7 +249,8 @@ def serialize_with_uuid(obj):
     """
     if isinstance(obj, UUID):
         return str(obj)
-    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+    raise TypeError(
+        f"Object of type {type(obj).__name__} is not JSON serializable")
 
 
 @app.post("/api/embed")
@@ -293,7 +300,8 @@ async def convert(convertModel: ConvertModel, db: Session = Depends(get_db)):
         ).first()
 
         if not result:
-            raise HTTPException(status_code=404, detail="Page not found for the given slide_id and page_number")
+            raise HTTPException(
+                status_code=404, detail="Page not found for the given slide_id and page_number")
 
         # Return the matched result
         return {
@@ -306,16 +314,17 @@ async def convert(convertModel: ConvertModel, db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.post("/api/openai-vision")
 def vision(visionModel: VisionModel, settings: Annotated[Settings, Depends(get_settings)]):
     result = setVision(visionModel.base64_image_arr, settings)
     return result
 
+
 @app.post("/api/pdf-to-img-rephrase")
 async def convert_batch(convertBatchModel: ConvertBatchModel, settings: Annotated[Settings, Depends(get_settings)]):
     result = await convertBatchController(convertBatchModel, settings)
     return result
-
 
 
 # 增加用户
@@ -349,6 +358,8 @@ def read_user(user_id: str, db: Session = Depends(get_db)):
 #     return {"detail": "User deleted"}
 
 # 根据邮箱验证用户
+
+
 @app.post("/api/admin_auth")
 def verify_user(auth: AuthModel, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == auth.email).first()
@@ -367,15 +378,17 @@ def verify_user(auth: AuthModel, db: Session = Depends(get_db)):
         "image": "",
         "permitted": False
     }
-        
+
 
 @app.post("/api/generate_feedback")
 async def generate_feedback(request: FeedbackRequestModel, settings: Annotated[Settings, Depends(get_settings)]):
     feedback = ""
     if request.promptEngineering == "zero":
-        feedback = generate_feedback_using_zero(request.question, request.answer, request.feedbackFramework, settings)
+        feedback = generate_feedback_using_zero(
+            request.question, request.answer, request.feedbackFramework, settings)
     elif request.promptEngineering == "few":
-        feedback = generate_feedback_using_few(request.question, request.answer, request.feedbackFramework, settings)
+        feedback = generate_feedback_using_few(
+            request.question, request.answer, request.feedbackFramework, settings)
     else:
         feedback = "Generate Feedback Error: Invalid Request."
         print("Generate Feedback Error: Invalid Request.")
@@ -384,15 +397,18 @@ async def generate_feedback(request: FeedbackRequestModel, settings: Annotated[S
         "feedback": feedback
     }
 
+
 @app.post("/api/generate_feedback_rag")
 async def generate_feedback_rag(request: FeedbackRequestRagModel, settings: Annotated[Settings, Depends(get_settings)]):
     feedback = ""
     if request.promptEngineering == "rag_zero":
-        feedback = generate_feedback_using_rag_zero(request.question, request.answer, request.slide_text_arr, request.feedbackFramework, settings)
+        feedback = generate_feedback_using_rag_zero(
+            request.question, request.answer, request.slide_text_arr, request.feedbackFramework, settings)
     elif request.promptEngineering == "rag_few":
         feedback = await generate_feedback_using_rag_few(request.question, request.answer, request.slide_text_arr, request.feedbackFramework, settings)
     elif request.promptEngineering == "rag_cot":
-        feedback = generate_feedback_using_rag_cot(request.question, request.answer, request.slide_text_arr, request.feedbackFramework, request.isStructured, settings)
+        feedback = generate_feedback_using_rag_cot(
+            request.question, request.answer, request.slide_text_arr, request.feedbackFramework, request.isStructured, settings)
     # elif request.promptEngineering == "graph_rag":
     #     feedback = generate_feedback_using_graph_rag(request.question, request.answer, request.slide_text_arr, request.feedbackFramework, settings)
     else:
@@ -412,7 +428,8 @@ async def generate_feedback_rag(request: FeedbackRequestRagModel, settings: Anno
         except json.JSONDecodeError:
             # If direct parsing fails, try to extract JSON from markdown code blocks
             import re
-            json_match = re.search(r'```json\s*(\{.*?\})\s*```', feedback, re.DOTALL)
+            json_match = re.search(
+                r'```json\s*(\{.*?\})\s*```', feedback, re.DOTALL)
             if json_match:
                 try:
                     parsed_feedback = json.loads(json_match.group(1))
@@ -443,18 +460,21 @@ async def generate_feedback_rag(request: FeedbackRequestRagModel, settings: Anno
 
 @app.get("/api/courses/createdby/{creater_email}")
 def get_courses_created_by(creater_email: str, db: Session = Depends(get_db)):
-    user = db.query(schema.User).filter(schema.User.email == creater_email).first()
+    user = db.query(schema.User).filter(
+        schema.User.email == creater_email).first()
 
     if not user:
         return {"error": "User not found"}, 404
 
     # Now filter courses by the user's id
-    courses = db.query(schema.Course).filter(schema.Course.creater_id == user.id).all()
+    courses = db.query(schema.Course).filter(
+        schema.Course.creater_id == user.id).all()
     print(courses)
     if not courses:
         return {"message": "No courses found for this user"}, 200
 
     return courses
+
 
 @app.post("/api/courses/create")
 def create_course(course: models.CourseResponse, db: Session = Depends(get_db)):
@@ -468,49 +488,60 @@ def create_course(course: models.CourseResponse, db: Session = Depends(get_db)):
     db.refresh(db_course)
     return db_course
 
+
 @app.get("/api/courses/by_id/{course_id}")
 def get_course_by_id(course_id: str, db: Session = Depends(get_db)):
     print("getting")
     print(course_id)
-    course = db.query(schema.Course).filter(schema.Course.course_id == course_id).first()
+    course = db.query(schema.Course).filter(
+        schema.Course.course_id == course_id).first()
     if course is None:
         raise HTTPException(status_code=404, detail="Course not found")
     return course
 
+
 @app.put("/api/courses/by_id/{course_id}")
 def update_course(course_id: str, course: models.CourseResponse, db: Session = Depends(get_db)):
-    db_course = db.query(schema.Course).filter(schema.Course.course_id == course_id).first()
+    db_course = db.query(schema.Course).filter(
+        schema.Course.course_id == course_id).first()
     if db_course is None:
         raise HTTPException(status_code=404, detail="Course not found")
-    
+
     db_course.course_title = course.title
     db_course.course_description = course.description
     db.commit()
     db.refresh(db_course)
     return db_course
 
+
 @app.delete("/api/courses/by_id/{course_id}")
 def delete_course(course_id: str, db: Session = Depends(get_db)):
-    db_course = db.query(schema.Course).filter(schema.Course.course_id == course_id).first()
+    db_course = db.query(schema.Course).filter(
+        schema.Course.course_id == course_id).first()
     if db_course is None:
         raise HTTPException(status_code=404, detail="Course not found")
-    
+
     db.delete(db_course)
     db.commit()
     return {"message": "Course deleted successfully"}
 
+
 @app.get("/api/courses/by_id/{course_id}/modules")
 def get_modules_by_course(course_id: str, db: Session = Depends(get_db)):
-    course = db.query(schema.Course).filter(schema.Course.course_id == course_id).first()
+    course = db.query(schema.Course).filter(
+        schema.Course.course_id == course_id).first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
 
-    modules = db.query(schema.Module).filter(schema.Module.course_id == course_id).order_by(schema.Module.module_order.asc()).all()
+    modules = db.query(schema.Module).filter(schema.Module.course_id ==
+                                             course_id).order_by(schema.Module.module_order.asc()).all()
     return {"modules": modules}
+
 
 @app.post("/api/courses/by_id/{course_id}/modules", status_code=201)
 def create_module(course_id: str, module: models.ModuleCreate, db: Session = Depends(get_db)):
-    course = db.query(schema.Course).filter(schema.Course.course_id == course_id).first()
+    course = db.query(schema.Course).filter(
+        schema.Course.course_id == course_id).first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
 
@@ -518,27 +549,30 @@ def create_module(course_id: str, module: models.ModuleCreate, db: Session = Dep
     db.add(db_module)
     db.commit()
     db.refresh(db_module)
-    
+
     return db_module
+
 
 @app.get("/api/modules/{module_id}/slides")
 def get_slides_by_module(module_id: str, db: Session = Depends(get_db)):
-    module = db.query(schema.Module).filter(schema.Module.module_id == module_id).first()
+    module = db.query(schema.Module).filter(
+        schema.Module.module_id == module_id).first()
     if not module:
         raise HTTPException(status_code=404, detail="Module not found")
 
-    slides = db.query(schema.Slide).filter(schema.Slide.module_id == module_id).order_by(schema.Slide.slide_title.asc()).all()
+    slides = db.query(schema.Slide).filter(schema.Slide.module_id ==
+                                           module_id).order_by(schema.Slide.slide_title.asc()).all()
 
     result = [{
-            "id": slide.id,
-            "slide_google_id": slide.slide_google_id,
-            "slide_title": slide.slide_title,
-            "slide_cover": slide.slide_cover,
-            "published": slide.published,
-            "gotVision": slide.vision_summary is not None,
-            "module_id": slide.module_id,
-            "slide_google_url": slide.slide_google_url
-        }
+        "id": slide.id,
+        "slide_google_id": slide.slide_google_id,
+        "slide_title": slide.slide_title,
+        "slide_cover": slide.slide_cover,
+        "published": slide.published,
+        "gotVision": slide.vision_summary is not None,
+        "module_id": slide.module_id,
+        "slide_google_url": slide.slide_google_url
+    }
         for slide in slides
     ]
 
@@ -546,10 +580,12 @@ def get_slides_by_module(module_id: str, db: Session = Depends(get_db)):
         "slides": result
     }
 
+
 @app.post("/api/modules/{module_id}/slides/batch", status_code=status.HTTP_201_CREATED)
 def create_slides_batch(module_id: str, slides: models.SlidesCreate, db: Session = Depends(get_db)):
     # Check if module exists
-    module = db.query(schema.Module).filter(schema.Module.module_id == module_id).first()
+    module = db.query(schema.Module).filter(
+        schema.Module.module_id == module_id).first()
     if not module:
         raise HTTPException(status_code=404, detail="Module not found")
 
@@ -566,7 +602,7 @@ def create_slides_batch(module_id: str, slides: models.SlidesCreate, db: Session
     ]
 
     stmt = insert(schema.Slide).values(slide_values)
-    
+
     try:
         db.execute(stmt)
         db.commit()  # Commit after inserting all slides
@@ -577,10 +613,13 @@ def create_slides_batch(module_id: str, slides: models.SlidesCreate, db: Session
     return {"message": f"{len(slides.slides)} slides uploaded successfully!"}
 
 # Delete module and all slides associated with it
+
+
 @app.delete("/api/modules/by_id/{module_id}")
 def delete_module(module_id: str, db: Session = Depends(get_db)):
     # Find the module by its ID
-    module = db.query(schema.Module).filter(schema.Module.module_id == module_id).first()
+    module = db.query(schema.Module).filter(
+        schema.Module.module_id == module_id).first()
     if not module:
         raise HTTPException(status_code=404, detail="Module not found")
 
@@ -594,10 +633,13 @@ def delete_module(module_id: str, db: Session = Depends(get_db)):
     return {"detail": "Module and its slides deleted successfully"}
 
 # Delete a slide by its ID
+
+
 @app.delete("/api/modules/{module_id}/slides/{slide_id}")
 def delete_slide(module_id: str, slide_id: str, db: Session = Depends(get_db)):
     # Find the slide by its ID
-    slide = db.query(schema.Slide).filter(schema.Slide.id == slide_id, schema.Slide.module_id == module_id).first()
+    slide = db.query(schema.Slide).filter(schema.Slide.id ==
+                                          slide_id, schema.Slide.module_id == module_id).first()
     if not slide:
         raise HTTPException(status_code=404, detail="Slide not found")
 
@@ -607,19 +649,23 @@ def delete_slide(module_id: str, slide_id: str, db: Session = Depends(get_db)):
 
     return {"detail": "Slide deleted successfully"}
 
+
 @app.get("/api/courses/public")
 def get_public_courses(db: Session = Depends(get_db)):
     # 查询所有状态为 public 的课程
-    public_courses = db.query(schema.Course).filter(schema.Course.authority == "public").order_by(schema.Course.course_title.asc()).all()
-    
+    public_courses = db.query(schema.Course).filter(
+        schema.Course.authority == "public").order_by(schema.Course.course_title.asc()).all()
+
     return public_courses
+
 
 @app.post("/api/slides/{slide_id}/{slide_google_id}/publish")
 async def publish_slide(slide_id: str, slide_google_id: str, settings: Annotated[Settings, Depends(get_settings)], db: Session = Depends(get_db)):
     pdfstream = fetch_pdf_from_drive(slide_google_id, settings)
     if pdfstream is None:
-        raise HTTPException(status_code=404, detail="Failed to fetch PDF from drive")
-    
+        raise HTTPException(
+            status_code=404, detail="Failed to fetch PDF from drive")
+
     print("Slide ID:", slide_id, "Slide Google ID:", slide_google_id)
     try:
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as temp_pdf_file:
@@ -630,21 +676,25 @@ async def publish_slide(slide_id: str, slide_google_id: str, settings: Annotated
 
             images = convert_from_bytes(pdfstream.getvalue())
             if not images:
-                raise HTTPException(status_code=404, detail="No pages found in PDF")
+                raise HTTPException(
+                    status_code=404, detail="No pages found in PDF")
 
             loader = PyPDFLoader(temp_pdf_path)
             pages = loader.load()
-            print("Number of images:", len(images), "Number of text pages:", len(pages))
+            print("Number of images:", len(images),
+                  "Number of text pages:", len(pages))
 
             if len(images) != len(pages):
-                raise HTTPException(status_code=500, detail="Mismatch between the number of images and pages")
+                raise HTTPException(
+                    status_code=500, detail="Mismatch between the number of images and pages")
 
             for img, page in zip(images, pages):
                 img_byte_arr = BytesIO()
                 img.save(img_byte_arr, format='PNG')
                 img_byte_arr.seek(0)
-                img_base64 = base64.b64encode(img_byte_arr.read()).decode('utf-8')
-                
+                img_base64 = base64.b64encode(
+                    img_byte_arr.read()).decode('utf-8')
+
                 new_page = schema.Page(
                     slide_id=slide_id,
                     page_number=page.metadata['page'],
@@ -653,12 +703,13 @@ async def publish_slide(slide_id: str, slide_google_id: str, settings: Annotated
                 )
                 db.add(new_page)
 
-            slide = db.query(schema.Slide).filter(schema.Slide.id == slide_id).first()
+            slide = db.query(schema.Slide).filter(
+                schema.Slide.id == slide_id).first()
             if slide:
                 slide.published = True
             else:
                 raise HTTPException(status_code=404, detail="Slide not found")
-            
+
             db.commit()
             print("Pages successfully added to the database.")
 
@@ -678,16 +729,20 @@ async def publish_slide(slide_id: str, slide_google_id: str, settings: Annotated
             except Exception as e:
                 print("Failed to delete temporary file:", str(e))
 
+
 @app.post("/api/slides/{slide_id}/{slide_google_id}/set-vision")
 async def set_vision(slide_id: str, slide_google_id: str, settings: Annotated[Settings, Depends(get_settings)], db: Session = Depends(get_db)):
-    slide = db.query(schema.Slide).filter(schema.Slide.id == slide_id, schema.Slide.slide_google_id == slide_google_id).first()
+    slide = db.query(schema.Slide).filter(schema.Slide.id == slide_id,
+                                          schema.Slide.slide_google_id == slide_google_id).first()
     if not slide:
         raise HTTPException(status_code=404, detail="Slide not found")
 
     # Get list of pages for the slide
-    pages = db.query(schema.Page).filter(schema.Page.slide_id == slide_id).all()
+    pages = db.query(schema.Page).filter(
+        schema.Page.slide_id == slide_id).all()
     if not pages:
-        raise HTTPException(status_code=404, detail="No pages found for this slide")
+        raise HTTPException(
+            status_code=404, detail="No pages found for this slide")
 
     # Process vision for each page
     page_visions = []
@@ -699,7 +754,8 @@ async def set_vision(slide_id: str, slide_google_id: str, settings: Annotated[Se
 
     # Optional: Aggregate vision information for the entire slide
     if pages:
-        img_base64_list = [page.img_base64 for page in pages if page.img_base64 is not None]
+        img_base64_list = [
+            page.img_base64 for page in pages if page.img_base64 is not None]
         if img_base64_list:
             sum_vision_info = setVision(img_base64_list, settings=settings)
             slide.vision_summary = sum_vision_info
@@ -709,9 +765,11 @@ async def set_vision(slide_id: str, slide_google_id: str, settings: Annotated[Se
 
     return {"message": "Vision set successfully"}
 
+
 @app.post("/api/questions/create")
 def create_question(request: models.QuestionResponse, db: Session = Depends(get_db)):
-    user = db.query(schema.User).filter(schema.User.email == request.creater_email).first()
+    user = db.query(schema.User).filter(
+        schema.User.email == request.creater_email).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     serialized_content = [content.dict() for content in request.content]
@@ -727,6 +785,7 @@ def create_question(request: models.QuestionResponse, db: Session = Depends(get_
     db.commit()
     db.refresh(db_question)
     return db_question
+
 
 @app.get("/api/questions/all")
 def get_all_question(db: Session = Depends(get_db)):
@@ -745,23 +804,28 @@ def get_all_question(db: Session = Depends(get_db)):
     # ]
     return questions
 
+
 @app.get("/api/questions/by_id/{question_id}")
 def get_question_by_id(question_id: str, db: Session = Depends(get_db)):
-    question = db.query(schema.Question).filter(schema.Question.question_id == question_id).first()
+    question = db.query(schema.Question).filter(
+        schema.Question.question_id == question_id).first()
     if question is None:
         raise HTTPException(status_code=404, detail="Question not found")
     return question
 
+
 @app.delete("/api/questions/by_id/{question_id}")
 def delete_question_by_id(question_id: str, db: Session = Depends(get_db)):
-    db_question = db.query(schema.Question).filter(schema.Question.question_id == question_id).first()
+    db_question = db.query(schema.Question).filter(
+        schema.Question.question_id == question_id).first()
 
     if db_question is None:
         raise HTTPException(status_code=404, detail="Question not found")
-    
+
     db.delete(db_question)
     db.commit()
     return {"message": "Question deleted successfully"}
+
 
 @app.post("/api/s3upload")
 async def upload_file(settings: Annotated[Settings, Depends(get_settings)], file: UploadFile = File(...)):
@@ -784,14 +848,17 @@ async def upload_file(settings: Annotated[Settings, Depends(get_settings)], file
             file.file,
             settings.s3_bucket_name,
             file_key,
-            ExtraArgs={"ContentType": file.content_type or "application/octet-stream"},
+            ExtraArgs={
+                "ContentType": file.content_type or "application/octet-stream"},
         )
         file_url = f"https://{settings.s3_bucket_name}.s3.amazonaws.com/{file_key}"
 
-        return { "url": file_url }
+        return {"url": file_url}
     except Exception as e:
         print("error")
         raise HTTPException(status_code=404, detail=str(e))
+
+
 @app.post('/api/record_result')
 def record_result(result: models.RecordResultModel, db: Session = Depends(get_db)):
     try:
@@ -828,18 +895,21 @@ def record_result(result: models.RecordResultModel, db: Session = Depends(get_db
 
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=400, detail=f"Error recording result: {str(e)}")
+        raise HTTPException(
+            status_code=400, detail=f"Error recording result: {str(e)}")
 
 
 @app.get("/api/get_human_feedback/{question_id}")
 def get_human_feedback(question_id: str, db: Session = Depends(get_db)):
     try:
-        question = db.query(schema.Question).filter(schema.Question.question_id == question_id).first()
-        
+        question = db.query(schema.Question).filter(
+            schema.Question.question_id == question_id).first()
+
         if not question or question.human_feedback is None:
-            raise HTTPException(status_code=404, detail="No human feedback found for this question_id")
-        
+            raise HTTPException(
+                status_code=404, detail="No human feedback found for this question_id")
+
         return {"human_feedback": question.human_feedback}
-    
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

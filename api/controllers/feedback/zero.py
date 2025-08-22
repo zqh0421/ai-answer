@@ -1,8 +1,8 @@
 from fastapi import Depends
-from openai import OpenAI
 from ...config import Settings, get_settings
 from typing_extensions import Annotated, List
 from .call_gpt import call_gpt, format_question
+
 
 def generate_feedback_using_zero(question: List[dict], answer: str, feedbackFramework: str, settings: Annotated[Settings, Depends(get_settings)], print_stream=False) -> str:
     prompt_feature = (
@@ -21,24 +21,24 @@ def generate_feedback_using_zero(question: List[dict], answer: str, feedbackFram
         "type": "text",
         "text": f"Answer: {answer}"
     })
-    
-    if feedbackFramework=="none":
+
+    if feedbackFramework == "none":
         result = call_gpt(
             "You are an expert in providing feedback using 2-3 sentences for students' answer based on the questions.Based on the following questions, and students' answers, provide feedback  accurately and relevantly in 2-3 sentence.",
             user_prompt,
             settings
         )
-    if feedbackFramework=="component":
+    if feedbackFramework == "component":
         result = call_gpt(
             "You are an expert in providing feedback using 2-3 sentences for students' answer based on the questions. Based on the following questions, and students' answers, provide feedback step-by-step, accurately and relevantly, following the four feedback levels (task, process, self-regulatory, and self). each feedback level only contain 2-3 sentences.\n The output format must be: For Task:XXX\n For Process:XXX\n  For Self-Regulatory:XXX\n  For Self:XXX\n",
             user_prompt,
             settings
         )
-    if feedbackFramework=="feature":
+    if feedbackFramework == "feature":
         result = call_gpt(
             prompt_feature,
             user_prompt,
             settings
         )
-    
+
     return f"{result}"

@@ -1,55 +1,24 @@
 {
   "name": "ai-answer",
-  "version": "0.1.0",
+  "version": "1.1.1",
   "private": true,
+  "packageManager": "pnpm@9.9.0",
   "scripts": {
-    "fastapi-dev": "python3 -m uvicorn api.index:app --reload",
-    "fastapi-gdev": "python3 -m gunicorn -k uvicorn.workers.UvicornWorker -t 120 api.index:app",
-    "next-dev": "next dev",
-    "dev": "concurrently \"pnpm run next-dev\" \"pnpm run fastapi-dev\"",
-    "build": "next build",
-    "fastapi-start": "python3 -m uvicorn api.index:app",
-    "fastapi-gstart": "gunicorn -k uvicorn.workers.UvicornWorker -t 120 api.index:app",
-    "start": "concurrently \"next start\" \"pnpm fastapi-gstart\"",
-    "lint": "next lint"
-  },
-  "dependencies": {
-    "@headlessui/react": "^2.1.8",
-    "@reduxjs/toolkit": "^1.9.5",
-    "@types/lodash": "^4.17.15",
-    "@types/react-redux": "^7.1.34",
-    "@types/redux": "^3.6.0",
-    "@types/redux-persist": "^4.3.1",
-    "axios": "^1.7.7",
-    "concurrently": "^9.0.1",
-    "framer-motion": "^11.5.6",
-    "lodash": "^4.17.21",
-    "lucide-react": "^0.475.0",
-    "next": "15.0.0-canary.179",
-    "next-auth": "5.0.0-beta.22",
-    "react": "^18",
-    "react-dom": "^18",
-    "react-dropzone": "^14.2.3",
-    "react-markdown": "^9.0.1",
-    "react-redux": "^8.1.1",
-    "redux": "^4.2.1",
-    "redux-persist": "^6.0.0",
-    "remark-gfm": "^4.0.0",
-    "storage": "link:redux-persist/lib/storage",
-    "swiper": "^11.1.14"
+    "dev": "concurrently \"pnpm -C frontend dev\" \"pnpm run fastapi-dev\"",
+    "fastapi-dev": "./venv/bin/python -m uvicorn api.index:app --reload",
+    "dev:frontend": "pnpm -C frontend dev",
+    "dev:api": "pnpm -C api fastapi-dev",
+    "build": "pnpm -C frontend build",
+    "start": "concurrently \"pnpm -C frontend start\" \"pnpm -C api fastapi-gstart\"",
+    "lint": "pnpm -C frontend lint",
+    "fastapi-gdev": "pnpm -C api fastapi-gdev",
+    "fastapi-start": "pnpm -C api fastapi-start",
+    "fastapi-gstart": "pnpm -C api fastapi-gstart"
   },
   "devDependencies": {
-    "@types/node": "^20",
-    "@types/react": "^18",
-    "@types/react-dom": "^18",
-    "autoprefixer": "^10.4.20",
-    "axios": "^1.7.7",
-    "eslint": "^8",
-    "eslint-config-next": "14.2.12",
-    "framer-motion": "^11.5.6",
-    "postcss": "^8.4.47",
-    "react": "^18",
-    "tailwindcss": "^3.4.12",
-    "typescript": "^5"
+    "concurrently": "^9.0.1"
+  },
+  "engines": {
+    "node": ">=20.17.0"
   }
 }

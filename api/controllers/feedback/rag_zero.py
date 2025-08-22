@@ -1,20 +1,20 @@
 from typing import List
 from fastapi import Depends
-from openai import OpenAI
 from ...config import Settings, get_settings
 from typing_extensions import Annotated
 from .call_gpt import call_gpt, format_question
+
 
 def generate_feedback_using_rag_zero(question: List[dict], answer: str, slide_text_arr: List[str], feedbackFramework: str, settings: Annotated[Settings, Depends(get_settings)]) -> str:
     # print("slide_text_arr:",slide_text_arr)
     prompt_none = (
         f"You are an expert tutor in providing feedback using 2-3 sentences for students' answer based on the questions."
-        f"Based on the following questions, and students' answers, and Slides Content,  provide feedback  accurately and relevantly in 2-3 sentence.\n\n" 
+        f"Based on the following questions, and students' answers, and Slides Content,  provide feedback  accurately and relevantly in 2-3 sentence.\n\n"
         f"Slides Content: {slide_text_arr}\n\n"
     )
     prompt_component = (
         f"You are an expert tutor in providing feedback using 2-3 sentences for students' answer based on the questions."
-        f"Based on the following questions, and students' answers, and Slides Content,provide feedback step-by-step, accurately and relevantly, following the four feedback levels (task, process, self-regulatory, and self). each feedback level only contain 2-3 sentences\n\n"  
+        f"Based on the following questions, and students' answers, and Slides Content,provide feedback step-by-step, accurately and relevantly, following the four feedback levels (task, process, self-regulatory, and self). each feedback level only contain 2-3 sentences\n\n"
         f" the output format must be: For Task:XXX\n For Process:XXX\n  For Self-Regulatory:XXX\n  For Self:XXX\n  "
         f"Slides Content: {slide_text_arr}\n\n"
     )
@@ -36,24 +36,24 @@ def generate_feedback_using_rag_zero(question: List[dict], answer: str, slide_te
         "type": "text",
         "text": f"Answer: {answer}"
     })
-    
-    if feedbackFramework=="none":
+
+    if feedbackFramework == "none":
         result = call_gpt(
             prompt_none,
             user_prompt,
             settings
         )
-    if feedbackFramework=="component":
+    if feedbackFramework == "component":
         result = call_gpt(
             prompt_component,
             user_prompt,
             settings
         )
-    if feedbackFramework=="feature":
+    if feedbackFramework == "feature":
         result = call_gpt(
             prompt_feature,
             user_prompt,
             settings
         )
-    
+
     return f"{result}"

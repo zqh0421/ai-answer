@@ -1,19 +1,19 @@
 from typing import List
 from fastapi import Depends
-from openai import OpenAI
 from ..config import Settings, get_settings
 from typing_extensions import Annotated
 from .feedback.call_gpt import call_gpt, format_question
 import json
 
+
 def process_feedback_to_json(
-      question: List[dict],
-      answer: str,
-      slide_text_arr: List[str], 
-      feedback_text: str,
-      settings: Annotated[Settings, Depends(get_settings)],
-      print_stream=False
-    ) -> dict:
+    question: List[dict],
+    answer: str,
+    slide_text_arr: List[str],
+    feedback_text: str,
+    settings: Annotated[Settings, Depends(get_settings)],
+    print_stream=False
+) -> dict:
 
     api_key = settings.openai_api_key
 
@@ -78,5 +78,5 @@ def process_feedback_to_json(
         user_prompt,
         settings
     )
-    
+
     return json.loads(result)
