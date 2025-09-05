@@ -25,7 +25,9 @@ class Question(Base):
     slide_ids = Column(ARRAY(PG_UUID(as_uuid=True)), nullable=True)  # Related slide IDs
     creater_email = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    human_feedback = Column(String, nullable=True)
+    human_feedback = Column(String, nullable=True)  # For OEQ questions
+    mcq_human_feedback = Column(JSON, nullable=True)  # JSON array of human feedback for each MCQ option
+    mcq_ai_feedback = Column(JSON, nullable=True)  # JSON array of AI feedback for each MCQ option
     embed_result = Column(JSON)
     
     def as_dict(self):

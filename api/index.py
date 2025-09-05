@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Depends, HTTPException, status, File, UploadFile
+from fastapi.responses import StreamingResponse
 import boto3
 import uuid
 from uuid import UUID
@@ -14,6 +15,7 @@ from .models import AskModel, EmbedModel, ConvertModel, VisionModel, ConvertBatc
 from .controllers import askController, embedController, convertController, convertBatchController, visionController, encode_image
 from .controllers import generate_feedback_using_zero, generate_feedback_using_few
 from .controllers import generate_feedback_using_graph_rag, generate_feedback_using_rag_cot, generate_feedback_using_rag_zero, generate_feedback_using_rag_few
+from .controllers.feedback.rag_cot import generate_feedback_using_rag_cot_stream
 # from fastapi.security import OAuth2PasswordBearer
 # from google.oauth2 import id_token
 # from google.auth.transport import requests
@@ -108,7 +110,7 @@ async def interactive_narration(request: InteractiveNarrationModel, settings: An
                     })
                 
                 vision_response = client.chat.completions.create(
-                    model="gpt-4o",
+                    model="gpt-5",
                     messages=[
                         {
                             "role": "system",
@@ -125,7 +127,6 @@ async def interactive_narration(request: InteractiveNarrationModel, settings: An
                             ]
                         }
                     ],
-                    max_tokens=300,
                     temperature=0.3
                 )
                 
@@ -195,12 +196,11 @@ Generate a response that directly helps this specific student solve their specif
 
         # Generate interactive text using GPT-4o
         chat_response = client.chat.completions.create(
-            model="gpt-4o",
+            model="gpt-5",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            max_tokens=200,
             temperature=0.7
         )
         
@@ -385,14 +385,14 @@ async def generate_feedback(request: FeedbackRequestModel, settings: Annotated[S
     }
 
 @app.post("/api/generate_feedback_rag")
-async def generate_feedback_rag(request: FeedbackRequestRagModel, settings: Annotated[Settings, Depends(get_settings)]):
+async def generate_feedback_rag(request: FeedbackRequestRagModel, settings: Annotated[Settings, Depends(get_settings)], db: Session = Depends(get_db)):
     feedback = ""
     if request.promptEngineering == "rag_zero":
         feedback = generate_feedback_using_rag_zero(request.question, request.answer, request.slide_text_arr, request.feedbackFramework, settings)
     elif request.promptEngineering == "rag_few":
         feedback = await generate_feedback_using_rag_few(request.question, request.answer, request.slide_text_arr, request.feedbackFramework, settings)
     elif request.promptEngineering == "rag_cot":
-        feedback = generate_feedback_using_rag_cot(request.question, request.answer, request.slide_text_arr, request.feedbackFramework, request.isStructured, settings)
+        feedback = generate_feedback_using_rag_cot(request.participant_id, request.question_id, request.question, request.answer, request.slide_text_arr, request.feedbackFramework, request.isStructured, request.course_version, settings, db)
     # elif request.promptEngineering == "graph_rag":
     #     feedback = generate_feedback_using_graph_rag(request.question, request.answer, request.slide_text_arr, request.feedbackFramework, settings)
     else:
@@ -439,6 +439,59 @@ async def generate_feedback_rag(request: FeedbackRequestRagModel, settings: Anno
         return {
             "feedback": feedback
         }
+
+@app.post("/api/generate_feedback_rag_stream")
+async def generate_feedback_rag_stream(request: FeedbackRequestRagModel, settings: Annotated[Settings, Depends(get_settings)], db: Session = Depends(get_db)):
+    """
+    Streaming version of generate_feedback_rag that returns Server-Sent Events
+    """
+    def event_generator():
+        try:
+            # Currently only support rag_cot streaming
+            if request.promptEngineering == "rag_cot":
+                for chunk in generate_feedback_using_rag_cot_stream(
+                    request.participant_id, 
+                    request.question_id, 
+                    request.question, 
+                    request.answer, 
+                    request.slide_text_arr, 
+                    request.feedbackFramework, 
+                    request.isStructured, 
+                    request.course_version,  # Pass course_version
+                    settings,
+                    db
+                ):
+                    yield chunk
+            else:
+                # For non-rag_cot methods, fall back to regular non-streaming
+                yield "data: Streaming not supported for this method, falling back to regular generation...\n\n"
+                
+                if request.promptEngineering == "rag_zero":
+                    feedback = generate_feedback_using_rag_zero(request.question, request.answer, request.slide_text_arr, request.feedbackFramework, settings)
+                elif request.promptEngineering == "rag_few":
+                    import asyncio
+                    feedback = asyncio.run(generate_feedback_using_rag_few(request.question, request.answer, request.slide_text_arr, request.feedbackFramework, settings))
+                else:
+                    feedback = "Generate Feedback Error: Invalid Request."
+                
+                yield f"data: {feedback}\n\n"
+                yield "data: [DONE]\n\n"
+                
+        except Exception as e:
+            yield f"data: Error generating feedback: {str(e)}\n\n"
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/plain",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type",
+        }
+    )
 
 
 @app.get("/api/courses/createdby/{creater_email}")
@@ -722,6 +775,8 @@ def create_question(request: models.QuestionResponse, db: Session = Depends(get_
         objective=request.objective,
         slide_ids=request.slide_ids,
         creater_email=request.creater_email,
+        mcq_human_feedback=request.mcq_human_feedback,
+        mcq_ai_feedback=request.mcq_ai_feedback,
     )
     db.add(db_question)
     db.commit()
@@ -751,6 +806,23 @@ def get_question_by_id(question_id: str, db: Session = Depends(get_db)):
     if question is None:
         raise HTTPException(status_code=404, detail="Question not found")
     return question
+
+@app.patch("/api/questions/{question_id}/feedback")
+def update_question_feedback(question_id: str, feedback: models.QuestionUpdateFeedback, db: Session = Depends(get_db)):
+    db_question = db.query(schema.Question).filter(schema.Question.question_id == question_id).first()
+    
+    if db_question is None:
+        raise HTTPException(status_code=404, detail="Question not found")
+    
+    if feedback.mcq_human_feedback is not None:
+        db_question.mcq_human_feedback = feedback.mcq_human_feedback
+    
+    if feedback.mcq_ai_feedback is not None:
+        db_question.mcq_ai_feedback = feedback.mcq_ai_feedback
+    
+    db.commit()
+    db.refresh(db_question)
+    return {"message": "Feedback updated successfully", "question": db_question}
 
 @app.delete("/api/questions/by_id/{question_id}")
 def delete_question_by_id(question_id: str, db: Session = Depends(get_db)):
@@ -795,9 +867,10 @@ async def upload_file(settings: Annotated[Settings, Depends(get_settings)], file
 @app.post('/api/record_result')
 def record_result(result: models.RecordResultModel, db: Session = Depends(get_db)):
     try:
-        # 创建新的 RecordResult 实例
         record_data = {
             "learner_id": result.learner_id,
+            "study_id": result.study_id,
+            "session_id": result.session_id,
             "question_id": result.question_id,
             "answer": result.answer,
             "preferred_info_type": result.preferred_info_type,
@@ -829,6 +902,26 @@ def record_result(result: models.RecordResultModel, db: Session = Depends(get_db
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=f"Error recording result: {str(e)}")
+
+@app.get('/api/record_result/count/{question_id}')
+def get_record_count(question_id: str, learner_id: str = None, db: Session = Depends(get_db)):
+    """
+    Get the count of records for a specific question and optionally a specific learner
+    """
+    try:
+        query = db.query(schema.RecordResult).filter(
+            schema.RecordResult.question_id == question_id
+        )
+        
+        if learner_id:
+            query = query.filter(schema.RecordResult.learner_id == learner_id)
+        
+        count = query.count()
+        
+        return {"question_id": question_id, "learner_id": learner_id, "record_count": count}
+    
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error getting record count: {str(e)}")
 
 
 @app.get("/api/get_human_feedback/{question_id}")

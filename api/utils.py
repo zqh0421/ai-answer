@@ -72,17 +72,15 @@ def create_embedding(
         )
 
         gpt_result = gpt4o_client.chat.completions.create(
-            model="gpt-4o",
+            model="gpt-5",
             messages=messages,
-            max_tokens=4000,
-            temperature=0.01,
             stream=False,
         )
         # Extract understanding from GPT-4o response
         if gpt_result.choices[0].message.content:
             understanding = gpt_result.choices[0].message.content
         else:
-            raise ValueError("GPT-4o did not return any understanding of the content.")
+            raise ValueError("LLM did not return any understanding of the content.")
     else:
         # If no images are present, concatenate all text content for embeddings
         understanding = " ".join(item["text"] for item in formatted_content if item["type"] == "text")

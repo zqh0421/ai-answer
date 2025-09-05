@@ -3,17 +3,19 @@ from openai import OpenAI
 from ...config import Settings, get_settings
 from typing_extensions import Annotated, List
 import time
+from openai.types.responses import ResponseInputImageParam, ResponseInputParam
 
 def format_question(question: List[dict]) -> List[dict]:
     """
     Formats the question into a list of dictionaries that align with OpenAI's expected format.
     """
-    formatted_question = []
+    formatted_question: ResponseInputParam = []
     for item in question:
         if item["type"] == "text":
-            formatted_question.append({"type": "text", "text": item["content"]})
+            formatted_question.append({"type": "input_text", "text": item["content"]})
         elif item["type"] == "image":
-            formatted_question.append({"type": "image_url", "image_url": {"url": item["content"]}})
+            input_image: ResponseInputImageParam = {"type": "input_image", "image_url": f"{item["content"]}", "detail": "auto"}
+            formatted_question.append(input_image)
         else:
             raise ValueError(f"Unsupported question content type: {item['type']}")
     return formatted_question
@@ -39,31 +41,102 @@ def call_gpt(system_prompt: str, user_prompt: List[dict], settings: Annotated[Se
         project=api_proj
     )
 
+
     init_time = time.time()
-    stream = client.chat.completions.create(
-        model="gpt-4o",
-        messages=[
-            {
-                "role":"system",
-                "content": system_prompt
-            },
+
+
+    print(user_prompt)
+    response = client.responses.create(
+        model="gpt-5-nano",
+        instructions=system_prompt,
+        input=[
             {
                 "role": "user",
-                "content": user_prompt
+                "content": user_prompt,
             }
         ],
-        stream=True,
-        max_tokens=4000,
-        temperature=0.01
+        reasoning={
+            "effort": "minimal"
+        },
+        text={
+            "verbosity": "low",
+            "format": {
+                "type": "json_schema",
+                "name": "output",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "score": {
+                            "type": "string",
+                            "enum": ["0", "1"]
+                        },
+                        "feedback": {
+                            "type": "string",
+                            "minLength": 1
+                        },
+                        "structured_feedback": {
+                            "type": "string",
+                            "minLength": 20
+                        }
+                    },
+                    "required": [
+                        "score",
+                        "feedback",
+                        "structured_feedback"
+                    ],
+                    "additionalProperties": False
+                }
+            }
+        }
     )
-    result = ""
-    print_stream = True
-    for chunk in stream:
-        if chunk.choices[0].delta.content is not None:
-            # if print_stream:
-                # print(chunk.choices[0].delta.content, end="")
-            result += chunk.choices[0].delta.content
-    result = result.replace("**", "\n")
+    result = response.output_text
+    print("result")
+    print(result)
     print("call_gpt")
     print(time.time() - init_time)
     return f"{result}"
+
+def call_gpt_stream(system_prompt: str, user_prompt: List[dict], settings: Annotated[Settings, Depends(get_settings)]):
+    """
+    Streaming version of call_gpt that yields chunks as they arrive from OpenAI
+    """
+    api_key = settings.openai_api_key
+    api_org = settings.openai_api_org
+    api_proj = settings.openai_api_proj
+
+    if not api_key:
+        raise ValueError("OPENAI_API_KEY is not set in the environment variables")
+        
+    if not api_org:
+        raise ValueError("OPENAI_API_ORG is not set in the environment variables")
+      
+    if not api_proj:
+        raise ValueError("OPENAI_API_PROJ is not set in the environment variables")
+
+    # Initialize the OpenAI API
+    client = OpenAI(
+        api_key=api_key,
+        organization=api_org,
+        project=api_proj
+    )
+
+    init_time = time.time()
+    stream = client.responses.create(
+        model="gpt-5-nano",
+        instructions=system_prompt,
+        input=user_prompt,
+        verbosity="minimal",
+        stream=True
+    )
+    
+    for chunk in stream:
+        if chunk.choices[0].delta.content is not None:
+            content = chunk.choices[0].delta.content.replace("**", "\n")
+            yield content
+        
+        # Check if this is the last chunk
+        if chunk.choices[0].finish_reason is not None:
+            print("call_gpt_stream completed")
+            print(time.time() - init_time)
+            break

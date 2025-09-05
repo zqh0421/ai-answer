@@ -18,6 +18,10 @@ interface LeftFeedbackPanelProps {
   feedback: string;
   showFeedback?: boolean;
   showReference?: boolean;
+  isStreaming?: boolean;
+  streamingContent?: string;
+  isFeedbackLoading?: boolean;
+  promptVersion?: string | null;
 }
 
 export default function LeftFeedbackPanel({
@@ -33,6 +37,10 @@ export default function LeftFeedbackPanel({
   feedback,
   showFeedback = true,
   showReference = true,
+  isStreaming = false,
+  streamingContent = "",
+  isFeedbackLoading = false,
+  promptVersion = null,
 }: LeftFeedbackPanelProps) {
   return (
     <motion.div
@@ -44,9 +52,16 @@ export default function LeftFeedbackPanel({
       {/* Feedback and Answer */}
       {showFeedback && (
         <HTMLFeedbackArea
-          html={(result as StructuredFeedback).structured_feedback}
-          isFeedbackLoading={false}
-          score={(result as StructuredFeedback).score}
+          html={isStreaming 
+            ? streamingContent 
+            : typeof result === 'string' 
+              ? result 
+              : (result as StructuredFeedback)?.structured_feedback || (result as any)?.feedback || ""
+          }
+          isFeedbackLoading={isFeedbackLoading}
+          score={isStreaming ? "" : (result as StructuredFeedback)?.score || (result as any)?.score || ""}
+          isStreaming={isStreaming}
+          promptVersion={promptVersion}
         />
       )}
 

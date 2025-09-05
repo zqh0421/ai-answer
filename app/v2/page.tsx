@@ -21,6 +21,8 @@ function HomeChildren() {
   const searchParams = useSearchParams();
   const question_id = searchParams.get("question_id") || "";
   const course_version = searchParams.get("version");
+  const studyId = searchParams.get("STUDY_ID") || "unidentifiable_study";
+  const sessionId = searchParams.get("SESSION_ID") || "unidentifiable_session";
 
   const dispatch = useDispatch<AppDispatch>();
 
@@ -290,6 +292,8 @@ function HomeChildren() {
           const endTime = Date.now();
           const recordPayload: RecordResultInput = {
             learner_id: participantId || "unidentifiable_learner",
+            study_id: studyId,
+            session_id: sessionId,
             question_id: questionPreset.question_id,
             answer: answer,
             feedback: response.data.human_feedback,
@@ -347,6 +351,8 @@ function HomeChildren() {
         if (questionPreset) {
           const recordPayload: RecordResultInput = {
             learner_id: participantId || "unidentifiable_learner",
+            study_id: studyId,
+            session_id: sessionId,
             question_id: questionPreset.question_id,
             answer: answer,
             feedback: response.data.feedback,

@@ -1,13 +1,34 @@
-from typing import List
+from typing import List, Optional
 from fastapi import Depends
 from ...config import Settings, get_settings
 from typing_extensions import Annotated
 from .call_gpt import call_gpt, format_question
+from sqlalchemy.orm import Session
+from ...schema.resultSchema import RecordResult
 
-def generate_feedback_using_rag_cot(question: List[dict], answer: str, slide_text_arr: List[str], feedbackFramework: str, isStructured: bool, settings: Annotated[Settings, Depends(get_settings)]) -> str:
+def get_participant_question_record_count(participant_id: str, question_id: str, db: Session) -> int:
+    """
+    Get the count of records for a specific participant and question.
+    This helps determine if it's the learner's first attempt.
+    
+    Args:
+        participant_id: The ID of the participant/learner
+        question_id: The ID of the question
+        db: Database session
+    
+    Returns:
+        int: Number of records found for this participant-question combination
+    """
+    return db.query(RecordResult).filter(
+        RecordResult.learner_id == participant_id,
+        RecordResult.question_id == question_id
+    ).count()
+
+def generate_feedback_using_rag_cot(participant_id: str, question_id: str, question: List[dict], answer: str, slide_text_arr: List[str], feedbackFramework: str, isStructured: bool, course_version: Optional[str], settings: Annotated[Settings, Depends(get_settings)], db: Session) -> str:
     print("slide_text_arr:",slide_text_arr)
 
     if isStructured:
+
         prompt_corrective = (
             f"You are an expert in providing feedback for students' answers. Generate clear, effective feedback and format it into a combined structured output.\n\n"
             f"## Task 1: Generate Feedback\n"
@@ -52,15 +73,76 @@ def generate_feedback_using_rag_cot(question: List[dict], answer: str, slide_tex
             f"**Final Output**: Provide only the JSON object in the exact format specified above. No additional explanation, comments, or plain text are allowed.\n\n"
             f"Slides Content: {slide_text_arr}\n\n"
         )
+
+        prompt_learner = (
+            f"You are a supportive teaching assistant helping a student learn. This is their FIRST attempt at this question. Generate encouraging, learning-focused feedback.\n\n"
+            f"## Your Role:\n"
+            f"As this is the student's first attempt, focus on:\n"
+            f"- Encouraging exploration and learning\n"
+            f"- Building confidence while guiding understanding\n"
+            f"- Providing constructive guidance without being overly critical\n\n"
+            f"## Task 1: Generate Learning-Focused Feedback\n"
+            f"Generate feedback that meets these criteria:\n\n"
+            f"**Required Elements:**\n"
+            f"1. **Acknowledgment**: Start by acknowledging their attempt and effort.\n"
+            f"2. **Assessment with Encouragement**:\n"
+            f"   - If incorrect: Gently guide them toward the correct understanding without harsh criticism.\n"
+            f"   - If correct: Celebrate their success and reinforce why their answer works.\n"
+            f"3. **Learning Guidance**: Provide clear explanations that help them understand the concept better.\n"
+            f"4. **Next Steps**: Suggest specific ways to deepen their understanding or build on what they've learned.\n"
+            f"5. **Supportive Tone**: Maintain an encouraging, supportive tone throughout (under 100 words).\n\n"
+            f"## Task 2: Format Output\n"
+            f"Format your response as a JSON object with this exact structure:\n\n"
+            f"```json\n"
+            f"{{\n"
+            f"  \"score\": \"[0 for incorrect, 1 for correct]\",\n"
+            f"  \"feedback\": \"[Encouraging, learning-focused feedback that guides understanding]\",\n"
+            f"  \"structured_feedback\": \"<statement>[Supportive assessment of their attempt].</statement> <explanation>[Clear, encouraging explanation with <term explanation='[helpful context]'>[key concepts]</term>].</explanation> <advice>[Constructive suggestions for learning].</advice>\"\n"
+            f"}}\n"
+            f"```\n\n"
+            f"**Formatting Instructions:**\n"
+            f"- Identify key concepts that need explanation and provide helpful tooltips\n"
+            f"- Use an encouraging, supportive tone throughout\n"
+            f"- The \"structured_feedback\" field MUST contain proper HTML with semantic tags:\n"
+            f"  - Use <statement> tags for supportive assessment\n"
+            f"  - Use <explanation> tags for clear, encouraging explanations\n"
+            f"  - Use <advice> tags for constructive learning suggestions\n"
+            f"  - Use <term explanation='tooltip text'> tags for key concepts with helpful explanations\n"
+            f"- Remember: This is their first attempt - be encouraging!\n"
+            f"\n"
+            f"**Example structured_feedback format:**\n"
+            f"\"<statement>Good effort on your first attempt!</statement> <explanation>While your answer isn't quite right, you're thinking in the right direction. The correct approach involves <term explanation='A fundamental concept that helps solve this type of problem'>key concept</term>.</explanation> <advice>Try reviewing the slides about this topic, and think about how the concepts connect to real examples.</advice>\"\n"
+            f"\n"
+            f"**Final Output**: Provide only the JSON object. Focus on encouraging learning and building confidence.\n\n"
+            f"Slides Content: {slide_text_arr}\n\n"
+        )
+        
         
         question_message = format_question(question)
         user_prompt = question_message
         user_prompt.append({
-            "type": "text",
+            "type": "input_text",
             "text": f"Answer: {answer}"
         })
         
-        result = call_gpt(prompt_corrective, user_prompt, settings)
+        # Handle course version v2b - always use corrective feedback
+        if course_version == "v2b":
+            system_prompt = prompt_corrective  # Always use corrective feedback for v2b
+            print(f"[DEBUG] Course version v2b detected - using prompt_corrective for participant {participant_id}")
+        else:
+            # Get record count to determine which prompt to use (default behavior)
+            record_count = get_participant_question_record_count(participant_id, question_id, db)
+            print(f"[DEBUG] Participant: {participant_id}, Question: {question_id}, Record Count: {record_count}")
+            
+            # Select prompt based on attempt count
+            if record_count < 1:
+                system_prompt = prompt_learner  # First attempt - learning focus
+                print(f"[DEBUG] Using prompt_learner (first attempt) for participant {participant_id}")
+            else:
+                system_prompt = prompt_corrective  # Subsequent attempts - corrective focus
+                print(f"[DEBUG] Using prompt_corrective (attempt #{record_count + 1}) for participant {participant_id}")
+        
+        result = call_gpt(system_prompt, user_prompt, settings)
         return result
     
     # Original prompts for non-HTML format
@@ -173,3 +255,147 @@ def generate_feedback_using_rag_cot(question: List[dict], answer: str, slide_tex
         )
     
     return f"{result}"
+
+def generate_feedback_using_rag_cot_stream(participant_id: str, question_id: str, question: List[dict], answer: str, slide_text_arr: List[str], feedbackFramework: str, isStructured: bool, course_version: Optional[str], settings: Annotated[Settings, Depends(get_settings)], db: Session):
+    """
+    Streaming version of generate_feedback_using_rag_cot for structured feedback
+    """
+    print("slide_text_arr:",slide_text_arr)
+
+    if not isStructured:
+        # For non-structured feedback, fall back to regular function
+        result = generate_feedback_using_rag_cot(participant_id, question_id, question, answer, slide_text_arr, feedbackFramework, isStructured, settings, db)
+        yield f"data: {result}\n\n"
+        yield "data: [DONE]\n\n"
+        return
+
+    # Define both prompts for structured feedback
+    prompt_corrective = (
+        f"You are an expert in providing feedback for students' answers. Generate clear, effective feedback and format it into a combined structured output.\n\n"
+        f"## Task 1: Generate Feedback\n"
+        f"Generate feedback that meets all five criteria:\n\n"
+        f"**Required Criteria:**\n"
+        f"1. **Judgment Statement**: Begin by clearly stating whether the student's answer is correct or incorrect.\n"
+        f"2. **Explain the Student's Answer with Context**:\n"
+        f"   - If incorrect: Provide the correct answer directly to the student, and explain why this answer is correct and why the one they chose is incorrect.\n"
+        f"   - If correct: Briefly explain why their choice fits and reference specific elements from the question.\n"
+        f"3. **Use Specific Details from the Question**: Connect explanations to concrete elements from the question scenario—avoid abstract or generalized definitions.\n"
+        f"4. **Provide suggestions for further study**: Include at least one strategy to help the student improve on similar future questions.\n"
+        f"5. **Clarity and Brevity**: Keep the entire feedback clear, constructive, and under 100 words.\n\n"
+        f"## Task 2: Format Output\n"
+        f"Format your response as a JSON object with this exact structure:\n\n"
+        f"```json\n"
+        f"{{\n"
+        f"  \"score\": \"[0 for incorrect, 1 for correct]\",\n"
+        f"  \"feedback\": \"[A clear, concise revision of the original feedback, retaining key points and removing redundancy. Tooltips are integrated as plain terms.]\",\n"
+        f"  \"structured_feedback\": \"<statement>[Your assessment - whether answer is correct or incorrect].</statement> <explanation>[Detailed explanation with <term explanation='[tooltip text]'>[highlighted terms]</term>].</explanation> <advice>[Actionable advice for improvement].</advice>\"\n"
+        f"}}\n"
+        f"```\n\n"
+        f"**Formatting Instructions:**\n"
+        f"- First, Identify terms from the feedback that require explanation (key concepts or technical terms) and extract their tooltip-style explanations\n"
+        f"- Do not repeat tooltip details within the feedback body\n"
+        f"- Extract strictly quotable phrases from the concised feedback, categorized into:\n"
+        f"  - **statement**: Phrases about whether the answer is correct or incorrect\n"
+        f"  - **explanation**: Reasoning that explains the mistake or correct logic  \n"
+        f"  - **advice**: Actionable suggestions for improvement\n"
+        f"- The terms in the \"terms\" array must use the exact wording as it appears in the feedback text\n"
+        f"- The \"structured_feedback\" field MUST contain proper HTML with semantic tags:\n"
+        f"  - Use <statement> tags for assessment (correct/incorrect)\n"
+        f"  - Use <explanation> tags for detailed reasoning\n"
+        f"  - Use <advice> tags for improvement suggestions\n"
+        f"  - Use <term explanation='tooltip text'> tags for highlighted terms with tooltips\n"
+        f"- IMPORTANT: The structured_feedback field must be valid HTML, not plain text\n"
+        f"- You are not required to provide terms all the time, only provide terms when they are necessary for the learner to understand the feedback and improve their answer.\n"
+        f"- For term explanation, not just providing the definition, but also provide the context of the term in the feedback, that is resonated with the learner's answer.\n"
+        f"\n"
+        f"**Example structured_feedback format:**\n"
+        f"\"<statement>Your answer is incorrect.</statement> <explanation>The correct answer is <term explanation='A specific term that matches the question requirements'>test</term>. This matches the question's requirement for a specific term.</explanation> <advice>To improve, review the question carefully to ensure your answer aligns with the expected response.</advice>\"\n"
+        f"\n"
+        f"**Final Output**: Provide only the JSON object in the exact format specified above. No additional explanation, comments, or plain text are allowed.\n\n"
+        f"Slides Content: {slide_text_arr}\n\n"
+    )
+    
+    prompt_learner = (
+        f"You are a supportive teaching assistant helping a student learn. This is their FIRST attempt at this question. Generate encouraging, learning-focused feedback.\n\n"
+        f"## Your Role:\n"
+        f"As this is the student's first attempt, focus on:\n"
+        f"- Encouraging exploration and learning\n"
+        f"- Building confidence while guiding understanding\n"
+        f"- Providing constructive guidance without being overly critical\n\n"
+        f"## Task 1: Generate Learning-Focused Feedback\n"
+        f"Generate feedback that meets these criteria:\n\n"
+        f"**Required Elements:**\n"
+        f"1. **Acknowledgment**: Start by acknowledging their attempt and effort.\n"
+        f"2. **Assessment with Encouragement**:\n"
+        f"   - If incorrect: Gently guide them toward the correct understanding without harsh criticism.\n"
+        f"   - If correct: Celebrate their success and reinforce why their answer works.\n"
+        f"3. **Learning Guidance**: Provide clear explanations that help them understand the concept better.\n"
+        f"4. **Next Steps**: Suggest specific ways to deepen their understanding or build on what they've learned.\n"
+        f"5. **Supportive Tone**: Maintain an encouraging, supportive tone throughout (under 100 words).\n\n"
+        f"## Task 2: Format Output\n"
+        f"Format your response as a JSON object with this exact structure:\n\n"
+        f"```json\n"
+        f"{{\n"
+        f"  \"score\": \"[0 for incorrect, 1 for correct]\",\n"
+        f"  \"feedback\": \"[Encouraging, learning-focused feedback that guides understanding]\",\n"
+        f"  \"structured_feedback\": \"<statement>[Supportive assessment of their attempt].</statement> <explanation>[Clear, encouraging explanation with <term explanation='[helpful context]'>[key concepts]</term>].</explanation> <advice>[Constructive suggestions for learning].</advice>\"\n"
+        f"}}\n"
+        f"```\n\n"
+        f"**Formatting Instructions:**\n"
+        f"- Identify key concepts that need explanation and provide helpful tooltips\n"
+        f"- Use an encouraging, supportive tone throughout\n"
+        f"- The \"structured_feedback\" field MUST contain proper HTML with semantic tags:\n"
+        f"  - Use <statement> tags for supportive assessment\n"
+        f"  - Use <explanation> tags for clear, encouraging explanations\n"
+        f"  - Use <advice> tags for constructive learning suggestions\n"
+        f"  - Use <term explanation='tooltip text'> tags for key concepts with helpful explanations\n"
+        f"- Remember: This is their first attempt - be encouraging!\n"
+        f"\n"
+        f"**Example structured_feedback format:**\n"
+        f"\"<statement>Good effort on your first attempt!</statement> <explanation>While your answer isn't quite right, you're thinking in the right direction. The correct approach involves <term explanation='A fundamental concept that helps solve this type of problem'>key concept</term>.</explanation> <advice>Try reviewing the slides about this topic, and think about how the concepts connect to real examples.</advice>\"\n"
+        f"\n"
+        f"**Final Output**: Provide only the JSON object. Focus on encouraging learning and building confidence.\n\n"
+        f"Slides Content: {slide_text_arr}\n\n"
+    )
+    
+    question_message = format_question(question)
+    user_prompt = question_message
+    user_prompt.append({
+        "type": "input_text",
+        "text": f"Answer: {answer}"
+    })
+    
+    # Handle course version v2b - always use corrective feedback
+    if course_version == "v2b":
+        prompt_version = "prompt_corrective"
+        system_prompt = prompt_corrective  # Always use corrective feedback for v2b
+        print(f"[DEBUG STREAM] Course version v2b detected - using prompt_corrective for participant {participant_id}")
+    else:
+        # Get record count to determine which prompt to use (default behavior)
+        record_count = get_participant_question_record_count(participant_id, question_id, db)
+        print(f"[DEBUG STREAM] Participant: {participant_id}, Question: {question_id}, Record Count: {record_count}")
+        
+        # Determine prompt version based on attempt count
+        prompt_version = "prompt_learner" if record_count < 1 else "prompt_corrective"
+        
+        # Select prompt based on attempt count
+        if record_count < 1:
+            system_prompt = prompt_learner  # First attempt - learning focus
+            print(f"[DEBUG STREAM] Using prompt_learner (first attempt) for participant {participant_id}")
+        else:
+            system_prompt = prompt_corrective  # Subsequent attempts - corrective focus
+            print(f"[DEBUG STREAM] Using prompt_corrective (attempt #{record_count + 1}) for participant {participant_id}")
+    
+    # Send prompt version as metadata
+    import json
+    metadata = {
+        "type": "metadata",
+        "prompt_version": prompt_version
+    }
+    yield f"data: {json.dumps(metadata)}\n\n"
+    
+    # Stream the response chunk by chunk
+    for chunk in call_gpt(system_prompt, user_prompt, settings):
+        yield f"data: {chunk}\n\n"
+    
+    yield "data: [DONE]\n\n"

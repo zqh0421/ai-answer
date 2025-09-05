@@ -31,7 +31,7 @@ def visionController(question, answer, settings: Annotated[Settings, Depends(get
     base64_image = encode_image(image_path)
 
     stream = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-5",
         messages=[
             {
                 "role":"system",
@@ -90,7 +90,7 @@ def setVision(img_base64: List[str], settings: Annotated[Settings, Depends(get_s
     ]
 
     result = client.beta.chat.completions.parse(
-        model="gpt-4o-mini",
+        model="gpt-5",
         messages=[
             {
                 "role":"system",

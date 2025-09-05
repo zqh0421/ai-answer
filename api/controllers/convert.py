@@ -42,7 +42,7 @@ def vision(img_byte_arr, settings: Annotated[Settings, Depends(get_settings)], p
     base64_image = encode_image(img_byte_arr)
     print("Encoding Finished.")
     stream = client.chat.completions.create(
-        model="gpt-4o",
+        model="gpt-5",
         messages=[
             {
                 "role":"system",

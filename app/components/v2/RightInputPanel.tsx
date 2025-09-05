@@ -29,6 +29,14 @@ interface RightInputPanelProps {
   onSubmit: () => void;
   onSaveDraftQuestion: (content: string) => void;
   questionId?: string | null;
+  onAnswerChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => void;
+  onInputResize: (e: React.ChangeEvent<HTMLTextAreaElement>) => void;
+  useStreaming?: boolean;
+  setUseStreaming?: (value: boolean) => void;
+  isStreaming?: boolean;
+  stopStreaming?: () => void;
+  isMCQ?: boolean;
+  promptVersion?: string | null;
 }
 
 export default function RightInputPanel({
@@ -53,6 +61,14 @@ export default function RightInputPanel({
   onSubmit,
   onSaveDraftQuestion,
   questionId,
+  onAnswerChange,
+  onInputResize,
+  useStreaming,
+  setUseStreaming,
+  isStreaming,
+  stopStreaming,
+  isMCQ = false,
+  promptVersion = null,
 }: RightInputPanelProps) {
   const handleContinue = () => setActiveTab("input");
 
@@ -107,6 +123,14 @@ export default function RightInputPanel({
               saveStatus={saveStatus}
               onSubmit={onSubmit}
               onSaveDraftQuestion={onSaveDraftQuestion}
+              onAnswerChange={onAnswerChange}
+              onInputResize={onInputResize}
+              useStreaming={useStreaming}
+              setUseStreaming={setUseStreaming}
+              isStreaming={isStreaming}
+              stopStreaming={stopStreaming}
+              isMCQ={isMCQ}
+              promptVersion={promptVersion}
             />
           )}
         </motion.div>

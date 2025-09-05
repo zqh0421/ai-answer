@@ -5,12 +5,18 @@ interface HTMLFeedbackAreaProps {
   html: string;
   isFeedbackLoading: boolean;
   score?: string; // 0 or 1 for color coding
+  isStreaming?: boolean;
+  promptVersion?: string | null;
 }
 
 // Component to render HTML feedback as a coherent paragraph with inline formatting
-const HTMLFeedbackArea: React.FC<HTMLFeedbackAreaProps> = ({ html, isFeedbackLoading, score }) => {
+const HTMLFeedbackArea: React.FC<HTMLFeedbackAreaProps> = ({ html, isFeedbackLoading, score, isStreaming = false, promptVersion = null }) => {
   const [feedbackRating, setFeedbackRating] = useState<'good' | 'bad' | null>(null);
   const [hasRated, setHasRated] = useState(false);
+
+  // Determine if this is learner or corrective feedback
+  const isLearnerFeedback = promptVersion === 'prompt_learner' || promptVersion === null;
+  const isCorrectiveFeedback = promptVersion === 'prompt_corrective';
 
   // Handle feedback rating
   const handleFeedbackRating = (rating: 'good' | 'bad') => {
@@ -60,17 +66,30 @@ const HTMLFeedbackArea: React.FC<HTMLFeedbackAreaProps> = ({ html, isFeedbackLoa
     // Clean the HTML string first
     const cleanedHTML = cleanHTMLString(htmlString);
     
+    console.log('Original HTML string:', htmlString);
+    console.log('Cleaned HTML string:', cleanedHTML);
+    
+    // Replace closing tag + space + opening tag patterns with a preserved space marker
+    // This ensures spaces between inline elements are preserved
+    const preservedHTML = cleanedHTML
+      .replace(/<\/statement>\s+<explanation>/g, '</statement> <explanation>')
+      .replace(/<\/explanation>\s+<advice>/g, '</explanation> <advice>')
+      .replace(/<\/statement>\s+<advice>/g, '</statement> <advice>');
+    
     // Create a temporary DOM element to parse the HTML
     const tempDiv = document.createElement('div');
-    tempDiv.innerHTML = cleanedHTML;
+    tempDiv.innerHTML = preservedHTML;
+    console.log('Parsed innerHTML:', tempDiv.innerHTML);
     
     // Function to recursively process child nodes
     const processNode = (node: Node): React.ReactNode[] => {
       const result: React.ReactNode[] = [];
       
       if (node.nodeType === Node.TEXT_NODE) {
-        const text = node.textContent?.trim();
-        if (text) {
+        const text = node.textContent || '';
+        // Keep all text nodes, including whitespace-only ones
+        // This preserves spaces between HTML elements
+        if (text.length > 0) {
           result.push(<span key={`text-${Math.random()}`}>{text}</span>);
         }
       } else if (node.nodeType === Node.ELEMENT_NODE) {
@@ -85,6 +104,8 @@ const HTMLFeedbackArea: React.FC<HTMLFeedbackAreaProps> = ({ html, isFeedbackLoa
                 {content}
               </span>
             );
+            // Add space after statement
+            result.push(' ');
             break;
             
           case 'explanation':
@@ -93,6 +114,8 @@ const HTMLFeedbackArea: React.FC<HTMLFeedbackAreaProps> = ({ html, isFeedbackLoa
                 {content}
               </span>
             );
+            // Add space after explanation
+            result.push(' ');
             break;
             
           case 'advice':
@@ -125,25 +148,36 @@ const HTMLFeedbackArea: React.FC<HTMLFeedbackAreaProps> = ({ html, isFeedbackLoa
     return Array.from(tempDiv.childNodes).flatMap(processNode);
   };
 
-  // Determine icon color and icon based on score
+  // Determine icon color and icon based on score and feedback type
   const getIconStyle = () => {
-    if (score === "1") {
-      return {
-        color: 'bg-gradient-to-r from-green-500 to-emerald-500',
-        icon: <CheckCircle className="w-4 h-4 text-white" />
-      };
-    } else if (score === "0") {
-      return {
-        color: 'bg-gradient-to-r from-red-500 to-pink-500',
-        icon: <XCircle className="w-4 h-4 text-white" />
-      };
-    } else {
-      // Default/neutral color when score is not provided
+    // For learner feedback, always use neutral styling
+    if (isLearnerFeedback) {
       return {
         color: 'bg-gradient-to-r from-blue-500 to-indigo-500',
         icon: <MessageSquare className="w-4 h-4 text-white" />
       };
     }
+    
+    // For corrective feedback, show score-based icons
+    if (isCorrectiveFeedback) {
+      if (score === "1") {
+        return {
+          color: 'bg-gradient-to-r from-green-500 to-emerald-500',
+          icon: <CheckCircle className="w-4 h-4 text-white" />
+        };
+      } else if (score === "0") {
+        return {
+          color: 'bg-gradient-to-r from-red-500 to-pink-500',
+          icon: <XCircle className="w-4 h-4 text-white" />
+        };
+      }
+    }
+    
+    // Default/neutral color when score is not provided or unknown state
+    return {
+      color: 'bg-gradient-to-r from-blue-500 to-indigo-500',
+      icon: <MessageSquare className="w-4 h-4 text-white" />
+    };
   };
 
   const iconStyle = getIconStyle();
@@ -160,63 +194,74 @@ const HTMLFeedbackArea: React.FC<HTMLFeedbackAreaProps> = ({ html, isFeedbackLoa
         </div>
       </div>
       
-      {isFeedbackLoading ? (
-        <div className="flex items-center justify-center py-8">
-          <div className="flex items-center gap-2 text-slate-600">
-            <Loader2 className="w-4 h-4 animate-spin" />
-            <span className="text-sm">Generating feedback...</span>
-          </div>
-        </div>
-      ) : html ? (
+      
+      {(html && !isFeedbackLoading) || (isStreaming && html) ? (
         <div className="p-6 bg-gradient-to-br from-slate-50 to-blue-50 rounded-xl border border-slate-200 shadow-sm relative">
           <div className="flex items-start gap-3 mb-4">
             <div className={`flex-shrink-0 w-8 h-8 ${iconStyle.color} rounded-full flex items-center justify-center shadow-sm`}>
               {iconStyle.icon}
             </div>
             <div className="flex-1">
-              <p className="text-slate-700 leading-relaxed text-base space-x-1">
-                {renderHTMLFeedback(html)}
-              </p>
+              <div className="text-slate-700 leading-relaxed text-base space-x-1">
+                {isStreaming ? (
+                  // For streaming, display raw text with typing indicator
+                  <span className="inline">
+                    {html}
+                    <span className="inline-block w-2 h-5 bg-blue-500 ml-1 animate-pulse"></span>
+                  </span>
+                ) : (
+                  renderHTMLFeedback(html)
+                )}
+              </div>
             </div>
           </div>
           
-          {/* Feedback Rating Buttons - Bottom Right */}
-          <div className="absolute bottom-3 right-3 flex items-center gap-3">
-            <span className="text-xs text-slate-500 font-medium">Rate this feedback:</span>
-            <div className="flex items-center gap-1">
-              <button
-                onClick={() => handleFeedbackRating('good')}
-                className={`
-                  p-1.5 rounded-md transition-all duration-200
-                  ${feedbackRating === 'good' 
-                    ? 'text-blue-600 bg-blue-50 border border-blue-200' 
-                    : hasRated 
-                      ? 'text-slate-400 hover:text-slate-600 hover:bg-slate-50' 
-                      : 'text-slate-600 hover:text-slate-800 hover:bg-slate-100'
-                  }
-                `}
-              >
-                <ThumbsUp className="w-4 h-4" />
-              </button>
-              
-              <button
-                onClick={() => handleFeedbackRating('bad')}
-                className={`
-                  p-1.5 rounded-md transition-all duration-200
-                  ${feedbackRating === 'bad' 
-                    ? 'text-blue-600 bg-blue-50 border border-blue-200' 
-                    : hasRated 
-                      ? 'text-slate-400 hover:text-slate-600 hover:bg-slate-50' 
-                      : 'text-slate-600 hover:text-slate-800 hover:bg-slate-100'
-                  }
-                `}
-              >
-                <ThumbsDown className="w-4 h-4" />
-              </button>
+          {/* Feedback Rating Buttons - Bottom Right - Only show when not streaming */}
+          {!isStreaming && (
+            <div className="absolute bottom-3 right-3 flex items-center gap-3">
+              <span className="text-xs text-slate-500 font-medium">Rate this feedback:</span>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => handleFeedbackRating('good')}
+                  className={`
+                    p-1.5 rounded-md transition-all duration-200
+                    ${feedbackRating === 'good' 
+                      ? 'text-blue-600 bg-blue-50 border border-blue-200' 
+                      : hasRated 
+                        ? 'text-slate-400 hover:text-slate-600 hover:bg-slate-50' 
+                        : 'text-slate-600 hover:text-slate-800 hover:bg-slate-100'
+                    }
+                  `}
+                >
+                  <ThumbsUp className="w-4 h-4" />
+                </button>
+                
+                <button
+                  onClick={() => handleFeedbackRating('bad')}
+                  className={`
+                    p-1.5 rounded-md transition-all duration-200
+                    ${feedbackRating === 'bad' 
+                      ? 'text-blue-600 bg-blue-50 border border-blue-200' 
+                      : hasRated 
+                        ? 'text-slate-400 hover:text-slate-600 hover:bg-slate-50' 
+                        : 'text-slate-600 hover:text-slate-800 hover:bg-slate-100'
+                    }
+                  `}
+                >
+                  <ThumbsDown className="w-4 h-4" />
+                </button>
+              </div>
             </div>
-          </div>
+          )}
         </div>
-      ) : (
+      ) : isFeedbackLoading || isStreaming ? <div className="flex items-center justify-center py-8">
+          <div className="flex items-center gap-2 text-slate-600">
+            <Loader2 className="w-4 h-4 animate-spin" />
+            <span className="text-sm">
+              {"Preparing feedback..."}
+            </span>
+          </div>
+        </div> : (
         <div className="text-center py-8">
           <MessageSquare className="w-10 h-10 text-slate-300 mx-auto mb-2" />
           <p className="text-sm text-slate-500">No feedback yet. Submit your answer to get started.</p>
@@ -328,7 +373,7 @@ const CustomTooltip = ({ children, content, isVisible, position }: {
           zIndex: 9999
         }}
       >
-        <p className="text-slate-600 leading-normal">{content}</p>
+        <span className="text-slate-600 leading-normal block">{content}</span>
         
         {/* Outer arrow - border color */}
         <div 
