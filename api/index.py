@@ -494,6 +494,136 @@ async def generate_feedback_rag_stream(request: FeedbackRequestRagModel, setting
     )
 
 
+# OEQ-specific feedback generation endpoints
+@app.post("/api/v2/generate_feedback_rag_oeq")
+async def generate_feedback_rag_oeq(request: FeedbackRequestRagModel, settings: Annotated[Settings, Depends(get_settings)], db: Session = Depends(get_db)):
+    """
+    OEQ-specific version of generate_feedback_rag endpoint
+    """
+    feedback = ""
+    if request.promptEngineering == "rag_zero":
+        feedback = generate_feedback_using_rag_zero(request.question, request.answer, request.slide_text_arr, request.feedbackFramework, settings)
+    elif request.promptEngineering == "rag_few":
+        feedback = await generate_feedback_using_rag_few(request.question, request.answer, request.slide_text_arr, request.feedbackFramework, settings)
+    elif request.promptEngineering == "rag_cot":
+        feedback = generate_feedback_using_rag_cot(request.participant_id, request.question_id, request.question, request.answer, request.slide_text_arr, request.feedbackFramework, request.isStructured, request.course_version, settings, db)
+    else:
+        feedback = "Generate Feedback Error: Invalid Request."
+        print("Generate Feedback Error: Invalid Request.")
+
+    if request.isStructured:
+        # parse feedback to json
+        try:
+            # Try to parse the feedback as JSON directly
+            parsed_feedback = json.loads(feedback)
+            return {
+                "score": parsed_feedback.get("score", ""),
+                "feedback": parsed_feedback.get("feedback", ""),
+                "structured_feedback": parsed_feedback.get("structured_feedback", {})
+            }
+        except json.JSONDecodeError:
+            # If direct parsing fails, try to extract JSON from markdown code blocks
+            import re
+            json_match = re.search(r'```json\s*(\{.*?\})\s*```', feedback, re.DOTALL)
+            if json_match:
+                try:
+                    parsed_feedback = json.loads(json_match.group(1))
+                    return {
+                        "score": parsed_feedback.get("score", ""),
+                        "feedback": parsed_feedback.get("feedback", ""),
+                        "structured_feedback": parsed_feedback.get("structured_feedback", {})
+                    }
+                except json.JSONDecodeError:
+                    # If still fails, return default structure
+                    return {
+                        "score": "",
+                        "feedback": feedback,
+                        "structured_feedback": {}
+                    }
+            else:
+                # No JSON found, return default structure
+                return {
+                    "score": "",
+                    "feedback": feedback,
+                    "structured_feedback": {}
+                }
+    else:
+        return {
+            "feedback": feedback
+        }
+
+@app.post("/api/v2/generate_feedback_rag_stream_oeq")
+async def generate_feedback_rag_stream_oeq(request: FeedbackRequestRagModel, settings: Annotated[Settings, Depends(get_settings)], db: Session = Depends(get_db)):
+    """
+    OEQ-specific streaming version of generate_feedback_rag that returns Server-Sent Events
+    """
+    def event_generator():
+        try:
+            # Currently only support rag_cot streaming
+            if request.promptEngineering == "rag_cot":
+                for chunk in generate_feedback_using_rag_cot_stream(
+                    request.participant_id, 
+                    request.question_id, 
+                    request.question, 
+                    request.answer, 
+                    request.slide_text_arr, 
+                    request.feedbackFramework, 
+                    request.isStructured, 
+                    request.course_version,
+                    settings,
+                    db
+                ):
+                    yield chunk
+            else:
+                # For non-rag_cot methods, fall back to regular non-streaming
+                yield "data: Streaming not supported for this method, falling back to regular generation...\n\n"
+                
+                if request.promptEngineering == "rag_zero":
+                    feedback = generate_feedback_using_rag_zero(request.question, request.answer, request.slide_text_arr, request.feedbackFramework, settings)
+                elif request.promptEngineering == "rag_few":
+                    import asyncio
+                    feedback = asyncio.run(generate_feedback_using_rag_few(request.question, request.answer, request.slide_text_arr, request.feedbackFramework, settings))
+                else:
+                    feedback = "Generate Feedback Error: Invalid Request."
+                
+                yield f"data: {feedback}\n\n"
+                yield "data: [DONE]\n\n"
+                
+        except Exception as e:
+            yield f"data: Error generating feedback: {str(e)}\n\n"
+            yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/plain",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type",
+        }
+    )
+
+@app.post("/api/v2/generate_feedback_oeq")
+async def generate_feedback_oeq(request: FeedbackRequestModel, settings: Annotated[Settings, Depends(get_settings)]):
+    """
+    OEQ-specific version of generate_feedback endpoint
+    """
+    feedback = ""
+    if request.promptEngineering == "zero":
+        feedback = generate_feedback_using_zero(request.question, request.answer, request.feedbackFramework, settings)
+    elif request.promptEngineering == "few":
+        feedback = generate_feedback_using_few(request.question, request.answer, request.feedbackFramework, settings)
+    else:
+        feedback = "Generate Feedback Error: Invalid Request."
+        print("Generate Feedback Error: Invalid Request.")
+
+    return {
+        "feedback": feedback
+    }
+
+
 @app.get("/api/courses/createdby/{creater_email}")
 def get_courses_created_by(creater_email: str, db: Session = Depends(get_db)):
     user = db.query(schema.User).filter(schema.User.email == creater_email).first()

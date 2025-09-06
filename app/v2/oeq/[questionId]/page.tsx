@@ -356,7 +356,7 @@ function PageChildren({
       };
 
       // Start streaming fetch
-      const response = await fetch('/api/generate_feedback_rag_stream', {
+      const response = await fetch('/api/v2/generate_feedback_rag_stream_oeq', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -563,7 +563,7 @@ function PageChildren({
         let response;
         if (["rag_zero", "rag_few", "rag_cot", "graph_rag"].includes(selectedPromptEngineering)) {
           retrievalResult = await handleRetrieve();
-          response = await axios.post("/api/generate_feedback_rag", {
+          response = await axios.post("/api/v2/generate_feedback_rag_oeq", {
             participant_id: prolificPid || participantId || null,
             question_id: questionPreset.question_id || null,
             promptEngineering: selectedPromptEngineering,
@@ -577,7 +577,7 @@ function PageChildren({
         } else {
           const [retrieval, feedbackResponse] = await Promise.all([
             handleRetrieve(),
-            axios.post("/api/generate_feedback", {
+            axios.post("/api/v2/generate_feedback_oeq", {
               promptEngineering: selectedPromptEngineering,
               feedbackFramework: selectedFeedbackFramework,
               question: questionPreset.content || question,
