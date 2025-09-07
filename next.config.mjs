@@ -4,6 +4,22 @@ const nextConfig = {
   eslint: {
     ignoreDuringBuilds: true,
   },
+  async headers() {
+    return [
+      {
+        // Apply these headers to all routes
+        source: '/:path*',
+        headers: [
+          {
+            key: 'Content-Security-Policy',
+            value: "frame-ancestors 'self' https://*.qualtrics.com https://qualtrics.com;",
+          },
+          // Remove X-Frame-Options to avoid conflicts with CSP frame-ancestors
+          // Modern browsers prioritize CSP over X-Frame-Options
+        ],
+      },
+    ];
+  },
   images: {
     remotePatterns: [
       {
