@@ -23,7 +23,7 @@ def format_question(question: List[dict]) -> ResponseInputParam:
             formatted_question.append(input_text)
         elif item["type"] == "image":
             input_image: ResponseInputImageParam = {
-                "type": "input_image", "image_url": f"{item["content"]}", "detail": "auto"}
+                "type": "input_image", "image_url": f"{item['content']}", "detail": "auto"}
             formatted_question.append(input_image)
         else:
             raise ValueError(
