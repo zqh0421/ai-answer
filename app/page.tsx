@@ -60,7 +60,9 @@ function HomeChildren() {
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const searchParams = useSearchParams();
   const question_id = searchParams.get('question_id');
-  const course_version = searchParams.get('version')
+  const course_version = searchParams.get('version');
+  const studyId = searchParams.get('STUDY_ID') || 'unidentifiable_study';
+  const sessionId = searchParams.get('SESSION_ID') || 'unidentifiable_session'
 
   const [questionPreset, setQuestionPreset] = useState<Question>({
     question_id: "",
@@ -359,6 +361,8 @@ function HomeChildren() {
           const endTime = Date.now();
           const recordPayload: RecordResultInput = {
             learner_id: participantId || "unidentifiable_learner",
+            study_id: studyId,
+            session_id: sessionId,
             // ip_address: "todo",
             question_id: questionPreset.question_id,
             answer: answer,
@@ -428,6 +432,8 @@ function HomeChildren() {
           // console.log(retrievalResult)
           const recordPayload: RecordResultInput = {
             learner_id: participantId || "unidentifiable_learner",
+            study_id: studyId,
+            session_id: sessionId,
             // ip_address: "todo",
             question_id: questionPreset.question_id,
             answer: answer,

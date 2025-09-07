@@ -64,7 +64,9 @@ function PageChildren({
   const [useStreaming, setUseStreaming] = useState(true);
   const [promptVersion, setPromptVersion] = useState<string | null>(null);
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [selectedPromptEngineering, setSelectedPromptEngineering] = useState<string>("rag_cot");
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [selectedFeedbackFramework, setSelectedFeedbackFramework] = useState<string>("feature");
   const [slideTextArr, setSlideTextArr] = useState<string[]>([""]);
 
@@ -73,9 +75,12 @@ function PageChildren({
   const [module, setModule] = useState<string[]>([]);
   const [slide, setSlide] = useState<string[]>([]);
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [availableModules, setAvailableModules] = useState<Module[]>([]);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [availableSlides, setAvailableSlides] = useState<Slide[]>([]);
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [preferredInfoType, setPreferredInfoType] = useState<string>("vision");
 
   const [questionPreset, setQuestionPreset] = useState<Question>({
@@ -121,8 +126,8 @@ function PageChildren({
     debouncedSaveAnswer(selectedAnswer);
     
     // For MCQ, automatically fetch feedback when option is selected
-    console.log("MCQ Check - Question type:", questionPreset?.type || questionPreset?.question_type, "Has options:", !!questionPreset?.options);
-    if ((questionPreset?.type === "multiple choice" || questionPreset?.question_type === "mcq") && questionPreset?.options) {
+    console.log("MCQ Check - Question type:", questionPreset?.type, "Has options:", !!questionPreset?.options);
+    if (questionPreset?.type === "multiple choice" && questionPreset?.options) {
       // Find the index of the selected option
       const selectedIndex = questionPreset.options.findIndex((opt: any) => {
         const optionText = typeof opt === 'string' ? opt : opt.text;
@@ -223,11 +228,11 @@ function PageChildren({
         response_time: endTime - startTime
       });
       
-    } catch (error: any) {
+    } catch (error) {
       console.error("Error fetching MCQ feedback:", error);
       
       // Show error message instead of fallback
-      const errorMessage = error.response?.data?.detail || "Failed to get feedback";
+      const errorMessage = (error as any).response?.data?.detail || "Failed to get feedback";
       
       setResult({
         feedback: errorMessage,
@@ -239,7 +244,7 @@ function PageChildren({
       });
       
       console.log("MCQ feedback error:", {
-        status: error.response?.status,
+        status: (error as any).response?.status,
         message: errorMessage
       });
     } finally {
@@ -589,7 +594,7 @@ function PageChildren({
     }
   };
 
-  const handleRetrieve = async () => {
+  const handleRetrieve = async (): Promise<{ slide_text_arr: string[]; reference: Reference } | null> => {
     try {
       const response = await axios.post("/api/embed", {
         question_id: question_id || null,
@@ -649,6 +654,7 @@ function PageChildren({
       console.error("Error fetching the result:", error);
       setIsReferenceLoading(false);
       setIsImageLoading(false);
+      return null;
     }
   };
 
@@ -692,7 +698,7 @@ function PageChildren({
     setResult("");
 
     const startTime = Date.now();
-    let retrievalResult: any = null;
+    let retrievalResult: { slide_text_arr?: string[]; reference?: { page_number?: number; image_text?: string; text?: string; slide_google_id?: string } } | null = null;
 
     // Create abort controller for canceling the request
     const controller = new AbortController();
@@ -842,16 +848,16 @@ function PageChildren({
         }
       }
 
-    } catch (error: any) {
+    } catch (error) {
       console.error("Error in streaming:", error);
       setIsStreaming(false);
       setIsFeedbackLoading(false);
       
-      if (error.name === 'AbortError') {
+      if ((error as Error).name === 'AbortError') {
         console.log('Streaming request was aborted');
         setResult("Request was cancelled");
       } else {
-        setResult(`Error: ${error.message}`);
+        setResult(`Error: ${(error as Error).message}`);
       }
     } finally {
       setAbortController(null);
@@ -882,7 +888,7 @@ function PageChildren({
     setIsReferenceLoading(true);
 
     const startTime = Date.now();
-    let retrievalResult: any = null;
+    let retrievalResult: { slide_text_arr?: string[]; reference?: { page_number?: number; image_text?: string; text?: string; slide_google_id?: string } } | null = null;
 
     if (course_version === "v2a") {
       if (questionPreset) {
@@ -1049,7 +1055,7 @@ function PageChildren({
           promptVersion={promptVersion}
           question={questionPreset?.content || question}
           options={questionPreset?.options}
-          correctAnswer={questionPreset?.options?.filter((opt: any) => opt.isCorrect).map((opt: any) => opt.text).join(', ')}
+          correctAnswer={questionPreset?.options?.filter((opt: { text: string; isCorrect: boolean } | string) => typeof opt === 'object' && opt.isCorrect).map((opt: { text: string; isCorrect: boolean } | string) => typeof opt === 'string' ? opt : opt.text).join(', ')}
         />
 
         <RightInputPanel
