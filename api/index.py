@@ -37,7 +37,15 @@ import traceback
 # from .controllers.format import process_feedback_to_json
 import openai
 
+# Import v2 routers
+from .v2 import index_oeq, index_shared, index_mcq
+
 app = FastAPI()
+
+# Include the v2 routers
+app.include_router(index_oeq.router)
+app.include_router(index_shared.router)
+app.include_router(index_mcq.router)
 
 def get_db():
     db = SessionLocal()
@@ -126,8 +134,7 @@ async def interactive_narration(request: InteractiveNarrationModel, settings: An
                                 *vision_content
                             ]
                         }
-                    ],
-                    temperature=0.3
+                    ]
                 )
                 
                 visual_analysis = vision_response.choices[0].message.content
@@ -200,8 +207,7 @@ Generate a response that directly helps this specific student solve their specif
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
-            ],
-            temperature=0.7
+            ]
         )
         
         interactive_text = chat_response.choices[0].message.content
@@ -494,134 +500,8 @@ async def generate_feedback_rag_stream(request: FeedbackRequestRagModel, setting
     )
 
 
-# OEQ-specific feedback generation endpoints
-@app.post("/api/v2/generate_feedback_rag_oeq")
-async def generate_feedback_rag_oeq(request: FeedbackRequestRagModel, settings: Annotated[Settings, Depends(get_settings)], db: Session = Depends(get_db)):
-    """
-    OEQ-specific version of generate_feedback_rag endpoint
-    """
-    feedback = ""
-    if request.promptEngineering == "rag_zero":
-        feedback = generate_feedback_using_rag_zero(request.question, request.answer, request.slide_text_arr, request.feedbackFramework, settings)
-    elif request.promptEngineering == "rag_few":
-        feedback = await generate_feedback_using_rag_few(request.question, request.answer, request.slide_text_arr, request.feedbackFramework, settings)
-    elif request.promptEngineering == "rag_cot":
-        feedback = generate_feedback_using_rag_cot(request.participant_id, request.question_id, request.question, request.answer, request.slide_text_arr, request.feedbackFramework, request.isStructured, request.course_version, settings, db)
-    else:
-        feedback = "Generate Feedback Error: Invalid Request."
-        print("Generate Feedback Error: Invalid Request.")
 
-    if request.isStructured:
-        # parse feedback to json
-        try:
-            # Try to parse the feedback as JSON directly
-            parsed_feedback = json.loads(feedback)
-            return {
-                "score": parsed_feedback.get("score", ""),
-                "feedback": parsed_feedback.get("feedback", ""),
-                "structured_feedback": parsed_feedback.get("structured_feedback", {})
-            }
-        except json.JSONDecodeError:
-            # If direct parsing fails, try to extract JSON from markdown code blocks
-            import re
-            json_match = re.search(r'```json\s*(\{.*?\})\s*```', feedback, re.DOTALL)
-            if json_match:
-                try:
-                    parsed_feedback = json.loads(json_match.group(1))
-                    return {
-                        "score": parsed_feedback.get("score", ""),
-                        "feedback": parsed_feedback.get("feedback", ""),
-                        "structured_feedback": parsed_feedback.get("structured_feedback", {})
-                    }
-                except json.JSONDecodeError:
-                    # If still fails, return default structure
-                    return {
-                        "score": "",
-                        "feedback": feedback,
-                        "structured_feedback": {}
-                    }
-            else:
-                # No JSON found, return default structure
-                return {
-                    "score": "",
-                    "feedback": feedback,
-                    "structured_feedback": {}
-                }
-    else:
-        return {
-            "feedback": feedback
-        }
 
-@app.post("/api/v2/generate_feedback_rag_stream_oeq")
-async def generate_feedback_rag_stream_oeq(request: FeedbackRequestRagModel, settings: Annotated[Settings, Depends(get_settings)], db: Session = Depends(get_db)):
-    """
-    OEQ-specific streaming version of generate_feedback_rag that returns Server-Sent Events
-    """
-    def event_generator():
-        try:
-            # Currently only support rag_cot streaming
-            if request.promptEngineering == "rag_cot":
-                for chunk in generate_feedback_using_rag_cot_stream(
-                    request.participant_id, 
-                    request.question_id, 
-                    request.question, 
-                    request.answer, 
-                    request.slide_text_arr, 
-                    request.feedbackFramework, 
-                    request.isStructured, 
-                    request.course_version,
-                    settings,
-                    db
-                ):
-                    yield chunk
-            else:
-                # For non-rag_cot methods, fall back to regular non-streaming
-                yield "data: Streaming not supported for this method, falling back to regular generation...\n\n"
-                
-                if request.promptEngineering == "rag_zero":
-                    feedback = generate_feedback_using_rag_zero(request.question, request.answer, request.slide_text_arr, request.feedbackFramework, settings)
-                elif request.promptEngineering == "rag_few":
-                    import asyncio
-                    feedback = asyncio.run(generate_feedback_using_rag_few(request.question, request.answer, request.slide_text_arr, request.feedbackFramework, settings))
-                else:
-                    feedback = "Generate Feedback Error: Invalid Request."
-                
-                yield f"data: {feedback}\n\n"
-                yield "data: [DONE]\n\n"
-                
-        except Exception as e:
-            yield f"data: Error generating feedback: {str(e)}\n\n"
-            yield "data: [DONE]\n\n"
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/plain",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type",
-        }
-    )
-
-@app.post("/api/v2/generate_feedback_oeq")
-async def generate_feedback_oeq(request: FeedbackRequestModel, settings: Annotated[Settings, Depends(get_settings)]):
-    """
-    OEQ-specific version of generate_feedback endpoint
-    """
-    feedback = ""
-    if request.promptEngineering == "zero":
-        feedback = generate_feedback_using_zero(request.question, request.answer, request.feedbackFramework, settings)
-    elif request.promptEngineering == "few":
-        feedback = generate_feedback_using_few(request.question, request.answer, request.feedbackFramework, settings)
-    else:
-        feedback = "Generate Feedback Error: Invalid Request."
-        print("Generate Feedback Error: Invalid Request.")
-
-    return {
-        "feedback": feedback
-    }
 
 
 @app.get("/api/courses/createdby/{creater_email}")
@@ -892,19 +772,56 @@ async def set_vision(slide_id: str, slide_google_id: str, settings: Annotated[Se
 
     return {"message": "Vision set successfully"}
 
+@app.post("/api/slides/{slide_id}/{slide_google_id}/update-vision")
+async def update_vision(slide_id: str, slide_google_id: str, settings: Annotated[Settings, Depends(get_settings)], db: Session = Depends(get_db)):
+    slide = db.query(schema.Slide).filter(schema.Slide.id == slide_id, schema.Slide.slide_google_id == slide_google_id).first()
+    if not slide:
+        raise HTTPException(status_code=404, detail="Slide not found")
+
+    # Get list of pages for the slide
+    pages = db.query(schema.Page).filter(schema.Page.slide_id == slide_id).all()
+    if not pages:
+        raise HTTPException(status_code=404, detail="No pages found for this slide")
+
+    # Process vision for each page (overwrites existing vision info)
+    page_visions = []
+    for page in pages:
+        if page.img_base64 is not None:
+            vision_info = setVision([page.img_base64], settings=settings)
+            page_visions.append(vision_info)
+            page.image_text = vision_info  # Update vision info for each page
+
+    # Aggregate vision information for the entire slide
+    if pages:
+        img_base64_list = [page.img_base64 for page in pages if page.img_base64 is not None]
+        if img_base64_list:
+            sum_vision_info = setVision(img_base64_list, settings=settings)
+            slide.vision_summary = sum_vision_info  # Update the summary
+
+    # Save changes to the database
+    db.commit()
+
+    return {"message": "Vision info updated successfully"}
+
 @app.post("/api/questions/create")
 def create_question(request: models.QuestionResponse, db: Session = Depends(get_db)):
     user = db.query(schema.User).filter(schema.User.email == request.creater_email).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     serialized_content = [content.dict() for content in request.content]
+    # Convert options to dict format if they exist
+    options_dict = None
+    if request.options:
+        options_dict = [opt.dict() for opt in request.options]
+    
     db_question = schema.Question(
         type=request.type,
         content=serialized_content,
-        options=request.options,
+        options=options_dict,
         objective=request.objective,
         slide_ids=request.slide_ids,
         creater_email=request.creater_email,
+        human_feedback=request.human_feedback,  # For OEQ questions
         mcq_human_feedback=request.mcq_human_feedback,
         mcq_ai_feedback=request.mcq_ai_feedback,
     )
@@ -944,11 +861,20 @@ def update_question_feedback(question_id: str, feedback: models.QuestionUpdateFe
     if db_question is None:
         raise HTTPException(status_code=404, detail="Question not found")
     
+    # Update human feedback for OEQ questions
+    if feedback.human_feedback is not None:
+        db_question.human_feedback = feedback.human_feedback
+    
+    # Update MCQ feedback
     if feedback.mcq_human_feedback is not None:
         db_question.mcq_human_feedback = feedback.mcq_human_feedback
     
     if feedback.mcq_ai_feedback is not None:
         db_question.mcq_ai_feedback = feedback.mcq_ai_feedback
+    
+    # Update options with isCorrect flags for MCQ questions
+    if feedback.options is not None:
+        db_question.options = [opt.dict() for opt in feedback.options]
     
     db.commit()
     db.refresh(db_question)

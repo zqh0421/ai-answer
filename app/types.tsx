@@ -23,6 +23,7 @@ export interface Slide {
   publishing?: boolean; // Temporary state for ongoing publishing
   gotVision: boolean;
   gettingVision?: boolean;
+  updatingVision?: boolean; // Temporary state for updating vision
 }
 
 export interface Reference {
@@ -69,7 +70,7 @@ export interface StructuredFeedback {
 export type FeedbackResult = 
   | string 
   | StructuredFeedback 
-  | { feedback: string | StructuredFeedback };
+  | { feedback?: string; score?: string; structured_feedback?: string };
 
 // Helper type for the processed feedback data
 export type ProcessedFeedbackData = 

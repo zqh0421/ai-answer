@@ -114,10 +114,138 @@ function PageChildren({
     [dispatch]
   );
 
-  const handleAnswerChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setAnswer(e.target.value);
+  const handleAnswerChange = async (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const selectedAnswer = e.target.value;
+    setAnswer(selectedAnswer);
     setSaveStatus("Saving...");
-    debouncedSaveAnswer(e.target.value);
+    debouncedSaveAnswer(selectedAnswer);
+    
+    // For MCQ, automatically fetch feedback when option is selected
+    console.log("MCQ Check - Question type:", questionPreset?.type || questionPreset?.question_type, "Has options:", !!questionPreset?.options);
+    if ((questionPreset?.type === "multiple choice" || questionPreset?.question_type === "mcq") && questionPreset?.options) {
+      // Find the index of the selected option
+      const selectedIndex = questionPreset.options.findIndex((opt: any) => {
+        const optionText = typeof opt === 'string' ? opt : opt.text;
+        return optionText === selectedAnswer;
+      });
+      
+      if (selectedIndex !== -1) {
+        await fetchMCQFeedback(selectedIndex);
+      }
+    }
+  };
+  
+  const fetchMCQFeedback = async (optionIndex: number) => {
+    if (!questionPreset?.question_id) {
+      console.log("Missing questionId for fetching MCQ feedback");
+      return;
+    }
+    
+    // Use prolificPid if available, otherwise use participantId from Redux, otherwise use a default
+    const effectiveParticipantId = prolificPid || participantId || "anonymous_user";
+    
+    setIsFeedbackLoading(true);
+    setIsReferenceLoading(true);
+    
+    // Record start time for MCQ interaction
+    const startTime = Date.now();
+    
+    try {
+      // Fetch MCQ AI feedback (using the new AI-specific endpoint)
+      const feedbackResponse = await axios.post('/api/v2/mcq/get_ai_feedback', {
+        question_id: questionPreset.question_id,
+        participant_id: effectiveParticipantId,
+        selected_option_index: optionIndex,
+        course_version: course_version
+      });
+      
+      console.log("MCQ Feedback Response:", {
+        participant_id: effectiveParticipantId,
+        course_version: course_version,
+        feedbackType: feedbackResponse.data.feedbackType,
+        attemptCount: feedbackResponse.data.attemptCount,
+        feedback: feedbackResponse.data.feedback?.substring(0, 100) + '...',
+        isCorrect: feedbackResponse.data.isCorrect
+      });
+      
+      const feedbackData = feedbackResponse.data;
+      
+      // Format the result for display in the feedback panel
+      // The feedback is already structured from backend
+      const formattedResult = {
+        feedback: feedbackData.feedback,
+        score: feedbackData.isCorrect ? "1" : "0",
+        structured_feedback: feedbackData.structured_feedback || feedbackData.feedback
+      };
+      
+      setResult(formattedResult);
+      const version = feedbackData.feedbackType === 'learner' ? 'prompt_learner' : 'prompt_corrective';
+      setPromptVersion(version);
+      console.log("Setting prompt version:", version, "based on feedbackType:", feedbackData.feedbackType);
+      
+      // Find correct option(s) for embedding
+      const correctOptions = questionPreset.options
+        ?.map((opt: any, idx: number) => ({
+          index: idx,
+          text: typeof opt === 'string' ? opt : opt.text,
+          isCorrect: typeof opt === 'object' ? opt.isCorrect : false
+        }))
+        .filter((opt: any) => opt.isCorrect)
+        .map((opt: any) => opt.text);
+      
+      // Fetch relevant slides using embed API with correct answer context
+      await handleRetrieveForMCQ(correctOptions || []);
+      
+      // Record MCQ result to database
+      const endTime = Date.now();
+      const selectedOption = questionPreset.options?.[optionIndex];
+      const selectedText = typeof selectedOption === 'string' ? selectedOption : selectedOption?.text || "";
+      
+      const recordPayload: RecordResultInput = {
+        learner_id: effectiveParticipantId,
+        study_id: studyId || "unidentifiable_study",
+        session_id: sessionId || "unidentifiable_session",
+        question_id: questionPreset.question_id,
+        answer: selectedText,
+        feedback: typeof feedbackData.feedback === 'string' ? feedbackData.feedback : JSON.stringify(feedbackData.feedback),
+        prompt_engineering_method: "rag_cot",
+        preferred_info_type: preferredInfoType,
+        feedback_framework: selectedFeedbackFramework,
+        submission_time: startTime,
+        system_total_response_time: endTime - startTime,
+      };
+      
+      await recordResultToDatabase(recordPayload);
+      console.log("MCQ result recorded:", {
+        option_index: optionIndex,
+        is_correct: feedbackData.isCorrect,
+        feedback_type: feedbackData.feedbackType,
+        response_time: endTime - startTime
+      });
+      
+    } catch (error: any) {
+      console.error("Error fetching MCQ feedback:", error);
+      
+      // Show error message instead of fallback
+      const errorMessage = error.response?.data?.detail || "Failed to get feedback";
+      
+      setResult({
+        feedback: errorMessage,
+        score: "",
+        structured_feedback: `<div class="error-feedback">
+          <statement>Error</statement>
+          <explanation>${errorMessage}</explanation>
+        </div>`
+      });
+      
+      console.log("MCQ feedback error:", {
+        status: error.response?.status,
+        message: errorMessage
+      });
+    } finally {
+      setIsFeedbackLoading(false);
+      setIsReferenceLoading(false);
+    }
   };
 
   // Load initial courses (for selectors)
@@ -179,6 +307,21 @@ function PageChildren({
       .get(`/api/questions/by_id/${question_id}`)
       .then((res) => {
         setQuestionPreset(res.data);
+        // Debug log to check AI feedback structure
+        console.log("MCQ Question Data:", {
+          question_id: res.data.question_id,
+          has_human_feedback: !!res.data.mcq_human_feedback,
+          has_ai_feedback: !!res.data.mcq_ai_feedback,
+          ai_feedback_type: res.data.mcq_ai_feedback ? typeof res.data.mcq_ai_feedback : 'none',
+          ai_feedback_structure: res.data.mcq_ai_feedback ? 
+            (Array.isArray(res.data.mcq_ai_feedback) ? 'array' : 
+             (res.data.mcq_ai_feedback.corrective_feedback ? 'structured' : 'unknown')) : 'none',
+          slide_ids: res.data.slide_ids
+        });
+        // Set slide IDs if available from the question data
+        if (res.data.slide_ids && res.data.slide_ids.length > 0) {
+          setSlide(res.data.slide_ids);
+        }
         // If needed, prefill question input for non-preset usage
         if (!res.data?.content?.length) return;
         // Keep the original behavior of showing preset content and no free-input box
@@ -188,6 +331,160 @@ function PageChildren({
       })
       .finally(() => setQuestionLoading(false));
   }, [question_id]);
+
+  // 🔄 Fetch latest feedback AND reference materials for the participant when page loads
+  useEffect(() => {
+    if (!question_id || !questionPreset) return;
+    
+    const effectiveParticipantId = prolificPid || participantId;
+    if (!effectiveParticipantId) return;
+    
+    const fetchLatestFeedbackAndReferences = async () => {
+      try {
+        // Fetch the latest feedback from database (not cache)
+        const response = await axios.get(`/api/v2/mcq/get_latest_feedback/${question_id}/${effectiveParticipantId}`);
+        
+        if (response.data.hasLatestFeedback) {
+          console.log("Loading latest feedback for participant:", {
+            participant_id: effectiveParticipantId,
+            has_feedback: true,
+            selected_option_index: response.data.selectedOptionIndex,
+            submission_time: response.data.submission_time,
+            has_reference: !!response.data.reference_slide_id
+          });
+          
+          // Set the result to display the latest feedback
+          const formattedResult = {
+            feedback: response.data.feedback,
+            score: response.data.isCorrect ? "1" : "0",
+            structured_feedback: response.data.feedback
+          };
+          setResult(formattedResult);
+          
+          // If we have the selected option index, also select that answer
+          if (response.data.selectedOptionIndex >= 0 && questionPreset?.options) {
+            const selectedOption = questionPreset.options[response.data.selectedOptionIndex];
+            const selectedText = typeof selectedOption === 'string' 
+              ? selectedOption 
+              : selectedOption?.text || "";
+            if (selectedText) {
+              setAnswer(selectedText);
+            }
+          } else if (response.data.answer) {
+            // Fallback to the stored answer text
+            setAnswer(response.data.answer);
+          }
+          
+          // Set prompt version if available
+          if (response.data.prompt_engineering_method) {
+            const version = response.data.prompt_engineering_method === 'rag_cot' 
+              ? 'prompt_corrective' 
+              : 'prompt_learner';
+            setPromptVersion(version);
+          }
+          
+          // Set reference material if available
+          if (response.data.reference_slide_id && response.data.reference_slide_content) {
+            const referenceData: Reference = {
+              text: response.data.reference_slide_content,
+              image_text: response.data.preferred_info_type === "vision" ? response.data.reference_slide_content : "",
+              page_number: response.data.reference_slide_page_number || 1,
+              slide_google_id: response.data.reference_slide_id,
+              slide_title: "", // This might not be stored, but that's okay
+              display: response.data.reference_slide_content
+            };
+            setReference(referenceData);
+            
+            // Also set the slide text array if available
+            if (response.data.slide_retrieval_range) {
+              setSlideTextArr(response.data.slide_retrieval_range);
+            }
+            
+            // Fetch the slide images if we have the reference slide
+            if (response.data.reference_slide_id && response.data.reference_slide_page_number) {
+              setIsImageLoading(true);
+              try {
+                const pageNumber = response.data.reference_slide_page_number;
+                const image = await handlePdfImage(pageNumber, response.data.reference_slide_id);
+                if (image) {
+                  setImages([image]);
+                }
+              } catch (error) {
+                console.error("Error loading reference image:", error);
+              } finally {
+                setIsImageLoading(false);
+              }
+            }
+          } else {
+            // No reference stored in latest feedback, but we have a cached answer
+            // Fetch reference materials for the current cached answer
+            const cachedAnswer = question_id ? (answers[question_id] || "") : "";
+            if (cachedAnswer && questionPreset?.options) {
+              console.log("No stored reference, fetching for cached answer:", cachedAnswer);
+              
+              // Find which option was selected
+              const selectedIndex = questionPreset.options.findIndex((opt: any) => {
+                const optionText = typeof opt === 'string' ? opt : opt.text;
+                return optionText === cachedAnswer;
+              });
+              
+              if (selectedIndex !== -1) {
+                // Find correct options for embedding
+                const correctOptions = questionPreset.options
+                  ?.map((opt: any, idx: number) => ({
+                    index: idx,
+                    text: typeof opt === 'string' ? opt : opt.text,
+                    isCorrect: typeof opt === 'object' ? opt.isCorrect : false
+                  }))
+                  .filter((opt: any) => opt.isCorrect)
+                  .map((opt: any) => opt.text);
+                
+                // Fetch relevant slides for the cached answer
+                setIsReferenceLoading(true);
+                setIsImageLoading(true);
+                await handleRetrieveForMCQ(correctOptions || []);
+              }
+            }
+          }
+        } else {
+          console.log("No previous feedback found for participant:", effectiveParticipantId);
+          
+          // Check if there's a cached answer even without feedback
+          const cachedAnswer = question_id ? (answers[question_id] || "") : "";
+          if (cachedAnswer && questionPreset?.options) {
+            console.log("Loading reference for cached answer (no feedback):", cachedAnswer);
+            
+            // Find which option was selected
+            const selectedIndex = questionPreset.options.findIndex((opt: any) => {
+              const optionText = typeof opt === 'string' ? opt : opt.text;
+              return optionText === cachedAnswer;
+            });
+            
+            if (selectedIndex !== -1) {
+              // Find correct options for embedding
+              const correctOptions = questionPreset.options
+                ?.map((opt: any, idx: number) => ({
+                  index: idx,
+                  text: typeof opt === 'string' ? opt : opt.text,
+                  isCorrect: typeof opt === 'object' ? opt.isCorrect : false
+                }))
+                .filter((opt: any) => opt.isCorrect)
+                .map((opt: any) => opt.text);
+              
+              // Fetch relevant slides for the cached answer
+              setIsReferenceLoading(true);
+              setIsImageLoading(true);
+              await handleRetrieveForMCQ(correctOptions || []);
+            }
+          }
+        }
+      } catch (error) {
+        console.error("Error fetching latest feedback:", error);
+      }
+    };
+    
+    fetchLatestFeedbackAndReferences();
+  }, [question_id, participantId, prolificPid, questionPreset]);
 
   // Connectivity ping (unchanged)
   useEffect(() => {
@@ -226,6 +523,71 @@ function PageChildren({
     e.target.style.height = "auto";
     e.target.style.height = `${e.target.scrollHeight}px`;
   }
+
+  const handleRetrieveForMCQ = async (correctOptions: string[]) => {
+    try {
+      // For MCQ, append the correct answer(s) to the question for better embedding
+      const questionWithAnswer = [
+        ...(questionPreset?.content || question),
+        { 
+          type: "text", 
+          content: correctOptions.length > 0 
+            ? `The correct answer is: ${correctOptions.join(', ')}`
+            : ""
+        }
+      ];
+      
+      const response = await axios.post("/api/embed", {
+        question_id: question_id || null,
+        question: questionWithAnswer,
+        slideIds: slide,
+        preferredInfoType: preferredInfoType,
+      });
+      const res = typeof response.data === "string" ? JSON.parse(response.data).result : response.data.result;
+      setReference(res[0]);
+
+      if (preferredInfoType === "vision" && res[0].image_text) {
+        setReference({ ...res[0], display: res[0].image_text.replace(/\n\s*\n+/g, "\n") });
+      } else if (res[0].text) {
+        setReference({ ...res[0], display: res[0].text });
+      } else {
+        setReference({ ...res[0], display: "EMPTY REFERENCE" });
+      }
+
+      setSlideTextArr(
+        res.map((item: Reference) => {
+          if (preferredInfoType === "vision" && item.image_text) return item.image_text;
+          if (item.text) return item.text;
+          alert(`${item.slide_title} unpublished!`);
+          return "";
+        })
+      );
+
+      // Fetch slide images for MCQ
+      let temp: string[] = [];
+      const page_number = res[0].page_number;
+      const startPage = page_number;
+      const endPage = page_number;
+      setTotalCount(endPage - startPage + 1);
+      setLoadedCount(0);
+
+      for (let i = startPage; i <= endPage; i++) {
+        const image: string | null = await handlePdfImage(i, res[0].slide_id);
+        if (image !== null) {
+          setLoadedCount((prevCount) => prevCount + 1);
+          temp = [...temp, image];
+        }
+      }
+
+      setImages(temp);
+      setIsImageLoading(false);
+      setIsReferenceLoading(false);
+    } catch (error) {
+      console.error("Error during retrieval:", error);
+      setIsImageLoading(false);
+      setIsReferenceLoading(false);
+    }
+  };
 
   const handleRetrieve = async () => {
     try {
@@ -685,6 +1047,9 @@ function PageChildren({
           streamingContent={streamingContent}
           isFeedbackLoading={isFeedbackLoading}
           promptVersion={promptVersion}
+          question={questionPreset?.content || question}
+          options={questionPreset?.options}
+          correctAnswer={questionPreset?.options?.filter((opt: any) => opt.isCorrect).map((opt: any) => opt.text).join(', ')}
         />
 
         <RightInputPanel

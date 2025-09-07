@@ -9,6 +9,10 @@ venv/
 /.pnp
 .pnp.js
 .yarn/install-state.gz
+.pnpm-store
+
+__pycache__
+*.pyc
 
 # testing
 /coverage

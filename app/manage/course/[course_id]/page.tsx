@@ -320,6 +320,48 @@ const CoursePage = () => {
       }));
     }
   };
+
+  const handleUpdateVision = async (slideGoogleId: string, slideId: string, moduleId: string) => {
+    const confirmUpdate = window.confirm('Are you sure you want to update the vision info for this slide? This will overwrite the existing vision data.');
+    if (!confirmUpdate) return;
+
+    setSlidesByModule((prevSlides) => ({
+      ...prevSlides,
+      [moduleId]: prevSlides[moduleId].map((slide) =>
+        slide.id === slideId ? { ...slide, updatingVision: true } : slide
+      ),
+    }));
+    try {
+      const response = await axios.post(`/api/slides/${slideId}/${slideGoogleId}/update-vision`, { timeout: 100000});
+      
+      if (response.status === 200) {
+        setSlidesByModule((prevSlides) => ({
+          ...prevSlides,
+          [moduleId]: prevSlides[moduleId].map((slide) =>
+            slide.id === slideId ? { ...slide, gotVision: true, updatingVision: false } : slide
+          ),
+        }));
+        alert('Vision info updated successfully!');
+      } else {
+        setSlidesByModule((prevSlides) => ({
+          ...prevSlides,
+          [moduleId]: prevSlides[moduleId].map((slide) =>
+            slide.id === slideId ? { ...slide, updatingVision: false } : slide
+          ),
+        }));
+        alert('Failed to update vision info.');
+      }
+    } catch (error) {
+      console.error('Error updating vision:', error);
+      setSlidesByModule((prevSlides) => ({
+        ...prevSlides,
+        [moduleId]: prevSlides[moduleId].map((slide) =>
+          slide.id === slideId ? { ...slide, updatingVision: false } : slide
+        ),
+      }));
+      alert('Error updating vision info. Please try again.');
+    }
+  };
   
 
   // Check if slides have been loaded for the module
@@ -491,6 +533,18 @@ const CoursePage = () => {
                             >
                               {slide.gotVision ? "Vision Info Available" : slide.gettingVision ? "Getting Vision" : "Set Vision"}
                             </button>
+
+                            {slide.gotVision && (
+                              <button
+                                onClick={() => handleUpdateVision(slide.slide_google_id, slide.id, module.module_id)}
+                                disabled={slide.updatingVision}
+                                className={`mt-2 mr-4 p-2 text-white rounded ${
+                                  slide.updatingVision ?
+                                  "bg-gray-600" : "bg-blue-600 hover:bg-blue-700"}`}
+                              >
+                                {slide.updatingVision ? "Updating Vision..." : "Update Vision"}
+                              </button>
+                            )}
 
                             <button
                               onClick={() => handleDeleteSlide(module.module_id, slide.id)}

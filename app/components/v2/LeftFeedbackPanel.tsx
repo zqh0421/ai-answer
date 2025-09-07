@@ -6,7 +6,7 @@ import ReferenceArea from "@/app/components/ReferenceArea";
 import { Reference, StructuredFeedback } from "@/app/types";
 
 interface LeftFeedbackPanelProps {
-  result: any;
+  result: string | StructuredFeedback | { feedback?: string; score?: string; structured_feedback?: string };
   reference: Reference | undefined;
   isReferenceLoading: boolean;
   images: string[] | null;
@@ -22,6 +22,9 @@ interface LeftFeedbackPanelProps {
   streamingContent?: string;
   isFeedbackLoading?: boolean;
   promptVersion?: string | null;
+  question?: string | any[];
+  options?: any[];
+  correctAnswer?: string;
 }
 
 export default function LeftFeedbackPanel({
@@ -41,6 +44,9 @@ export default function LeftFeedbackPanel({
   streamingContent = "",
   isFeedbackLoading = false,
   promptVersion = null,
+  question,
+  options,
+  correctAnswer,
 }: LeftFeedbackPanelProps) {
   return (
     <motion.div
@@ -56,10 +62,17 @@ export default function LeftFeedbackPanel({
             ? streamingContent 
             : typeof result === 'string' 
               ? result 
-              : (result as StructuredFeedback)?.structured_feedback || (result as any)?.feedback || ""
+              : 'structured_feedback' in result 
+                ? result.structured_feedback || result.feedback || ""
+                : 'feedback' in result 
+                  ? result.feedback || ""
+                  : ""
           }
           isFeedbackLoading={isFeedbackLoading}
-          score={isStreaming ? "" : (result as StructuredFeedback)?.score || (result as any)?.score || ""}
+          score={isStreaming ? "" : 
+            typeof result !== 'string' && 'score' in result 
+              ? result.score || "" 
+              : ""}
           isStreaming={isStreaming}
           promptVersion={promptVersion}
         />
@@ -76,6 +89,9 @@ export default function LeftFeedbackPanel({
           onImageClick={onImageClick}
           studentAnswer={studentAnswer}
           feedback={feedback}
+          question={question}
+          options={options}
+          correctAnswer={correctAnswer}
         />
       )}
     </motion.div>

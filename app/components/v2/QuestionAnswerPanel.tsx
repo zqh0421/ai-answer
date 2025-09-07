@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { QuestionContent } from "@/app/manage/question/page";
 import ContentEditor from "@/app/components/ContentEditor";
 import DynamicImage from "@/app/components/DynamicImage";
+import axios from "axios";
 
 interface QuestionAnswerPanelProps {
   question: QuestionContent[];
@@ -26,6 +27,9 @@ interface QuestionAnswerPanelProps {
   stopStreaming?: () => void;
   isMCQ?: boolean;
   promptVersion?: string | null;
+  questionId?: string;
+  participantId?: string;
+  courseVersion?: string | null;
 }
 
 export default function QuestionAnswerPanel({
@@ -49,13 +53,20 @@ export default function QuestionAnswerPanel({
   stopStreaming,
   isMCQ = false,
   promptVersion = null,
+  questionId,
+  participantId,
+  courseVersion = null,
 }: QuestionAnswerPanelProps) {
   const [isFullScreen, setIsFullScreen] = useState(false);
   const [selectedOption, setSelectedOption] = useState<string>("");
-  
+  const [selectedOptionIndex, setSelectedOptionIndex] = useState<number | null>(
+    null
+  );
+
   // Determine feedback type based on prompt version
   // Default to learner feedback (no correctness indicators) when prompt version is unknown
-  const isLearnerFeedback = promptVersion === "prompt_learner" || promptVersion === null;
+  const isLearnerFeedback =
+    promptVersion === "prompt_learner" || promptVersion === null;
   const isCorrectiveFeedback = promptVersion === "prompt_corrective";
 
   return (
@@ -215,102 +226,68 @@ export default function QuestionAnswerPanel({
           </h3>
           <p className="text-sm text-slate-500">{saveStatus}</p>
         </div>
-        
+
         {isMCQ && questionPreset?.options?.length > 0 ? (
           <div className="space-y-3">
-            {questionPreset.options.map((option: string, index: number) => {
-              const isSelected = answer === option;
+            {questionPreset.options.map((option: any, index: number) => {
+              // Handle both string and object formats
+              const optionText =
+                typeof option === "string" ? option : option.text;
+              const isCorrectOption =
+                typeof option === "object" ? option.isCorrect : false;
+              const isSelected = answer === optionText;
               const humanFeedback = questionPreset.mcq_human_feedback?.[index];
-              const aiFeedback = questionPreset.mcq_ai_feedback?.[index];
-              
+
+              // Handle AI feedback structure - can be either:
+              // 1. New format: {corrective_feedback: [...], learner_feedback: [...]}
+              // 2. Old format: [...]
+              let aiFeedback = null;
+              if (questionPreset.mcq_ai_feedback) {
+                if (
+                  typeof questionPreset.mcq_ai_feedback === "object" &&
+                  !Array.isArray(questionPreset.mcq_ai_feedback)
+                ) {
+                  // New structured format - use corrective by default for display
+                  aiFeedback =
+                    questionPreset.mcq_ai_feedback.corrective_feedback?.[
+                      index
+                    ] ||
+                    questionPreset.mcq_ai_feedback.learner_feedback?.[index];
+                } else if (Array.isArray(questionPreset.mcq_ai_feedback)) {
+                  // Old array format
+                  aiFeedback = questionPreset.mcq_ai_feedback[index];
+                }
+              }
+
               return (
                 <div key={index} className="space-y-2">
                   <label
                     className={`flex items-center p-4 border rounded-lg cursor-pointer transition-colors duration-200 ${
-                      isSelected 
-                        ? 'border-blue-500 bg-blue-50' 
-                        : 'border-slate-200 hover:bg-slate-50'
+                      isSelected
+                        ? "border-blue-500 bg-blue-50"
+                        : "border-slate-200 hover:bg-slate-50"
                     }`}
                   >
                     <input
                       type="radio"
                       name="mcq-option"
-                      value={option}
+                      value={optionText}
                       checked={isSelected}
                       onChange={(e) => {
                         setAnswer(e.target.value);
                         setSelectedOption(e.target.value);
-                        // Trigger the save for MCQ selection
+                        setSelectedOptionIndex(index);
+
+                        // Trigger the save and feedback fetch in parent component
                         const syntheticEvent = {
-                          target: { value: e.target.value }
+                          target: { value: e.target.value },
                         } as React.ChangeEvent<HTMLTextAreaElement>;
                         onAnswerChange(syntheticEvent);
                       }}
                       className="mr-3 text-blue-600 focus:ring-blue-500"
                     />
-                    <span className="text-slate-700 flex-1">{option}</span>
+                    <span className="text-slate-700 flex-1">{optionText}</span>
                   </label>
-                  
-                  {/* Show feedback if this option is selected */}
-                  {isSelected && (humanFeedback || aiFeedback) && (
-                    <div className="ml-8 space-y-2">
-                      {/* Only show correctness indicators for corrective feedback */}
-                      {isCorrectiveFeedback && (
-                        <div className="flex items-center gap-2 mb-2">
-                          {/* Check if this is the correct answer based on feedback content */}
-                          {(humanFeedback?.toLowerCase().includes('correct') && !humanFeedback?.toLowerCase().includes('incorrect')) ? (
-                            <div className="flex items-center gap-1 text-green-600">
-                              <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-                                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-                              </svg>
-                              <span className="text-sm font-medium">Correct!</span>
-                            </div>
-                          ) : (
-                            <div className="flex items-center gap-1 text-red-600">
-                              <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-                                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
-                              </svg>
-                              <span className="text-sm font-medium">Incorrect</span>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                      
-                      {/* For learner feedback: Show neutral, encouraging feedback */}
-                      {isLearnerFeedback ? (
-                        <>
-                          {humanFeedback && (
-                            <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                              <p className="text-sm font-medium text-blue-800 mb-1">Feedback:</p>
-                              <p className="text-sm text-blue-700">{humanFeedback}</p>
-                            </div>
-                          )}
-                          {!humanFeedback && aiFeedback && (
-                            <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                              <p className="text-sm font-medium text-blue-800 mb-1">Feedback:</p>
-                              <p className="text-sm text-blue-700">{aiFeedback}</p>
-                            </div>
-                          )}
-                        </>
-                      ) : (
-                        // For corrective feedback or default: Show detailed feedback
-                        <>
-                          {humanFeedback && (
-                            <div className="p-3 bg-green-50 border border-green-200 rounded-lg">
-                              <p className="text-sm font-medium text-green-800 mb-1">Expert Feedback:</p>
-                              <p className="text-sm text-green-700">{humanFeedback}</p>
-                            </div>
-                          )}
-                          {aiFeedback && (
-                            <div className="p-3 bg-purple-50 border border-purple-200 rounded-lg">
-                              <p className="text-sm font-medium text-purple-800 mb-1">AI Analysis:</p>
-                              <p className="text-sm text-purple-700">{aiFeedback}</p>
-                            </div>
-                          )}
-                        </>
-                      )}
-                    </div>
-                  )}
                 </div>
               );
             })}
@@ -323,6 +300,43 @@ export default function QuestionAnswerPanel({
             className="w-full px-3 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 resize-none min-h-32"
             rows={1}
             onInput={onInputResize}
+            onPaste={(e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+              e.preventDefault();
+              return false;
+            }}
+            onCopy={(e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+              e.preventDefault();
+              return false;
+            }}
+            onCut={(e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+              e.preventDefault();
+              return false;
+            }}
+            onContextMenu={(e: React.MouseEvent<HTMLTextAreaElement>) => {
+              e.preventDefault();
+              return false;
+            }}
+            onDrop={(e: React.DragEvent<HTMLTextAreaElement>) => {
+              e.preventDefault();
+              return false;
+            }}
+            onKeyDown={(e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+              // Block common copy/paste keyboard shortcuts
+              if ((e.ctrlKey || e.metaKey) && ['c', 'v', 'x', 'a'].includes(e.key.toLowerCase())) {
+                e.preventDefault();
+                return false;
+              }
+              // Optional: Add additional keystroke controls here
+              // For example, to block certain keys:
+              // if (['Tab', 'Enter'].includes(e.key)) {
+              //   e.preventDefault();
+              //   return false;
+              // }
+            }}
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
           />
         )}
       </div>

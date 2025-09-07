@@ -12,13 +12,29 @@ export interface QuestionContent {
   content: string;
 }
 
+export interface MCQOption {
+  text: string;
+  feedback: string;
+}
+
+interface Course {
+  course_id: string;
+  course_title?: string;
+}
+
+interface Module {
+  module_id: string;
+  module_title?: string;
+}
+
 export interface Question {
   question_id: string;
   type: string; // "multiple choice" | "open ended"
   objective?: string[];
   slide_ids?: string[];
   content: QuestionContent[];
-  options?: string[];
+  options?: Array<{ text: string; isCorrect: boolean }>;
+  mcq_human_feedback?: string[];
 }
 
 const QuestionOverview = () => {
@@ -41,12 +57,16 @@ const QuestionOverview = () => {
   const [newQuestionType, setNewQuestionType] = useState("");
   const [newQuestionContent, setNewQuestionContent] = useState<QuestionContent[]>([]);
   const [newQuestionOptions, setNewQuestionOptions] = useState<string[]>([]);
+  const [newMcqOptions, setNewMcqOptions] = useState<MCQOption[]>([]);
+  const [correctAnswerIndex, setCorrectAnswerIndex] = useState<number | null>(null);
   const [newQuestionObjective, setNewQuestionObjective] = useState<string[]>([]);
   const [newSlideIds, setNewSlideIds] = useState<string[]>([]);
+  const [newHumanFeedback, setNewHumanFeedback] = useState<string>("");
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [updatingFeedback, setUpdatingFeedback] = useState<string | null>(null);
 
   const { data } = useSession();
   const userEmail = data?.user?.email ?? "";
@@ -199,18 +219,46 @@ const QuestionOverview = () => {
   }, [fetchQuestions]);
 
   // Multiple-choice option editor helpers
-  const addOption = () => setNewQuestionOptions((opts) => [...opts, ""]);
-  const updateOption = (index: number, value: string) =>
+  const addOption = () => {
+    setNewQuestionOptions((opts) => [...opts, ""]);
+    setNewMcqOptions((opts) => [...opts, { text: "", feedback: "" }]);
+  };
+  
+  const updateOption = (index: number, value: string) => {
     setNewQuestionOptions((opts) => opts.map((o, i) => (i === index ? value : o)));
-  const removeOption = (index: number) =>
+    setNewMcqOptions((opts) => 
+      opts.map((o, i) => (i === index ? { ...o, text: value } : o))
+    );
+  };
+  
+  const updateOptionFeedback = (index: number, feedback: string) => {
+    setNewMcqOptions((opts) => 
+      opts.map((o, i) => (i === index ? { ...o, feedback } : o))
+    );
+  };
+  
+  const removeOption = (index: number) => {
     setNewQuestionOptions((opts) => opts.filter((_, i) => i !== index));
+    setNewMcqOptions((opts) => opts.filter((_, i) => i !== index));
+    // Adjust correct answer index if needed
+    if (correctAnswerIndex !== null) {
+      if (correctAnswerIndex === index) {
+        setCorrectAnswerIndex(null);
+      } else if (correctAnswerIndex > index) {
+        setCorrectAnswerIndex(correctAnswerIndex - 1);
+      }
+    }
+  };
 
   const clearForm = () => {
     setNewQuestionType("");
     setNewQuestionContent([]);
     setNewQuestionOptions([]);
+    setNewMcqOptions([]);
+    setCorrectAnswerIndex(null);
     setNewQuestionObjective([]);
     setNewSlideIds([]);
+    setNewHumanFeedback("");
   };
 
   // Handle question creation
@@ -218,29 +266,75 @@ const QuestionOverview = () => {
     e.preventDefault();
 
     if (newQuestionType === "multiple choice") {
-      const trimmed = newQuestionOptions.map((o) => o.trim()).filter(Boolean);
-      if (trimmed.length < 2) {
+      // Validate MCQ options
+      const validOptions = newMcqOptions.filter(opt => opt.text.trim());
+      if (validOptions.length < 2) {
         alert("Multiple choice questions need at least 2 non-empty options.");
         return;
       }
-      if (trimmed.length !== newQuestionOptions.length) {
-        setNewQuestionOptions(trimmed);
+      if (correctAnswerIndex === null) {
+        alert("Please select which option is the correct answer.");
+        return;
+      }
+      // Adjust correct answer index if some options were filtered
+      if (validOptions.length !== newMcqOptions.length) {
+        const newCorrectIndex = validOptions.findIndex(opt => 
+          newMcqOptions[correctAnswerIndex] && opt.text === newMcqOptions[correctAnswerIndex].text
+        );
+        if (newCorrectIndex === -1) {
+          alert("The correct answer option cannot be empty.");
+          return;
+        }
+        setCorrectAnswerIndex(newCorrectIndex);
+        setNewMcqOptions(validOptions);
       }
     }
 
     setLoading(true);
     console.log(newSlideIds)
     try {
-      const res = await axios.post(`/api/questions/create`, {
+      let requestData: any = {
         type: newQuestionType,
         content: newQuestionContent,
-        options: newQuestionType === "multiple choice" ? newQuestionOptions : undefined,
         objective: newQuestionObjective,
         slide_ids: newSlideIds,
         creater_email: userEmail,
-      });
+      };
+
+      if (newQuestionType === "multiple choice") {
+        // Create options with isCorrect flag
+        requestData.options = newMcqOptions.map((opt, index) => ({
+          text: opt.text,
+          isCorrect: index === correctAnswerIndex
+        }));
+        // Add MCQ-specific feedback as arrays
+        requestData.mcq_human_feedback = newMcqOptions.map(opt => opt.feedback || '');
+      } else if (newQuestionType === "open ended") {
+        requestData.human_feedback = newHumanFeedback;
+      }
+
+      const res = await axios.post(`/api/questions/create`, requestData);
 
       if (res.status === 200 || res.status === 201) {
+        // If MCQ, generate AI feedback for all options
+        if (newQuestionType === "multiple choice" && res.data?.question_id) {
+          try {
+            await axios.post(`/api/v2/mcq/generate_feedback`, {
+              question_id: res.data.question_id,
+              participant_id: userEmail, // Using email as participant ID for now
+              question_content: newQuestionContent,
+              options: requestData.options,
+              mcq_human_feedback: requestData.mcq_human_feedback,
+              slide_ids: newSlideIds,
+              course_version: "v2b" // Force corrective feedback generation
+            });
+            console.log("MCQ feedback generated successfully");
+          } catch (error) {
+            console.error("Error generating MCQ feedback:", error);
+            // Don't fail the whole operation if feedback generation fails
+          }
+        }
+        
         await fetchQuestions();
         clearForm();
         setIsModalOpen(false);
@@ -249,6 +343,36 @@ const QuestionOverview = () => {
       console.error("Error creating question:", error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Handle MCQ feedback update
+  const handleUpdateMCQFeedback = async (question: Question) => {
+    setUpdatingFeedback(question.question_id);
+    try {
+      // Prepare the request data
+      const requestData = {
+        question_id: question.question_id,
+        participant_id: userEmail, // Using email as participant ID
+        question_content: question.content,
+        options: question.options || [],
+        mcq_human_feedback: question.mcq_human_feedback || [],
+        slide_ids: question.slide_ids || [],
+        course_version: "v2b" // Force corrective feedback generation
+      };
+      
+      const res = await axios.post(`/api/v2/mcq/generate_feedback`, requestData);
+      
+      if (res.status === 200) {
+        alert("AI feedback updated successfully!");
+        // Refresh the questions list to show updated feedback
+        await fetchQuestions();
+      }
+    } catch (error) {
+      console.error("Error updating MCQ feedback:", error);
+      alert("Failed to update AI feedback. Please try again.");
+    } finally {
+      setUpdatingFeedback(null);
     }
   };
 
@@ -296,6 +420,15 @@ const QuestionOverview = () => {
               >
                 <Link href={`/manage/question/${question.question_id}`}>
                   <span className="text-lg font-medium text-indigo-600 hover:text-indigo-800">
+                    {question.type === "multiple choice" && (
+                      <span className={`inline-block mr-2 px-2 py-1 text-xs rounded ${
+                        (question as any).mcq_ai_feedback 
+                          ? "bg-green-100 text-green-700" 
+                          : "bg-yellow-100 text-yellow-700"
+                      }`}>
+                        {(question as any).mcq_ai_feedback ? "AI ✓" : "No AI"}
+                      </span>
+                    )}
                     {question.content.map((item, index) => {
                       if (item.type === "text") {
                         return <p key={index}>{item.content}</p>;
@@ -327,6 +460,17 @@ const QuestionOverview = () => {
                   >
                     Go to SlideItRight
                   </button>
+                  {question.type === "multiple choice" && (
+                    <button
+                      onClick={() => handleUpdateMCQFeedback(question)}
+                      className={`py-2 px-4 text-white bg-blue-600 hover:bg-blue-700 rounded-md ${
+                        updatingFeedback === question.question_id ? "opacity-50 cursor-not-allowed" : ""
+                      }`}
+                      disabled={updatingFeedback === question.question_id}
+                    >
+                      {updatingFeedback === question.question_id ? "Updating..." : "Update AI Feedback"}
+                    </button>
+                  )}
                   <button
                     onClick={() => handleDeleteQuestion(question.question_id)}
                     className={`py-2 px-4 text-white bg-red-600 hover:bg-red-700 rounded-md ${
@@ -374,7 +518,7 @@ const QuestionOverview = () => {
 
               {/* Friendly Multiple Choice Editor */}
               {newQuestionType === "multiple choice" && (
-                <div>
+                <div className="space-y-4">
                   <div className="flex items-center justify-between">
                     <label className="block text-sm font-medium text-gray-700">Options</label>
                     <button
@@ -386,32 +530,107 @@ const QuestionOverview = () => {
                     </button>
                   </div>
 
-                  {newQuestionOptions.length === 0 && (
+                  {newMcqOptions.length === 0 && (
                     <p className="text-xs text-gray-500 mt-1">Add at least two options.</p>
                   )}
 
-                  <ul className="mt-3 space-y-2">
-                    {newQuestionOptions.map((opt, idx) => (
-                      <li key={idx} className="flex items-center gap-2">
-                        <span className="text-sm text-gray-500 w-6">{idx + 1}.</span>
-                        <input
-                          type="text"
-                          value={opt}
-                          onChange={(e) => updateOption(idx, e.target.value)}
-                          placeholder={`Option ${idx + 1}`}
-                          className="flex-1 p-2 border border-gray-300 rounded-md"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => removeOption(idx)}
-                          aria-label={`Remove option ${idx + 1}`}
-                          className="px-2 py-1 text-sm rounded-md bg-gray-100 hover:bg-gray-200"
-                        >
-                          Remove
-                        </button>
-                      </li>
+                  <div className="space-y-4">
+                    {newMcqOptions.map((opt, idx) => (
+                      <div key={idx} className="border border-gray-200 rounded-lg p-4 space-y-3">
+                        <div className="flex items-start gap-3">
+                          {/* Radio button for correct answer */}
+                          <div className="pt-1">
+                            <input
+                              type="radio"
+                              id={`correct-${idx}`}
+                              name="correctAnswer"
+                              checked={correctAnswerIndex === idx}
+                              onChange={() => setCorrectAnswerIndex(idx)}
+                              className="w-4 h-4 text-green-600 border-gray-300 focus:ring-green-500"
+                            />
+                            <label htmlFor={`correct-${idx}`} className="sr-only">
+                              Mark as correct answer
+                            </label>
+                          </div>
+                          
+                          {/* Option number */}
+                          <span className="text-sm font-medium text-gray-600 pt-1">{idx + 1}.</span>
+                          
+                          {/* Option text input */}
+                          <div className="flex-1 space-y-2">
+                            <input
+                              type="text"
+                              value={opt.text}
+                              onChange={(e) => updateOption(idx, e.target.value)}
+                              placeholder={`Option ${idx + 1}`}
+                              className="w-full p-2 border border-gray-300 rounded-md"
+                            />
+                            
+                            {/* Feedback for this option */}
+                            <div>
+                              <label htmlFor={`feedback-${idx}`} className="block text-xs font-medium text-gray-600 mb-1">
+                                Feedback for this option
+                              </label>
+                              <textarea
+                                id={`feedback-${idx}`}
+                                value={opt.feedback || ''}
+                                onChange={(e) => updateOptionFeedback(idx, e.target.value)}
+                                placeholder="Enter feedback that will be shown when this option is selected"
+                                className="w-full p-2 border border-gray-300 rounded-md text-sm"
+                                rows={2}
+                              />
+                            </div>
+                          </div>
+                          
+                          {/* Remove button */}
+                          <button
+                            type="button"
+                            onClick={() => removeOption(idx)}
+                            aria-label={`Remove option ${idx + 1}`}
+                            className="px-3 py-1 text-sm rounded-md bg-red-50 text-red-600 hover:bg-red-100"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                        
+                        {/* Visual indicator for correct answer */}
+                        {correctAnswerIndex === idx && (
+                          <div className="flex items-center gap-2 text-green-600 text-sm">
+                            <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                            </svg>
+                            <span>Correct Answer</span>
+                          </div>
+                        )}
+                      </div>
                     ))}
-                  </ul>
+                  </div>
+                  
+                  {newMcqOptions.length > 0 && correctAnswerIndex === null && (
+                    <p className="text-sm text-amber-600 bg-amber-50 p-2 rounded-md">
+                      ⚠️ Please select which option is the correct answer
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {/* Human Feedback for Open Ended Questions */}
+              {newQuestionType === "open ended" && (
+                <div>
+                  <label htmlFor="humanFeedback" className="block text-sm font-medium text-gray-700">
+                    Reference Answer / Human Feedback
+                  </label>
+                  <textarea
+                    id="humanFeedback"
+                    value={newHumanFeedback}
+                    onChange={(e) => setNewHumanFeedback(e.target.value)}
+                    placeholder="Enter a reference answer or feedback template for this open-ended question"
+                    className="mt-1 block w-full p-2 border border-gray-300 rounded-md min-h-[100px]"
+                    rows={4}
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    This reference answer will be used to guide AI feedback generation for student responses.
+                  </p>
                 </div>
               )}
 
