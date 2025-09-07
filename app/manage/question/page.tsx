@@ -262,8 +262,10 @@ const QuestionOverview = () => {
   };
 
   // Handle question creation
-  const handleCreateQuestion = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
+  const handleCreateQuestion = async (e?: React.FormEvent<HTMLFormElement>) => {
+    if (e) {
+      e.preventDefault();
+    }
 
     if (newQuestionType === "multiple choice") {
       // Validate MCQ options
@@ -492,7 +494,10 @@ const QuestionOverview = () => {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900 bg-opacity-75">
           <div className="bg-white rounded-lg p-8 shadow-lg w-full max-w-xl max-h-[70vh] overflow-y-auto">
             <h2 className="text-2xl font-semibold mb-4">Create New Question</h2>
-            <form onSubmit={handleCreateQuestion} className="space-y-5">
+            <form onSubmit={(e) => {
+              e.preventDefault();
+              handleCreateQuestion();
+            }} className="space-y-5">
               {/* Question Type */}
               <div>
                 <label htmlFor="questionType" className="block text-sm font-medium text-gray-700">
@@ -562,6 +567,11 @@ const QuestionOverview = () => {
                               type="text"
                               value={opt.text}
                               onChange={(e) => updateOption(idx, e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                }
+                              }}
                               placeholder={`Option ${idx + 1}`}
                               className="w-full p-2 border border-gray-300 rounded-md"
                             />
@@ -732,6 +742,11 @@ const QuestionOverview = () => {
                   type="text"
                   value={newQuestionObjective.join(";")}
                   onChange={(e) => setNewQuestionObjective(e.target.value.split(";"))}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                    }
+                  }}
                   className="mt-1 block w-full p-2 border border-gray-300 rounded-md"
                 />
               </div>
@@ -739,13 +754,17 @@ const QuestionOverview = () => {
               <div className="flex justify-end gap-3">
                 <button
                   type="button"
-                  onClick={() => setIsModalOpen(false)}
+                  onClick={() => {
+                    setIsModalOpen(false);
+                    clearForm();
+                  }}
                   className="py-2 px-4 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-md"
                 >
                   Cancel
                 </button>
                 <button
-                  type="submit"
+                  type="button"
+                  onClick={() => handleCreateQuestion()}
                   disabled={loading}
                   className="py-2 px-4 text-white bg-indigo-600 hover:bg-indigo-700 rounded-md"
                 >
