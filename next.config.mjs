@@ -7,15 +7,31 @@ const nextConfig = {
   async headers() {
     return [
       {
-        // Apply these headers to all routes
+        // Apply to all routes including the MCQ pages
         source: '/:path*',
         headers: [
           {
             key: 'Content-Security-Policy',
-            value: "frame-ancestors 'self' https://*.qualtrics.com https://qualtrics.com;",
+            value: "frame-ancestors 'self' https://*.qualtrics.com https://qualtrics.com http://localhost:* http://127.0.0.1:*;",
           },
-          // Remove X-Frame-Options to avoid conflicts with CSP frame-ancestors
-          // Modern browsers prioritize CSP over X-Frame-Options
+          {
+            key: 'X-Frame-Options',
+            value: 'ALLOWALL', // This allows all domains to iframe - remove in production if not needed
+          },
+        ],
+      },
+      {
+        // Specific headers for MCQ routes
+        source: '/v2/mcq/:questionId*',
+        headers: [
+          {
+            key: 'Content-Security-Policy', 
+            value: "frame-ancestors 'self' https://*.qualtrics.com https://qualtrics.com http://localhost:* http://127.0.0.1:*;",
+          },
+          {
+            key: 'X-Frame-Options',
+            value: 'ALLOWALL',
+          },
         ],
       },
     ];
