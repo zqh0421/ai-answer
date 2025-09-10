@@ -1,6 +1,6 @@
 import ReactMarkdown from "react-markdown";
 import { Reference } from "@/app/types";
-import { Layers, ExternalLink, Loader2, ZoomIn, Volume2 } from "lucide-react";
+import { Layers, ExternalLink, Loader2, ZoomIn, Volume2, Mic, MicOff } from "lucide-react";
 import DynamicImage from "@/app/components/DynamicImage";
 import { useState, useRef, useMemo, useEffect } from "react";
 import axios from "axios";
@@ -19,6 +19,7 @@ interface ReferenceAreaProps {
   question?: string | Array<{ text?: string; [key: string]: unknown }>; // The question being asked (can be text or array of content)
   options?: string[]; // Multiple choice options if applicable
   correctAnswer?: string; // The correct answer for MCQ
+  course_version?: string; // Course version to determine display behavior
 }
 
 export default function ReferenceArea({
@@ -34,12 +35,45 @@ export default function ReferenceArea({
   question,
   options,
   correctAnswer,
+  course_version,
 }: ReferenceAreaProps) {
   const validImages = useMemo(() => images ?? [], [images]);
   const [audioError, setAudioError] = useState<string | null>(null);
   const [isRealtimeSessionActive, setIsRealtimeSessionActive] = useState(false);
-  const sessionRef = useRef<{ close: () => void; sendMessage?: (message: string) => void } | null>(null);
+  const [isMuted, setIsMuted] = useState(true); // Default to muted
+  const sessionRef = useRef<{ close: () => void; sendMessage?: (message: string) => void; muteInput?: () => void; unmuteInput?: () => void } | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
   const [showVoiceChatHint, setShowVoiceChatHint] = useState(false);
+  const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([]);
+  const [showDeviceList, setShowDeviceList] = useState(false);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
+
+  // Get audio input devices
+  useEffect(() => {
+    const getAudioDevices = async () => {
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const audioInputs = devices.filter(device => device.kind === 'audioinput');
+        setAudioDevices(audioInputs);
+        
+        // Set default device if none selected
+        if (audioInputs.length > 0 && !selectedDeviceId) {
+          setSelectedDeviceId(audioInputs[0].deviceId);
+        }
+      } catch (error) {
+        console.error('Error getting audio devices:', error);
+      }
+    };
+    
+    getAudioDevices();
+    
+    // Listen for device changes
+    navigator.mediaDevices.addEventListener('devicechange', getAudioDevices);
+    
+    return () => {
+      navigator.mediaDevices.removeEventListener('devicechange', getAudioDevices);
+    };
+  }, [selectedDeviceId]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -53,9 +87,28 @@ export default function ReferenceArea({
           console.error("Error cleaning up session:", error);
         }
       }
+      
+      // Clean up media stream
+      if (mediaStreamRef.current) {
+        mediaStreamRef.current.getTracks().forEach(track => track.stop());
+        mediaStreamRef.current = null;
+      }
+      
+      // Restore original getUserMedia
+      navigator.mediaDevices.getUserMedia = originalGetUserMedia;
     };
   }, []);
 
+  // Handle mute/unmute functionality - UNMUTE DISABLED
+  const handleMuteToggle = () => {
+    // Unmute functionality is disabled - always keep muted
+    console.log("Unmute functionality is disabled");
+    return;
+  };
+
+  // Intercept getUserMedia to capture the actual stream being used
+  const originalGetUserMedia = navigator.mediaDevices.getUserMedia;
+  
   // Handle realtime session
   const handleRealtimeSession = async () => {
     try {
@@ -69,11 +122,51 @@ export default function ReferenceArea({
         }
 
         setIsRealtimeSessionActive(false);
+        setIsMuted(true); // Reset to muted state when session ends
         sessionRef.current = null;
+        
+        // Clean up media stream
+        if (mediaStreamRef.current) {
+          mediaStreamRef.current.getTracks().forEach(track => track.stop());
+          mediaStreamRef.current = null;
+        }
+        
+        // Restore original getUserMedia
+        navigator.mediaDevices.getUserMedia = originalGetUserMedia;
+        
         setAudioError(null);
         console.log("Voice chat session ended");
         return;
       }
+
+      // Intercept getUserMedia calls to capture the stream and use selected device
+      navigator.mediaDevices.getUserMedia = function(constraints) {
+        console.log("getUserMedia called with constraints:", constraints);
+        
+        // Modify constraints to use selected device and start muted
+        if (constraints.audio && selectedDeviceId) {
+          constraints.audio = { 
+            deviceId: selectedDeviceId,
+            ...((constraints.audio as any) || {})
+          };
+        }
+        
+        return originalGetUserMedia.call(this, constraints).then(stream => {
+          console.log("Captured media stream:", stream);
+          if (constraints.audio) {
+            mediaStreamRef.current = stream;
+            
+            // Start with all audio tracks muted by default
+            stream.getAudioTracks().forEach(track => {
+              track.enabled = false;
+              console.log("Muted audio track by default:", track.label);
+            });
+            
+            console.log("Media stream captured via getUserMedia interception");
+          }
+          return stream;
+        });
+      };
 
       // Get ephemeral client secret from API
       const tokenResponse = await axios.post("/api/realtime-agent", {
@@ -83,9 +176,6 @@ export default function ReferenceArea({
             type: "realtime",
             model: "gpt-4o-realtime-preview-2024-12-17",
             audio: {
-              input: {
-                format: { type: "audio/pcm", rate: 24000 },
-              },
               output: {
                 voice: "alloy",
                 format: { type: "audio/pcm", rate: 24000 },
@@ -195,8 +285,45 @@ DO NOT repeat what's already in the feedback. Focus on guiding their attention t
         apiKey: tokenResponse.data.clientSecret,
       });
 
+      // Wait a moment for the session to establish WebRTC connection
+      setTimeout(async () => {
+        try {
+          // Try to access the session's media stream for mute control
+          if ((session as any).connection && (session as any).connection.localStream) {
+            mediaStreamRef.current = (session as any).connection.localStream;
+            console.log("Session media stream captured for mute control");
+          } else if ((session as any).pc && (session as any).pc.getLocalStreams) {
+            // Try WebRTC PeerConnection approach
+            const streams = (session as any).pc.getLocalStreams();
+            if (streams.length > 0) {
+              mediaStreamRef.current = streams[0];
+              console.log("WebRTC local stream captured for mute control");
+            }
+          } else {
+            // Last resort: try to find any active media streams
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            const audioDevice = devices.find(device => device.kind === 'audioinput');
+            if (audioDevice) {
+              console.log("Found audio input device:", audioDevice.label);
+              // Get the current active stream using selected device
+              const stream = await navigator.mediaDevices.getUserMedia({ 
+                audio: { deviceId: selectedDeviceId || audioDevice.deviceId } 
+              });
+              mediaStreamRef.current = stream;
+              console.log("Audio device stream captured for mute control");
+            }
+          }
+        } catch (streamError) {
+          console.log("Could not capture media stream for direct control:", streamError);
+        }
+      }, 1000); // Wait 1 second for WebRTC to establish
+
       setIsRealtimeSessionActive(true);
       console.log("Realtime session connected with ephemeral key");
+      
+      // Debug: Log available methods on the session
+      console.log("Session methods:", Object.getOwnPropertyNames(session).filter(name => typeof (session as any)[name] === 'function'));
+      console.log("Session prototype methods:", Object.getOwnPropertyNames(Object.getPrototypeOf(session)).filter(name => typeof (session as any)[name] === 'function'));
 
       // Show hint popup
       setShowVoiceChatHint(true);
@@ -246,56 +373,109 @@ DO NOT repeat what's already in the feedback. Focus on guiding their attention t
           </div>
         </div>
 
-        {/* Voice Chat Button */}
-        <div className="flex items-center gap-2">
-          {/* Realtime Voice Session Button */}
-          {reference && !isReferenceLoading && (
-            <button
-              onClick={handleRealtimeSession}
-              className={`
-                 flex items-center gap-2 px-3 py-2 rounded-lg transition-all duration-200
-                 ${
-                   isRealtimeSessionActive
-                     ? "bg-red-100 text-red-700 hover:bg-red-200"
-                     : "bg-green-100 text-green-700 hover:bg-green-200"
-                 }
-               `}
-              title={
-                isRealtimeSessionActive
-                  ? "End voice conversation"
-                  : "Chat about this slide to better understand connections with your answer"
-              }
-            >
-              <Volume2 className="w-4 h-4" />
-              <span className="text-sm font-medium">
-                {isRealtimeSessionActive ? "End Voice Chat" : "Voice Chat"}
-              </span>
-            </button>
-          )}
-        </div>
+        {/* Voice Chat Button - Hidden for v2a */}
+        {course_version !== "v2a" && (
+          <div className="flex items-center gap-2">
+            {/* Realtime Voice Session Button */}
+            {reference && !isReferenceLoading && (
+              <>
+                <button
+                  onClick={handleRealtimeSession}
+                  className={`
+                     flex items-center gap-2 px-3 py-2 rounded-lg transition-all duration-200
+                     ${
+                       isRealtimeSessionActive
+                         ? "bg-red-100 text-red-700 hover:bg-red-200"
+                         : "bg-green-100 text-green-700 hover:bg-green-200"
+                     }
+                   `}
+                  title={
+                    isRealtimeSessionActive
+                      ? "End audio narration"
+                      : "Listen to audio narration about this slide"
+                  }
+                >
+                  <Volume2 className="w-4 h-4" />
+                  <span className="text-sm font-medium">
+                    {isRealtimeSessionActive ? "End Audio Narration" : "Audio Narration"}
+                  </span>
+                </button>
+                
+                {/* Mute Button - Always shown alongside voice chat button */}
+                {
+                  <div className="relative">
+                    <button
+                      onClick={handleMuteToggle}
+                      onMouseEnter={() => setShowDeviceList(true)}
+                      onMouseLeave={() => setShowDeviceList(false)}
+                      disabled={true}
+                      className={`
+                         flex items-center gap-2 px-3 py-2 rounded-lg transition-all duration-200 disabled:opacity-75 disabled:cursor-not-allowed
+                         bg-orange-100 text-orange-700
+                       `}
+                      title="Audio input is disabled for now"
+                  >
+                    <MicOff className="w-4 h-4" />
+                      <span className="text-sm font-medium">
+                        Muted
+                      </span>
+                    </button>
+                    
+                    {/* Audio Device List Dropdown */}
+                    {showDeviceList && audioDevices.length > 0 && (
+                      <div 
+                        className="absolute top-full left-0 mt-1 w-64 bg-white border border-gray-200 rounded-lg shadow-lg z-10"
+                        onMouseEnter={() => setShowDeviceList(true)}
+                        onMouseLeave={() => setShowDeviceList(false)}
+                      >
+                        <div className="p-2">
+                          <div className="text-xs font-medium text-gray-700 mb-2">Audio Input Devices</div>
+                          {audioDevices.map((device) => (
+                            <button
+                              key={device.deviceId}
+                              onClick={() => {
+                                setSelectedDeviceId(device.deviceId);
+                                setShowDeviceList(false);
+                              }}
+                              className={`w-full text-left px-2 py-1 text-xs rounded hover:bg-gray-100 transition-colors ${
+                                selectedDeviceId === device.deviceId ? 'bg-blue-50 text-blue-700' : 'text-gray-600'
+                              }`}
+                            >
+                              <div className="truncate">
+                                {device.label || `Microphone ${device.deviceId.slice(0, 8)}...`}
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                }
+              </>
+            )}
+          </div>
+        )}
       </div>
 
-      {/* Voice Chat Hint Popup */}
-      {showVoiceChatHint && (
+      {/* Voice Chat Hint Popup - Hidden for v2a */}
+      {showVoiceChatHint && course_version !== "v2a" && (
         <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg animate-pulse">
           <div className="flex items-start gap-2">
             <Volume2 className="w-5 h-5 text-blue-600 mt-0.5" />
             <div>
               <p className="text-sm font-medium text-blue-800">
-                Voice Chat Started!
+                Audio Narration Started!
               </p>
               <p className="text-xs text-blue-600 mt-1">
-                If the Voice Assistant is NOT triggered, speak to start the
-                conversation. The real-time Voice Assistant is listening and
-                will respond to your follow-up questions about the slide.
+                The Voice Assistant will speak to you. Audio input is disabled for now.
               </p>
             </div>
           </div>
         </div>
       )}
 
-      {/* Audio Error Message */}
-      {audioError && (
+      {/* Audio Error Message - Hidden for v2a */}
+      {audioError && course_version !== "v2a" && (
         <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg">
           <p className="text-sm text-red-600">{audioError}</p>
           {audioError.includes("blocked by browser") && (
@@ -319,8 +499,8 @@ DO NOT repeat what's already in the feedback. Focus on guiding their attention t
       ) : reference ? (
         <div className="space-y-6">
           <div className="p-6 bg-blue-50 rounded-xl border border-blue-200">
-            {/* Slide Images with text as alt text */}
-            {validImages.length > 0 && !isImageLoading ? (
+            {/* Slide Images with text as alt text - Hidden for v2a */}
+            {course_version !== "v2a" && validImages.length > 0 && !isImageLoading ? (
               <div className="space-y-4 mb-6">
                 <div className="grid grid-cols-1 gap-4">
                   {validImages.map((src, index) => (
@@ -344,7 +524,7 @@ DO NOT repeat what's already in the feedback. Focus on guiding their attention t
                   ))}
                 </div>
               </div>
-            ) : isImageLoading ? (
+            ) : course_version !== "v2a" && isImageLoading ? (
               <div className="text-center py-6 mb-6">
                 <div className="space-y-3">
                   <Loader2 className="w-8 h-8 text-blue-400 animate-spin mx-auto" />
@@ -359,8 +539,8 @@ DO NOT repeat what's already in the feedback. Focus on guiding their attention t
                 </div>
               </div>
             ) : (
-              /* Show text content only when no images are available */
-              reference.display && (
+              /* Show text content only when no images are available - Hidden for v2a */
+              course_version !== "v2a" && reference.display && (
                 <div className="prose prose-sm max-w-none mb-6">
                   <div className="text-xs text-slate-500 leading-relaxed italic">
                     <ReactMarkdown>{reference.display}</ReactMarkdown>
@@ -370,9 +550,12 @@ DO NOT repeat what's already in the feedback. Focus on guiding their attention t
             )}
 
             {/* Footer with page info and link */}
-            <div className="mt-6 pt-4 border-t border-blue-200">
-              <div className="flex items-center justify-between text-sm text-slate-600">
-                <span>Page {reference.page_number + 1}</span>
+            <div className={`${course_version === "v2a" ? "mt-6" : "mt-6 pt-4 border-t border-blue-200"}`}>
+              <div className={`flex items-center ${course_version === "v2a" ? "justify-start" : "justify-between"} text-sm text-slate-600`}>
+                {/* Only show page number for non-v2a versions */}
+                {course_version !== "v2a" && (
+                  <span>Page {reference.page_number + 1}</span>
+                )}
                 <a
                   href={`https://docs.google.com/presentation/d/${reference.slide_google_id}/edit`}
                   target="_blank"

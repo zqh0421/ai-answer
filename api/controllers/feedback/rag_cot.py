@@ -6,16 +6,17 @@ from .call_gpt import call_gpt, format_question
 from sqlalchemy.orm import Session
 from ...schema.resultSchema import RecordResult
 
+
 def get_participant_question_record_count(participant_id: str, question_id: str, db: Session) -> int:
     """
     Get the count of records for a specific participant and question.
     This helps determine if it's the learner's first attempt.
-    
+
     Args:
         participant_id: The ID of the participant/learner
         question_id: The ID of the question
         db: Database session
-    
+
     Returns:
         int: Number of records found for this participant-question combination
     """
@@ -24,8 +25,9 @@ def get_participant_question_record_count(participant_id: str, question_id: str,
         RecordResult.question_id == question_id
     ).count()
 
+
 def generate_feedback_using_rag_cot(participant_id: str, question_id: str, question: List[dict], answer: str, slide_text_arr: List[str], feedbackFramework: str, isStructured: bool, course_version: Optional[str], settings: Annotated[Settings, Depends(get_settings)], db: Session) -> str:
-    print("slide_text_arr:",slide_text_arr)
+    print("slide_text_arr:", slide_text_arr)
 
     if isStructured:
 
@@ -116,35 +118,39 @@ def generate_feedback_using_rag_cot(participant_id: str, question_id: str, quest
             f"**Final Output**: Provide only the JSON object. Focus on encouraging learning and building confidence.\n\n"
             f"Slides Content: {slide_text_arr}\n\n"
         )
-        
-        
+
         question_message = format_question(question)
         user_prompt = question_message
         user_prompt.append({
             "type": "input_text",
             "text": f"Answer: {answer}"
         })
-        
+
         # Handle course version v2b - always use corrective feedback
         if course_version == "v2b":
             system_prompt = prompt_corrective  # Always use corrective feedback for v2b
-            print(f"[DEBUG] Course version v2b detected - using prompt_corrective for participant {participant_id}")
+            print(
+                f"[DEBUG] Course version v2b detected - using prompt_corrective for participant {participant_id}")
         else:
             # Get record count to determine which prompt to use (default behavior)
-            record_count = get_participant_question_record_count(participant_id, question_id, db)
-            print(f"[DEBUG] Participant: {participant_id}, Question: {question_id}, Record Count: {record_count}")
-            
+            record_count = get_participant_question_record_count(
+                participant_id, question_id, db)
+            print(
+                f"[DEBUG] Participant: {participant_id}, Question: {question_id}, Record Count: {record_count}")
+
             # Select prompt based on attempt count
             if record_count < 1:
                 system_prompt = prompt_learner  # First attempt - learning focus
-                print(f"[DEBUG] Using prompt_learner (first attempt) for participant {participant_id}")
+                print(
+                    f"[DEBUG] Using prompt_learner (first attempt) for participant {participant_id}")
             else:
                 system_prompt = prompt_corrective  # Subsequent attempts - corrective focus
-                print(f"[DEBUG] Using prompt_corrective (attempt #{record_count + 1}) for participant {participant_id}")
-        
+                print(
+                    f"[DEBUG] Using prompt_corrective (attempt #{record_count + 1}) for participant {participant_id}")
+
         result = call_gpt(system_prompt, user_prompt, settings)
         return result
-    
+
     # Original prompts for non-HTML format
     prompt_none = (
         f"You are an expert in providing feedback using 2-3 sentences for students' answer based on the questions"
@@ -162,7 +168,7 @@ def generate_feedback_using_rag_cot(participant_id: str, question_id: str, quest
 
     prompt_component = (
         f"You are an expert in providing feedback using 2-3 sentences for students' answer based on the questions"
-        f"Based on the following questions, and students' answers, and Slides Content,provide feedback step-by-step, accurately and relevantly, following the four feedback levels (task, process, self-regulatory, and self). each feedback level only contain 2-3 sentences\n\n"  
+        f"Based on the following questions, and students' answers, and Slides Content,provide feedback step-by-step, accurately and relevantly, following the four feedback levels (task, process, self-regulatory, and self). each feedback level only contain 2-3 sentences\n\n"
         f" the output format must be: For Task:XXX\n For Process:XXX\n  For Self-Regulatory:XXX\n  For Self:XXX\n  "
         f"Please think step by step:"
         f"Step 1: Analyze the question and identify the key concepts that should be addressed.\n"
@@ -175,7 +181,7 @@ def generate_feedback_using_rag_cot(participant_id: str, question_id: str, quest
         f"Example 1:\n"
         f"Question: What is Simple Regression?\n"
         f"PPT Content: Simple regression, also known as simple linear regression, is a statistical method used to model the relationship between two variables by fitting a linear equation to observed data. The two variables in simple regression are:\n"
-        f"- Dependent variable (Y): The outcome or response variable that you are trying to predict or explain.\n" 
+        f"- Dependent variable (Y): The outcome or response variable that you are trying to predict or explain.\n"
         f"- Independent variable (X): The predictor or explanatory variable that you use to predict the dependent variable.\n"
         f"Student's Answer: Simple regression is about the relationship between X and Y.\n"
         f"Step-by-step feedback:\n"
@@ -199,7 +205,7 @@ def generate_feedback_using_rag_cot(participant_id: str, question_id: str, quest
         f"- Self: Excellent work! You have a strong understanding of simple regression. Keep exploring advanced concepts to sharpen your skills!\n"
         f"- Overall: Your answer is accurate.  Next, you should explore how errors can be minimized when fitting the linear model to data.\n"
         f"- Improved Answer: No need, the answer is already correct.\n"
-        
+
         f"Now, apply the same process to the Slides Content, provided question and answer."
 
         f"Slides Content: {slide_text_arr}\n\n"
@@ -221,7 +227,7 @@ def generate_feedback_using_rag_cot(participant_id: str, question_id: str, quest
         f"Note: Please provide the feedback in a single paragraph without mentioning any 'components'.\n\n"
         f"Please think step-by-step according to above characteristics and components to analyze the student's response in relation to the question and the slides content. However, **do not include your reasoning in the final output; only provide the feedback to the student**.\n"
         f"\n"
-        
+
         f"### Slides Content:\n{slide_text_arr}\n"
         f"using above information to generate feedback----,let's think and generate step by step"
         f"**Do not include your reasoning in the final output; only provide the feedback to the student.**\n\n"
@@ -235,36 +241,38 @@ def generate_feedback_using_rag_cot(participant_id: str, question_id: str, quest
         "text": f"Answer: {answer}"
     })
 
-    if feedbackFramework=="none":
+    if feedbackFramework == "none":
         result = call_gpt(
             prompt_none,
             user_prompt,
             settings
         )
-    if feedbackFramework=="component":
+    if feedbackFramework == "component":
         result = call_gpt(
             prompt_component,
             user_prompt,
             settings
         )
-    if feedbackFramework=="feature":
+    if feedbackFramework == "feature":
         result = call_gpt(
             prompt_feature,
             user_prompt,
             settings
         )
-    
+
     return f"{result}"
+
 
 def generate_feedback_using_rag_cot_stream(participant_id: str, question_id: str, question: List[dict], answer: str, slide_text_arr: List[str], feedbackFramework: str, isStructured: bool, course_version: Optional[str], settings: Annotated[Settings, Depends(get_settings)], db: Session):
     """
     Streaming version of generate_feedback_using_rag_cot for structured feedback
     """
-    print("slide_text_arr:",slide_text_arr)
+    print("slide_text_arr:", slide_text_arr)
 
     if not isStructured:
         # For non-structured feedback, fall back to regular function
-        result = generate_feedback_using_rag_cot(participant_id, question_id, question, answer, slide_text_arr, feedbackFramework, isStructured, settings, db)
+        result = generate_feedback_using_rag_cot(
+            participant_id, question_id, question, answer, slide_text_arr, feedbackFramework, isStructured, settings, db)
         yield f"data: {result}\n\n"
         yield "data: [DONE]\n\n"
         return
@@ -314,7 +322,7 @@ def generate_feedback_using_rag_cot_stream(participant_id: str, question_id: str
         f"**Final Output**: Provide only the JSON object in the exact format specified above. No additional explanation, comments, or plain text are allowed.\n\n"
         f"Slides Content: {slide_text_arr}\n\n"
     )
-    
+
     prompt_learner = (
         f"You are a supportive teaching assistant helping a student learn. This is their FIRST attempt at this question. Generate encouraging, learning-focused feedback.\n\n"
         f"## Your Role:\n"
@@ -357,35 +365,40 @@ def generate_feedback_using_rag_cot_stream(participant_id: str, question_id: str
         f"**Final Output**: Provide only the JSON object. Focus on encouraging learning and building confidence.\n\n"
         f"Slides Content: {slide_text_arr}\n\n"
     )
-    
+
     question_message = format_question(question)
     user_prompt = question_message
     user_prompt.append({
         "type": "input_text",
         "text": f"Answer: {answer}"
     })
-    
+
     # Handle course version v2b - always use corrective feedback
     if course_version == "v2b":
         prompt_version = "prompt_corrective"
         system_prompt = prompt_corrective  # Always use corrective feedback for v2b
-        print(f"[DEBUG STREAM] Course version v2b detected - using prompt_corrective for participant {participant_id}")
+        print(
+            f"[DEBUG STREAM] Course version v2b detected - using prompt_corrective for participant {participant_id}")
     else:
         # Get record count to determine which prompt to use (default behavior)
-        record_count = get_participant_question_record_count(participant_id, question_id, db)
-        print(f"[DEBUG STREAM] Participant: {participant_id}, Question: {question_id}, Record Count: {record_count}")
-        
+        record_count = get_participant_question_record_count(
+            participant_id, question_id, db)
+        print(
+            f"[DEBUG STREAM] Participant: {participant_id}, Question: {question_id}, Record Count: {record_count}")
+
         # Determine prompt version based on attempt count
         prompt_version = "prompt_learner" if record_count < 1 else "prompt_corrective"
-        
+
         # Select prompt based on attempt count
         if record_count < 1:
             system_prompt = prompt_learner  # First attempt - learning focus
-            print(f"[DEBUG STREAM] Using prompt_learner (first attempt) for participant {participant_id}")
+            print(
+                f"[DEBUG STREAM] Using prompt_learner (first attempt) for participant {participant_id}")
         else:
             system_prompt = prompt_corrective  # Subsequent attempts - corrective focus
-            print(f"[DEBUG STREAM] Using prompt_corrective (attempt #{record_count + 1}) for participant {participant_id}")
-    
+            print(
+                f"[DEBUG STREAM] Using prompt_corrective (attempt #{record_count + 1}) for participant {participant_id}")
+
     # Send prompt version as metadata
     import json
     metadata = {
@@ -393,9 +406,9 @@ def generate_feedback_using_rag_cot_stream(participant_id: str, question_id: str
         "prompt_version": prompt_version
     }
     yield f"data: {json.dumps(metadata)}\n\n"
-    
+
     # Stream the response chunk by chunk
     for chunk in call_gpt(system_prompt, user_prompt, settings):
         yield f"data: {chunk}\n\n"
-    
+
     yield "data: [DONE]\n\n"

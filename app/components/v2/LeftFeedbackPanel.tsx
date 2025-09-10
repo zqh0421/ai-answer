@@ -25,6 +25,7 @@ interface LeftFeedbackPanelProps {
   question?: string | any[];
   options?: any[];
   correctAnswer?: string;
+  course_version?: string;
 }
 
 export default function LeftFeedbackPanel({
@@ -47,6 +48,7 @@ export default function LeftFeedbackPanel({
   question,
   options,
   correctAnswer,
+  course_version,
 }: LeftFeedbackPanelProps) {
   return (
     <motion.div
@@ -92,6 +94,7 @@ export default function LeftFeedbackPanel({
           question={question}
           options={options}
           correctAnswer={correctAnswer}
+          course_version={course_version}
         />
       )}
     </motion.div>

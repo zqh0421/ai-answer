@@ -15,6 +15,7 @@ import ImageModal from "@/app/components/v2/ImageModal";
 import LeftFeedbackPanel from "@/app/components/v2/LeftFeedbackPanel";
 import RightInputPanel from "@/app/components/v2/RightInputPanel";
 import { Reference, Course, Module, Slide, RecordResultInput, FeedbackResult } from "@/app/types";
+import { trackAttemptAndCheckCompletion, getPracticeStatus } from "@/app/utils/qualtricsSignal";
 
 function PageChildren({ 
   questionId, 
@@ -156,22 +157,39 @@ function PageChildren({
     const startTime = Date.now();
     
     try {
-      // Fetch MCQ AI feedback (using the new AI-specific endpoint)
-      const feedbackResponse = await axios.post('/api/v2/mcq/get_ai_feedback', {
-        question_id: questionPreset.question_id,
-        participant_id: effectiveParticipantId,
-        selected_option_index: optionIndex,
-        course_version: course_version
-      });
+      let feedbackResponse;
       
-      console.log("MCQ Feedback Response:", {
-        participant_id: effectiveParticipantId,
-        course_version: course_version,
-        feedbackType: feedbackResponse.data.feedbackType,
-        attemptCount: feedbackResponse.data.attemptCount,
-        feedback: feedbackResponse.data.feedback?.substring(0, 100) + '...',
-        isCorrect: feedbackResponse.data.isCorrect
-      });
+      // Handle v2a - use human feedback only
+      if (course_version === "v2a") {
+        feedbackResponse = await axios.post('/api/v2/mcq/get_human_feedback', {
+          question_id: questionPreset.question_id,
+          selected_option_index: optionIndex
+        });
+        
+        console.log("MCQ Human Feedback Response:", {
+          course_version: course_version,
+          selected_option_index: optionIndex,
+          feedback: feedbackResponse.data.feedback?.substring(0, 100) + '...',
+          isCorrect: feedbackResponse.data.isCorrect
+        });
+      } else {
+        // Fetch MCQ AI feedback (using the new AI-specific endpoint)
+        feedbackResponse = await axios.post('/api/v2/mcq/get_ai_feedback', {
+          question_id: questionPreset.question_id,
+          participant_id: effectiveParticipantId,
+          selected_option_index: optionIndex,
+          course_version: course_version
+        });
+        
+        console.log("MCQ AI Feedback Response:", {
+          participant_id: effectiveParticipantId,
+          course_version: course_version,
+          feedbackType: feedbackResponse.data.feedbackType,
+          attemptCount: feedbackResponse.data.attemptCount,
+          feedback: feedbackResponse.data.feedback?.substring(0, 100) + '...',
+          isCorrect: feedbackResponse.data.isCorrect
+        });
+      }
       
       const feedbackData = feedbackResponse.data;
       
@@ -184,9 +202,17 @@ function PageChildren({
       };
       
       setResult(formattedResult);
-      const version = feedbackData.feedbackType === 'learner' ? 'prompt_learner' : 'prompt_corrective';
-      setPromptVersion(version);
-      console.log("Setting prompt version:", version, "based on feedbackType:", feedbackData.feedbackType);
+      
+      // Set prompt version based on feedback type (only for AI feedback)
+      if (course_version !== "v2a") {
+        const version = feedbackData.feedbackType === 'learner' ? 'prompt_learner' : 'prompt_corrective';
+        setPromptVersion(version);
+        console.log("Setting prompt version:", version, "based on feedbackType:", feedbackData.feedbackType);
+      } else {
+        // For v2a (human feedback), no prompt version needed
+        setPromptVersion("human_feedback");
+        console.log("Using human feedback for v2a");
+      }
       
       // Find correct option(s) for embedding
       const correctOptions = questionPreset.options
@@ -227,6 +253,20 @@ function PageChildren({
         feedback_type: feedbackData.feedbackType,
         response_time: endTime - startTime
       });
+      
+      // Track attempt and check for Qualtrics completion signal
+      if (prolificPid && course_version) {
+        const isComplete = trackAttemptAndCheckCompletion(
+          questionPreset.question_id,
+          prolificPid,
+          feedbackData.isCorrect,
+          course_version
+        );
+        
+        if (isComplete) {
+          console.log("Practice completion criteria met, signal sent to Qualtrics");
+        }
+      }
       
     } catch (error) {
       console.error("Error fetching MCQ feedback:", error);
@@ -679,11 +719,33 @@ function PageChildren({
       if (questionPreset) {
         try {
           setIsFeedbackLoading(true);
-          const response = await axios.get(`/api/get_human_feedback/${questionPreset.question_id}`);
-          setResult(response.data.human_feedback);
+          
+          // Find the selected option index from the answer text
+          let selectedOptionIndex = -1;
+          if (questionPreset.options && answer) {
+            for (let i = 0; i < questionPreset.options.length; i++) {
+              const option = questionPreset.options[i];
+              const optionText = typeof option === 'string' ? option : option?.text || "";
+              if (optionText === answer) {
+                selectedOptionIndex = i;
+                break;
+              }
+            }
+          }
+          
+          if (selectedOptionIndex >= 0) {
+            const response = await axios.post('/api/v2/mcq/get_human_feedback', {
+              question_id: questionPreset.question_id,
+              selected_option_index: selectedOptionIndex
+            });
+            setResult(response.data.feedback);
+          } else {
+            setResult("Please select an option first.");
+          }
           setIsFeedbackLoading(false);
         } catch (error) {
           console.error("Failed to get human feedback:", error);
+          setResult("Failed to get human feedback for this option.");
           setIsFeedbackLoading(false);
         }
       }
@@ -893,7 +955,27 @@ function PageChildren({
     if (course_version === "v2a") {
       if (questionPreset) {
         try {
-          const response = await axios.get(`/api/get_human_feedback/${questionPreset.question_id}`);
+          // Find the selected option index from the answer text
+          let selectedOptionIndex = -1;
+          if (questionPreset.options && answer) {
+            for (let i = 0; i < questionPreset.options.length; i++) {
+              const option = questionPreset.options[i];
+              const optionText = typeof option === 'string' ? option : option?.text || "";
+              if (optionText === answer) {
+                selectedOptionIndex = i;
+                break;
+              }
+            }
+          }
+          
+          if (selectedOptionIndex < 0) {
+            throw new Error("Please select an option first");
+          }
+          
+          const response = await axios.post('/api/v2/mcq/get_human_feedback', {
+            question_id: questionPreset.question_id,
+            selected_option_index: selectedOptionIndex
+          });
           const endTime = Date.now();
           const recordPayload: RecordResultInput = {
             learner_id: prolificPid || participantId || "unidentifiable_learner",
@@ -901,7 +983,7 @@ function PageChildren({
             session_id: sessionId || "unidentifiable_session",
             question_id: questionPreset.question_id,
             answer: answer,
-            feedback: response.data.human_feedback,
+            feedback: response.data.feedback,
             prompt_engineering_method: selectedPromptEngineering,
             preferred_info_type: preferredInfoType === "vision" && reference?.image_text ? "vision" : "text",
             feedback_framework: selectedFeedbackFramework,
@@ -914,7 +996,7 @@ function PageChildren({
           };
           await recordResultToDatabase(recordPayload);
 
-          setResult(response.data.human_feedback);
+          setResult(response.data.feedback);
           setIsFeedbackLoading(false);
           setIsImageLoading(false);
           setIsReferenceLoading(false);
@@ -1053,6 +1135,7 @@ function PageChildren({
           streamingContent={streamingContent}
           isFeedbackLoading={isFeedbackLoading}
           promptVersion={promptVersion}
+          course_version={course_version}
           question={questionPreset?.content || question}
           options={questionPreset?.options}
           correctAnswer={questionPreset?.options?.filter((opt: { text: string; isCorrect: boolean } | string) => typeof opt === 'object' && opt.isCorrect).map((opt: { text: string; isCorrect: boolean } | string) => typeof opt === 'string' ? opt : opt.text).join(', ')}

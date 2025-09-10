@@ -256,7 +256,7 @@ async def generate_all_feedback_for_mcq(
                 human_feedback, slide_text_arr, "corrective", settings
             )
         )
-        # Generate learner feedback for v2a and v2b versions (for first attempt support)
+        # Generate learner feedback for v2c version (for first attempt support)
         # For other versions, we'll only use corrective AI feedback
         tasks.append(
             generate_feedback_for_option(
@@ -333,16 +333,24 @@ def get_mcq_ai_feedback_for_option(
     is_correct = selected_option.get("isCorrect", False)
 
     # Determine feedback type based on version
-    # For v2a and v2b: use learner/corrective based on attempts
+    # v2b: always corrective
+    # v2c: first try learner, later corrective  
     # For all other versions: always use corrective (AI feedback)
     if course_version == "v2b":
+        # v2b always uses corrective feedback
+        feedback_type = "corrective"
+        record_count = -1
+        print(
+            f"[MCQ AI] Version {course_version} - Using corrective AI feedback only")
+    elif course_version == "v2c":
+        # v2c uses learner/corrective based on attempts
         record_count = get_participant_question_record_count_mcq(
             participant_id, question_id, db)
         feedback_type = "learner" if record_count < 1 else "corrective"
         print(
             f"[MCQ AI] Version {course_version} - Participant: {participant_id}, Attempts: {record_count}, Using: {feedback_type}")
     else:
-        # For all non-v2a/v2b versions, always use corrective AI feedback
+        # For all other versions, always use corrective AI feedback
         feedback_type = "corrective"
         record_count = -1
         print(
@@ -433,12 +441,6 @@ def get_mcq_human_feedback_for_option(
             "feedback": "Failed to get human feedback for this option",
             "isCorrect": is_correct
         }
-
-    # Wrap human feedback in basic structure if not already structured
-    if not feedback_text.startswith("<statement>"):
-        feedback_text = f"""<statement>Feedback</statement>
-            <explanation>{feedback_text}</explanation>"""
-
     return {
         "feedback": feedback_text,
         "isCorrect": is_correct,

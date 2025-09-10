@@ -767,6 +767,31 @@ async def set_vision(slide_id: str, slide_google_id: str, settings: Annotated[Se
             sum_vision_info = setVision(img_base64_list, settings=settings)
             slide.vision_summary = sum_vision_info
 
+    # Generate vectors for pages that now have image_text
+    try:
+        # Collect image_text content from pages that have it
+        image_texts = []
+        pages_with_image_text = []
+        for page in pages:
+            if page.image_text:
+                image_texts.append(page.image_text)
+                pages_with_image_text.append(page)
+        
+        if image_texts:
+            # Generate embeddings for the image_text content
+            from .utils import embed_slide
+            vectors = embed_slide(image_texts, settings)
+            
+            # Update each page with its corresponding vector
+            for i, page in enumerate(pages_with_image_text):
+                if i < len(vectors):
+                    page.vector = vectors[i]
+            
+            print(f"Generated vectors for {len(pages_with_image_text)} pages")
+    except Exception as vector_error:
+        print(f"Warning: Failed to generate vectors: {str(vector_error)}")
+        # Continue without failing the entire operation
+    
     # Save changes to the database
     db.commit()
 
@@ -798,10 +823,78 @@ async def update_vision(slide_id: str, slide_google_id: str, settings: Annotated
             sum_vision_info = setVision(img_base64_list, settings=settings)
             slide.vision_summary = sum_vision_info  # Update the summary
 
+    # Generate vectors for pages that now have updated image_text
+    try:
+        # Collect image_text content from pages that have it
+        image_texts = []
+        pages_with_image_text = []
+        for page in pages:
+            if page.image_text:
+                image_texts.append(page.image_text)
+                pages_with_image_text.append(page)
+        
+        if image_texts:
+            # Generate embeddings for the image_text content
+            from .utils import embed_slide
+            vectors = embed_slide(image_texts, settings)
+            
+            # Update each page with its corresponding vector
+            for i, page in enumerate(pages_with_image_text):
+                if i < len(vectors):
+                    page.vector = vectors[i]
+            
+            print(f"Updated vectors for {len(pages_with_image_text)} pages")
+    except Exception as vector_error:
+        print(f"Warning: Failed to update vectors: {str(vector_error)}")
+        # Continue without failing the entire operation
+
     # Save changes to the database
     db.commit()
 
     return {"message": "Vision info updated successfully"}
+
+@app.post("/api/slides/{slide_id}/update-vectors")
+async def update_slide_vectors(slide_id: str, settings: Annotated[Settings, Depends(get_settings)], db: Session = Depends(get_db)):
+    slide = db.query(schema.Slide).filter(schema.Slide.id == slide_id).first()
+    if not slide:
+        raise HTTPException(status_code=404, detail="Slide not found")
+
+    # Get list of pages for the slide
+    pages = db.query(schema.Page).filter(schema.Page.slide_id == slide_id).all()
+    if not pages:
+        raise HTTPException(status_code=404, detail="No pages found for this slide")
+
+    # Collect image_text content from pages that have it
+    image_texts = []
+    pages_with_image_text = []
+    for page in pages:
+        if page.image_text:
+            image_texts.append(page.image_text)
+            pages_with_image_text.append(page)
+
+    if not image_texts:
+        raise HTTPException(status_code=400, detail="No image_text content found for vector generation")
+
+    try:
+        # Generate embeddings for the image_text content
+        from .utils import embed_slide
+        vectors = embed_slide(image_texts, settings)
+        
+        # Update each page with its corresponding vector
+        for i, page in enumerate(pages_with_image_text):
+            if i < len(vectors):
+                page.vector = vectors[i]
+        
+        # Save changes to the database
+        db.commit()
+        
+        return {"message": f"Vectors updated successfully for {len(pages_with_image_text)} pages"}
+    
+    except Exception as e:
+        db.rollback()
+        error_message = f"Error updating vectors: {str(e)}"
+        print(error_message)
+        raise HTTPException(status_code=500, detail=error_message)
 
 @app.post("/api/questions/create")
 def create_question(request: models.QuestionResponse, db: Session = Depends(get_db)):

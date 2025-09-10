@@ -85,7 +85,7 @@ export default function QuestionAnswerPanel({
           )}
         </div>
 
-        {questionPreset?.content?.length > 0 ? (
+        {/* {questionPreset?.content?.length > 0 ? (
           !isFullScreen ? (
             <div className="p-4 bg-slate-50 rounded-lg border border-slate-200">
               <p className="text-sm text-slate-600">
@@ -102,7 +102,6 @@ export default function QuestionAnswerPanel({
                 right: 0,
               }}
             >
-              {/* Header */}
               <div className="sticky top-0 bg-white/80 backdrop-blur-md border-b border-slate-200 shadow-sm z-10">
                 <div className="flex items-center justify-between p-6">
                   <div className="flex items-center gap-3">
@@ -152,7 +151,6 @@ export default function QuestionAnswerPanel({
                 </div>
               </div>
 
-              {/* Content */}
               <div className="w-full p-6 space-y-6">
                 {questionPreset.content && questionPreset.content.length > 0 ? (
                   questionPreset.content.map((item: any, index: number) => (
@@ -160,7 +158,6 @@ export default function QuestionAnswerPanel({
                       key={index}
                       className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden"
                     >
-                      {/* Block Counter */}
                       <div className="bg-gradient-to-r from-slate-50 to-slate-100 px-6 py-3 border-b border-slate-200">
                         <div className="flex items-center justify-between">
                           <span className="text-sm font-medium text-slate-600">
@@ -215,7 +212,7 @@ export default function QuestionAnswerPanel({
               onSaveDraftQuestion(textContent);
             }}
           />
-        )}
+        )} */}
       </div>
 
       {/* Answer Section */}
@@ -322,7 +319,10 @@ export default function QuestionAnswerPanel({
             }}
             onKeyDown={(e: React.KeyboardEvent<HTMLTextAreaElement>) => {
               // Block common copy/paste keyboard shortcuts
-              if ((e.ctrlKey || e.metaKey) && ['c', 'v', 'x', 'a'].includes(e.key.toLowerCase())) {
+              if (
+                (e.ctrlKey || e.metaKey) &&
+                ["c", "v", "x", "a"].includes(e.key.toLowerCase())
+              ) {
                 e.preventDefault();
                 return false;
               }

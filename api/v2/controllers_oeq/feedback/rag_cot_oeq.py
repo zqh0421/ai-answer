@@ -36,6 +36,10 @@ def generate_feedback_using_rag_cot_oeq(participant_id: str, question_id: str, q
             f"Generate feedback that meets all five criteria:\n\n"
             f"**Required Criteria:**\n"
             f"1. **Judgment Statement**: Begin by clearly stating whether the student's answer is correct, incorrect, or partially correct.\n"
+            f"Note: Please evaluate the student’s response to the open-ended question by comparing it with the reference answer:\n"
+            f"- Score 1 (Correct): The response fully covers all key points in the reference answer, with no contradictions.\n"
+            f"- Score 2 (Partially Correct): The response includes some of the key points but misses others or contains information that partly contradicts the reference.\n"
+            f"- Score 0 (Incorrect): The response does not cover any key points from the reference answer or directly contradicts them.\n"
             f"2. **Explain the Student's Answer with Context**:\n"
             f"   - If incorrect: Provide the correct answer directly to the student, and explain why this answer is correct and why the one they provided is incorrect.\n"
             f"   - If correct: Briefly explain why their answer is accurate and reference specific elements from the question.\n"
@@ -88,6 +92,10 @@ def generate_feedback_using_rag_cot_oeq(participant_id: str, question_id: str, q
             f"Generate feedback that meets all seven criteria:\n\n"
             f"**Required Criteria:**\n\n"
             f"1. **Judgment Statement**: Begin by clearly stating whether the student's answer is correct or incorrect.\n\n"
+            f"Note: Please evaluate the student’s response to the open-ended question by comparing it with the reference answer:\n"
+            f"- Score 1 (Correct): The response fully covers all key points in the reference answer, with no contradictions.\n"
+            f"- Score 2 (Partially Correct): The response includes some of the key points but misses others or contains information that partly contradicts the reference.\n"
+            f"- Score 0 (Incorrect): The response does not cover any key points from the reference answer or directly contradicts them.\n"
             f"2. **Explain the Student's Answer with Context**:\n"
             f"   - If incorrect: **Start by directly quoting or paraphrasing the student's specific response**, then explain what their answer means and why it doesn't fully address the question requirements. **CRITICAL: DO NOT reveal, mention, hint at, or describe the correct answer in any form.**\n"
             f"   - If correct: **Reference their specific response**, briefly explain why their choice fits and reference specific elements from the question.\n"
@@ -151,11 +159,30 @@ def generate_feedback_using_rag_cot_oeq(participant_id: str, question_id: str, q
             "text": f"Answer: {answer}"
         })
 
-        # Handle course version v2b - always use corrective feedback
+        # Handle course versions
+        # v2b: always corrective
+        # v2c: first try learner, later corrective
+        # other versions: use attempt-based logic (default behavior)
         if course_version == "v2b":
             system_prompt = prompt_corrective  # Always use corrective feedback for v2b
             print(
                 f"[DEBUG] Course version v2b detected - using prompt_corrective for participant {participant_id}")
+        elif course_version == "v2c":
+            # v2c uses learner/corrective based on attempts
+            record_count = get_participant_question_record_count_oeq(
+                participant_id, question_id, db)
+            print(
+                f"[DEBUG] Course version v2c - Participant: {participant_id}, Question: {question_id}, Record Count: {record_count}")
+
+            # Select prompt based on attempt count
+            if record_count < 1:
+                system_prompt = prompt_learner  # First attempt - learning focus
+                print(
+                    f"[DEBUG] v2c Using prompt_learner (first attempt) for participant {participant_id}")
+            else:
+                system_prompt = prompt_corrective  # Subsequent attempts - corrective focus
+                print(
+                    f"[DEBUG] v2c Using prompt_corrective (attempt #{record_count + 1}) for participant {participant_id}")
         else:
             # Get record count to determine which prompt to use (default behavior)
             record_count = get_participant_question_record_count_oeq(
@@ -398,12 +425,34 @@ def generate_feedback_using_rag_cot_stream_oeq(participant_id: str, question_id:
         "text": f"Answer: {answer}"
     })
 
-    # Handle course version v2b - always use corrective feedback
+    # Handle course versions
+    # v2b: always corrective
+    # v2c: first try learner, later corrective
+    # other versions: use attempt-based logic (default behavior)
     if course_version == "v2b":
         prompt_version = "prompt_corrective"
         system_prompt = prompt_corrective  # Always use corrective feedback for v2b
         print(
             f"[DEBUG STREAM] Course version v2b detected - using prompt_corrective for participant {participant_id}")
+    elif course_version == "v2c":
+        # v2c uses learner/corrective based on attempts
+        record_count = get_participant_question_record_count_oeq(
+            participant_id, question_id, db)
+        print(
+            f"[DEBUG STREAM] Course version v2c - Participant: {participant_id}, Question: {question_id}, Record Count: {record_count}")
+
+        # Determine prompt version based on attempt count
+        prompt_version = "prompt_learner" if record_count < 1 else "prompt_corrective"
+
+        # Select prompt based on attempt count
+        if record_count < 1:
+            system_prompt = prompt_learner  # First attempt - learning focus
+            print(
+                f"[DEBUG STREAM] v2c Using prompt_learner (first attempt) for participant {participant_id}")
+        else:
+            system_prompt = prompt_corrective  # Subsequent attempts - corrective focus
+            print(
+                f"[DEBUG STREAM] v2c Using prompt_corrective (attempt #{record_count + 1}) for participant {participant_id}")
     else:
         # Get record count to determine which prompt to use (default behavior)
         record_count = get_participant_question_record_count_oeq(

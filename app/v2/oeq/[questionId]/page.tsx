@@ -15,6 +15,7 @@ import ImageModal from "@/app/components/v2/ImageModal";
 import LeftFeedbackPanel from "@/app/components/v2/LeftFeedbackPanel";
 import RightInputPanel from "@/app/components/v2/RightInputPanel";
 import { Reference, Course, Module, Slide, RecordResultInput, FeedbackResult } from "@/app/types";
+import { trackAttemptAndCheckCompletion } from "@/app/utils/qualtricsSignal";
 
 function PageChildren({ 
   questionId, 
@@ -306,17 +307,26 @@ function PageChildren({
   const handleStreamingSubmit = async () => {
     if (!question && !questionPreset) return;
     
-    // Handle v2a - use human feedback only
+    // Handle v2a - use human feedback only but still get reference for slide link
     if (course_version === "v2a") {
       if (questionPreset) {
         try {
           setIsFeedbackLoading(true);
-          const response = await axios.get(`/api/get_human_feedback/${questionPreset.question_id}`);
+          setIsReferenceLoading(true);
+          
+          // Get human feedback
+          const response = await axios.get(`/api/v2/get_human_feedback_oeq/${questionPreset.question_id}`);
           setResult(response.data.human_feedback);
+          
+          // Get reference data for slide link (but won't display content)
+          const retrievalResult = await handleRetrieve();
+          
           setIsFeedbackLoading(false);
+          setIsReferenceLoading(false);
         } catch (error) {
           console.error("Failed to get human feedback:", error);
           setIsFeedbackLoading(false);
+          setIsReferenceLoading(false);
         }
       }
       return;
@@ -448,6 +458,22 @@ function PageChildren({
                 system_total_response_time: endTime - startTime,
               };
               await recordResultToDatabase(recordPayload);
+              
+              // Track attempt and check for Qualtrics completion signal (OEQ)
+              if (prolificPid && course_version && questionPreset) {
+                // For OEQ, we consider any feedback as an attempt. 
+                // We don't have a clear "correct" indicator, so we count based on attempts only
+                const isComplete = trackAttemptAndCheckCompletion(
+                  questionPreset.question_id,
+                  prolificPid,
+                  false, // OEQ doesn't have definitive correct/incorrect
+                  course_version
+                );
+                
+                if (isComplete) {
+                  console.log("OEQ Practice completion criteria met, signal sent to Qualtrics");
+                }
+              }
             }
             break;
           }
@@ -526,7 +552,12 @@ function PageChildren({
     if (course_version === "v2a") {
       if (questionPreset) {
         try {
-          const response = await axios.get(`/api/get_human_feedback/${questionPreset.question_id}`);
+          // Get human feedback
+          const response = await axios.get(`/api/v2/get_human_feedback_oeq/${questionPreset.question_id}`);
+          
+          // Get reference data for slide link (but won't display content)
+          retrievalResult = await handleRetrieve();
+          
           const endTime = Date.now();
           const recordPayload: RecordResultInput = {
             learner_id: prolificPid || participantId || "unidentifiable_learner",
@@ -538,14 +569,28 @@ function PageChildren({
             prompt_engineering_method: selectedPromptEngineering,
             preferred_info_type: preferredInfoType === "vision" && reference?.image_text ? "vision" : "text",
             feedback_framework: selectedFeedbackFramework,
-            slide_retrieval_range: [],
-            reference_slide_page_number: -1,
-            reference_slide_content: "",
-            reference_slide_id: "",
+            slide_retrieval_range: retrievalResult?.slide_text_arr ? [retrievalResult.slide_text_arr.length] : [],
+            reference_slide_page_number: retrievalResult?.reference?.page_number || -1,
+            reference_slide_content: retrievalResult?.reference?.display || "",
+            reference_slide_id: retrievalResult?.reference?.slide_google_id || "",
             submission_time: startTime,
             system_total_response_time: endTime - startTime,
           };
           await recordResultToDatabase(recordPayload);
+          
+          // Track attempt and check for Qualtrics completion signal (OEQ Human)
+          if (prolificPid && course_version && questionPreset) {
+            const isComplete = trackAttemptAndCheckCompletion(
+              questionPreset.question_id,
+              prolificPid,
+              false, // OEQ doesn't have definitive correct/incorrect
+              course_version
+            );
+            
+            if (isComplete) {
+              console.log("OEQ Human feedback completion criteria met, signal sent to Qualtrics");
+            }
+          }
 
           setResult(response.data.human_feedback);
           setIsFeedbackLoading(false);
@@ -612,6 +657,20 @@ function PageChildren({
             system_total_response_time: endTime - startTime,
           };
           await recordResultToDatabase(recordPayload);
+          
+          // Track attempt and check for Qualtrics completion signal (OEQ AI)
+          if (prolificPid && course_version && questionPreset) {
+            const isComplete = trackAttemptAndCheckCompletion(
+              questionPreset.question_id,
+              prolificPid,
+              false, // OEQ doesn't have definitive correct/incorrect
+              course_version
+            );
+            
+            if (isComplete) {
+              console.log("OEQ AI feedback completion criteria met, signal sent to Qualtrics");
+            }
+          }
         }
 
         // Handle the response which might be structured or plain text
@@ -686,6 +745,7 @@ function PageChildren({
           streamingContent={streamingContent}
           isFeedbackLoading={isFeedbackLoading}
           promptVersion={promptVersion}
+          course_version={course_version}
         />
 
         <RightInputPanel

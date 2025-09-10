@@ -362,6 +362,48 @@ const CoursePage = () => {
       alert('Error updating vision info. Please try again.');
     }
   };
+
+  const handleUpdateVectors = async (slideId: string, moduleId: string) => {
+    const confirmUpdate = window.confirm('Are you sure you want to update the vectors for this slide? This will generate new embeddings based on the current image text.');
+    if (!confirmUpdate) return;
+
+    setSlidesByModule((prevSlides) => ({
+      ...prevSlides,
+      [moduleId]: prevSlides[moduleId].map((slide) =>
+        slide.id === slideId ? { ...slide, updatingVectors: true } : slide
+      ),
+    }));
+    try {
+      const response = await axios.post(`/api/slides/${slideId}/update-vectors`, { timeout: 100000});
+      
+      if (response.status === 200) {
+        setSlidesByModule((prevSlides) => ({
+          ...prevSlides,
+          [moduleId]: prevSlides[moduleId].map((slide) =>
+            slide.id === slideId ? { ...slide, hasVectors: true, updatingVectors: false } : slide
+          ),
+        }));
+        alert('Vectors updated successfully!');
+      } else {
+        setSlidesByModule((prevSlides) => ({
+          ...prevSlides,
+          [moduleId]: prevSlides[moduleId].map((slide) =>
+            slide.id === slideId ? { ...slide, updatingVectors: false } : slide
+          ),
+        }));
+        alert('Failed to update vectors.');
+      }
+    } catch (error) {
+      console.error('Error updating vectors:', error);
+      setSlidesByModule((prevSlides) => ({
+        ...prevSlides,
+        [moduleId]: prevSlides[moduleId].map((slide) =>
+          slide.id === slideId ? { ...slide, updatingVectors: false } : slide
+        ),
+      }));
+      alert('Error updating vectors. Please try again.');
+    }
+  };
   
 
   // Check if slides have been loaded for the module
@@ -543,6 +585,18 @@ const CoursePage = () => {
                                   "bg-gray-600" : "bg-blue-600 hover:bg-blue-700"}`}
                               >
                                 {slide.updatingVision ? "Updating Vision..." : "Update Vision"}
+                              </button>
+                            )}
+
+                            {slide.gotVision && (
+                              <button
+                                onClick={() => handleUpdateVectors(slide.id, module.module_id)}
+                                disabled={slide.updatingVectors}
+                                className={`mt-2 mr-4 p-2 text-white rounded ${
+                                  slide.updatingVectors ?
+                                  "bg-gray-600" : "bg-purple-600 hover:bg-purple-700"}`}
+                              >
+                                {slide.updatingVectors ? "Updating Vectors..." : "Update Vectors"}
                               </button>
                             )}
 

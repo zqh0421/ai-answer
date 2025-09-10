@@ -30,10 +30,7 @@ const HTMLFeedbackArea: React.FC<HTMLFeedbackAreaProps> = ({
   );
   const [hasRated, setHasRated] = useState(false);
 
-  // Determine if this is learner or corrective feedback
-  const isLearnerFeedback =
-    promptVersion === "prompt_learner" || promptVersion === null;
-  const isCorrectiveFeedback = promptVersion === "prompt_corrective";
+  // Both learner and corrective feedback now show score-based icons
 
   // Handle feedback rating
   const handleFeedbackRating = (rating: "good" | "bad") => {
@@ -180,32 +177,22 @@ const HTMLFeedbackArea: React.FC<HTMLFeedbackAreaProps> = ({
 
   // Determine icon color and icon based on score and feedback type
   const getIconStyle = () => {
-    // For learner feedback, always use neutral styling
-    if (isLearnerFeedback) {
+    // For both learner and corrective feedback, show score-based icons when score is available
+    if (score === "1") {
       return {
-        color: "bg-gradient-to-r from-blue-500 to-indigo-500",
-        icon: <MessageSquare className="w-4 h-4 text-white" />,
+        color: "bg-gradient-to-r from-green-500 to-emerald-500",
+        icon: <CheckCircle className="w-4 h-4 text-white" />,
       };
-    }
-
-    // For corrective feedback, show score-based icons
-    if (isCorrectiveFeedback) {
-      if (score === "1") {
-        return {
-          color: "bg-gradient-to-r from-green-500 to-emerald-500",
-          icon: <CheckCircle className="w-4 h-4 text-white" />,
-        };
-      } else if (score === "0") {
-        return {
-          color: "bg-gradient-to-r from-red-500 to-pink-500",
-          icon: <XCircle className="w-4 h-4 text-white" />,
-        };
-      } else if (score === "2") {
-        return {
-          color: "bg-gradient-to-r from-yellow-500 to-amber-500",
-          icon: <AlertCircle className="w-4 h-4 text-white" />,
-        };
-      }
+    } else if (score === "0") {
+      return {
+        color: "bg-gradient-to-r from-red-500 to-pink-500",
+        icon: <XCircle className="w-4 h-4 text-white" />,
+      };
+    } else if (score === "2") {
+      return {
+        color: "bg-gradient-to-r from-yellow-500 to-amber-500",
+        icon: <AlertCircle className="w-4 h-4 text-white" />,
+      };
     }
 
     // Default/neutral color when score is not provided or unknown state

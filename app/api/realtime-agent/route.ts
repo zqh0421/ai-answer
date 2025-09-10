@@ -21,11 +21,8 @@ export async function POST(request: NextRequest) {
           type: "realtime",
           model: "gpt-realtime",
           audio: {
-            input: {
-              format: { type: "audio/pcm", rate: 24000 },
-            },
             output: {
-              voice: "alloy",
+              voice: "marin",
               format: { type: "audio/pcm", rate: 24000 },
             },
           },

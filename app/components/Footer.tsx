@@ -1,4 +1,4 @@
-import { Mail, Calendar } from 'lucide-react';
+import { Mail, Calendar } from "lucide-react";
 
 export default function Footer() {
   return (
@@ -8,7 +8,7 @@ export default function Footer() {
           <div className="flex items-center space-x-4 text-sm text-slate-600">
             <div className="flex items-center space-x-1">
               <Calendar className="w-4 h-4" />
-              <span>Updated Jun 26, 2025</span>
+              <span>Updated Sep. 09, 2025</span>
             </div>
             <div className="flex items-center space-x-1">
               <Mail className="w-4 h-4" />

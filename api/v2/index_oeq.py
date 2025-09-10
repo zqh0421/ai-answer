@@ -7,6 +7,7 @@ import json
 from ..database import SessionLocal
 from ..config import Settings, get_settings
 from ..models import FeedbackRequestRagModel
+from ..schema.questionSchema import Question
 
 from .controllers_oeq import (
     generate_feedback_using_rag_cot_oeq,
@@ -144,3 +145,26 @@ async def generate_feedback_rag_cot_stream_oeq(request: FeedbackRequestRagModel,
             "Access-Control-Allow-Headers": "Content-Type",
         }
     )
+
+@router.get("/get_human_feedback_oeq/{question_id}")
+def get_human_feedback_oeq(question_id: str, db: Session = Depends(get_db)):
+    """
+    Get human-provided feedback for an OEQ question.
+    Returns error if no human feedback is available.
+    """
+    try:
+        question = db.query(Question).filter(Question.question_id == question_id).first()
+        
+        if not question:
+            raise HTTPException(status_code=404, detail=f"Question with ID {question_id} not found")
+        
+        if question.human_feedback is None or question.human_feedback.strip() == "":
+            raise HTTPException(status_code=404, detail=f"No human feedback available for question {question_id}")
+        
+        return {"human_feedback": question.human_feedback}
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error retrieving human feedback for question {question_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
