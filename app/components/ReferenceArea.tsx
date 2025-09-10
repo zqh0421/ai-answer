@@ -52,6 +52,12 @@ export default function ReferenceArea({
   useEffect(() => {
     const getAudioDevices = async () => {
       try {
+        // Check if we're in a browser environment with media devices support
+        if (typeof navigator === 'undefined' || !navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+          console.warn('Media devices API not available in this environment');
+          return;
+        }
+        
         const devices = await navigator.mediaDevices.enumerateDevices();
         const audioInputs = devices.filter(device => device.kind === 'audioinput');
         setAudioDevices(audioInputs);
@@ -67,12 +73,14 @@ export default function ReferenceArea({
     
     getAudioDevices();
     
-    // Listen for device changes
-    navigator.mediaDevices.addEventListener('devicechange', getAudioDevices);
-    
-    return () => {
-      navigator.mediaDevices.removeEventListener('devicechange', getAudioDevices);
-    };
+    // Listen for device changes only if available
+    if (typeof navigator !== 'undefined' && navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+      navigator.mediaDevices.addEventListener('devicechange', getAudioDevices);
+      
+      return () => {
+        navigator.mediaDevices.removeEventListener('devicechange', getAudioDevices);
+      };
+    }
   }, [selectedDeviceId]);
 
   // Cleanup on unmount
@@ -94,8 +102,10 @@ export default function ReferenceArea({
         mediaStreamRef.current = null;
       }
       
-      // Restore original getUserMedia
-      navigator.mediaDevices.getUserMedia = originalGetUserMedia;
+      // Restore original getUserMedia only if available
+      if (typeof navigator !== 'undefined' && navigator.mediaDevices && originalGetUserMedia) {
+        navigator.mediaDevices.getUserMedia = originalGetUserMedia;
+      }
     };
   }, []);
 
@@ -107,7 +117,7 @@ export default function ReferenceArea({
   };
 
   // Intercept getUserMedia to capture the actual stream being used
-  const originalGetUserMedia = navigator.mediaDevices.getUserMedia;
+  const originalGetUserMedia = typeof navigator !== 'undefined' && navigator.mediaDevices ? navigator.mediaDevices.getUserMedia : null;
   
   // Handle realtime session
   const handleRealtimeSession = async () => {
@@ -131,8 +141,10 @@ export default function ReferenceArea({
           mediaStreamRef.current = null;
         }
         
-        // Restore original getUserMedia
-        navigator.mediaDevices.getUserMedia = originalGetUserMedia;
+        // Restore original getUserMedia only if available
+        if (typeof navigator !== 'undefined' && navigator.mediaDevices && originalGetUserMedia) {
+          navigator.mediaDevices.getUserMedia = originalGetUserMedia;
+        }
         
         setAudioError(null);
         console.log("Voice chat session ended");
@@ -140,33 +152,39 @@ export default function ReferenceArea({
       }
 
       // Intercept getUserMedia calls to capture the stream and use selected device
-      navigator.mediaDevices.getUserMedia = function(constraints?: MediaStreamConstraints) {
-        console.log("getUserMedia called with constraints:", constraints);
-        
-        // Modify constraints to use selected device and start muted
-        if (constraints?.audio && selectedDeviceId) {
-          constraints.audio = { 
-            deviceId: selectedDeviceId,
-            ...((constraints.audio as any) || {})
-          };
-        }
-        
-        return originalGetUserMedia.call(this, constraints).then(stream => {
-          console.log("Captured media stream:", stream);
-          if (constraints?.audio) {
-            mediaStreamRef.current = stream;
-            
-            // Start with all audio tracks muted by default
-            stream.getAudioTracks().forEach(track => {
-              track.enabled = false;
-              console.log("Muted audio track by default:", track.label);
-            });
-            
-            console.log("Media stream captured via getUserMedia interception");
+      if (typeof navigator !== 'undefined' && navigator.mediaDevices && originalGetUserMedia) {
+        navigator.mediaDevices.getUserMedia = function(constraints?: MediaStreamConstraints) {
+          console.log("getUserMedia called with constraints:", constraints);
+          
+          // Modify constraints to use selected device and start muted
+          if (constraints?.audio && selectedDeviceId) {
+            constraints.audio = { 
+              deviceId: selectedDeviceId,
+              ...((constraints.audio as any) || {})
+            };
           }
-          return stream;
-        });
-      };
+          
+          return originalGetUserMedia!.call(this, constraints).then(stream => {
+            console.log("Captured media stream:", stream);
+            if (constraints?.audio) {
+              mediaStreamRef.current = stream;
+              
+              // Start with all audio tracks muted by default
+              stream.getAudioTracks().forEach(track => {
+                track.enabled = false;
+                console.log("Muted audio track by default:", track.label);
+              });
+              
+              console.log("Media stream captured via getUserMedia interception");
+            }
+            return stream;
+          });
+        };
+      } else {
+        console.warn('Media devices API not available, voice features will be disabled');
+        setAudioError('Voice features are not available in this environment');
+        return;
+      }
 
       // Get ephemeral client secret from API
       const tokenResponse = await axios.post("/api/realtime-agent", {
@@ -301,16 +319,18 @@ DO NOT repeat what's already in the feedback. Focus on guiding their attention t
             }
           } else {
             // Last resort: try to find any active media streams
-            const devices = await navigator.mediaDevices.enumerateDevices();
-            const audioDevice = devices.find(device => device.kind === 'audioinput');
-            if (audioDevice) {
-              console.log("Found audio input device:", audioDevice.label);
-              // Get the current active stream using selected device
-              const stream = await navigator.mediaDevices.getUserMedia({ 
-                audio: { deviceId: selectedDeviceId || audioDevice.deviceId } 
-              });
-              mediaStreamRef.current = stream;
-              console.log("Audio device stream captured for mute control");
+            if (typeof navigator !== 'undefined' && navigator.mediaDevices) {
+              const devices = await navigator.mediaDevices.enumerateDevices();
+              const audioDevice = devices.find(device => device.kind === 'audioinput');
+              if (audioDevice) {
+                console.log("Found audio input device:", audioDevice.label);
+                // Get the current active stream using selected device
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                  audio: { deviceId: selectedDeviceId || audioDevice.deviceId } 
+                });
+                mediaStreamRef.current = stream;
+                console.log("Audio device stream captured for mute control");
+              }
             }
           }
         } catch (streamError) {
