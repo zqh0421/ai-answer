@@ -140,11 +140,11 @@ export default function ReferenceArea({
       }
 
       // Intercept getUserMedia calls to capture the stream and use selected device
-      navigator.mediaDevices.getUserMedia = function(constraints) {
+      navigator.mediaDevices.getUserMedia = function(constraints?: MediaStreamConstraints) {
         console.log("getUserMedia called with constraints:", constraints);
         
         // Modify constraints to use selected device and start muted
-        if (constraints.audio && selectedDeviceId) {
+        if (constraints?.audio && selectedDeviceId) {
           constraints.audio = { 
             deviceId: selectedDeviceId,
             ...((constraints.audio as any) || {})
@@ -153,7 +153,7 @@ export default function ReferenceArea({
         
         return originalGetUserMedia.call(this, constraints).then(stream => {
           console.log("Captured media stream:", stream);
-          if (constraints.audio) {
+          if (constraints?.audio) {
             mediaStreamRef.current = stream;
             
             // Start with all audio tracks muted by default

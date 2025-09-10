@@ -72,7 +72,7 @@ export default function QuestionAnswerPanel({
   return (
     <div className="space-y-4">
       {/* Question Section */}
-      <div>
+      {/* <div>
         <div className="flex items-center justify-between mb-2">
           <h3 className="text-base font-semibold text-slate-800">Question</h3>
           {!questionLoading && questionPreset?.content?.length > 0 && (
@@ -85,7 +85,7 @@ export default function QuestionAnswerPanel({
           )}
         </div>
 
-        {/* {questionPreset?.content?.length > 0 ? (
+        {questionPreset?.content?.length > 0 ? (
           !isFullScreen ? (
             <div className="p-4 bg-slate-50 rounded-lg border border-slate-200">
               <p className="text-sm text-slate-600">
@@ -212,8 +212,8 @@ export default function QuestionAnswerPanel({
               onSaveDraftQuestion(textContent);
             }}
           />
-        )} */}
-      </div>
+        )}
+      </div> */}
 
       {/* Answer Section */}
       <div>
