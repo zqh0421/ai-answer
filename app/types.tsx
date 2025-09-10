@@ -24,6 +24,7 @@ export interface Slide {
   gotVision: boolean;
   gettingVision?: boolean;
   updatingVision?: boolean; // Temporary state for updating vision
+  updatingVectors?: boolean; // Temporary state for updating vectors
 }
 
 export interface Reference {
