@@ -6,7 +6,10 @@ import ReferenceArea from "@/app/components/ReferenceArea";
 import { Reference, StructuredFeedback } from "@/app/types";
 
 interface LeftFeedbackPanelProps {
-  result: string | StructuredFeedback | { feedback?: string; score?: string; structured_feedback?: string };
+  result:
+    | string
+    | StructuredFeedback
+    | { feedback?: string; score?: string; structured_feedback?: string };
   reference: Reference | undefined;
   isReferenceLoading: boolean;
   images: string[] | null;
@@ -15,7 +18,6 @@ interface LeftFeedbackPanelProps {
   totalCount: number;
   onImageClick: (image: string, index: number) => void;
   studentAnswer: string;
-  feedback: string;
   showFeedback?: boolean;
   showReference?: boolean;
   isStreaming?: boolean;
@@ -27,6 +29,8 @@ interface LeftFeedbackPanelProps {
   correctAnswer?: string;
   course_version?: string;
   recordId?: number | null; // Add recordId prop for rating functionality
+  sessionId?: string;
+  participantId?: string | null;
 }
 
 export default function LeftFeedbackPanel({
@@ -39,7 +43,6 @@ export default function LeftFeedbackPanel({
   totalCount,
   onImageClick,
   studentAnswer,
-  feedback,
   showFeedback = true,
   showReference = true,
   isStreaming = false,
@@ -51,7 +54,25 @@ export default function LeftFeedbackPanel({
   correctAnswer,
   course_version,
   recordId,
+  sessionId,
+  participantId,
 }: LeftFeedbackPanelProps) {
+  const feedbackHtml = isStreaming
+    ? streamingContent
+    : typeof result === "string"
+    ? result
+    : "structured_feedback" in result
+    ? result.structured_feedback || result.feedback || ""
+    : "feedback" in result
+    ? result.feedback || ""
+    : "";
+
+  const feedbackScore = isStreaming
+    ? ""
+    : typeof result !== "string" && "score" in result
+    ? result.score || ""
+    : "";
+
   return (
     <motion.div
       className="col-span-6 space-y-6"
@@ -62,21 +83,9 @@ export default function LeftFeedbackPanel({
       {/* Feedback and Answer */}
       {showFeedback && (
         <HTMLFeedbackArea
-          html={isStreaming 
-            ? streamingContent 
-            : typeof result === 'string' 
-              ? result 
-              : 'structured_feedback' in result 
-                ? result.structured_feedback || result.feedback || ""
-                : 'feedback' in result 
-                  ? result.feedback || ""
-                  : ""
-          }
+          html={feedbackHtml}
           isFeedbackLoading={isFeedbackLoading}
-          score={isStreaming ? "" : 
-            typeof result !== 'string' && 'score' in result 
-              ? result.score || "" 
-              : ""}
+          score={feedbackScore}
           isStreaming={isStreaming}
           promptVersion={promptVersion}
           recordId={recordId}
@@ -93,11 +102,14 @@ export default function LeftFeedbackPanel({
           totalCount={totalCount}
           onImageClick={onImageClick}
           studentAnswer={studentAnswer}
-          feedback={feedback}
+          feedback={feedbackHtml}
           question={question}
           options={options}
           correctAnswer={correctAnswer}
           course_version={course_version}
+          recordId={recordId}
+          sessionId={sessionId}
+          participantId={participantId}
         />
       )}
     </motion.div>

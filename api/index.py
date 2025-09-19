@@ -1054,6 +1054,57 @@ def record_result(result: models.RecordResultModel, db: Session = Depends(get_db
         db.rollback()
         raise HTTPException(status_code=400, detail=f"Error recording result: {str(e)}")
 
+
+@app.post('/api/record_result/{record_id}/audio-usage')
+def log_audio_narration_usage(
+    record_id: int,
+    payload: models.AudioNarrationUsageEvent,
+    db: Session = Depends(get_db),
+):
+    try:
+        db_record = db.query(schema.RecordResult).filter(schema.RecordResult.id == record_id).first()
+        if not db_record:
+            raise HTTPException(status_code=404, detail="Record not found")
+
+        if payload.action == "start":
+            usage = schema.AudioNarrationUsage(
+                record_result_id=record_id,
+                session_id=payload.session_id,
+                started_at=payload.timestamp,
+            )
+            db.add(usage)
+            db.commit()
+            db.refresh(usage)
+            return {"usage_id": usage.id, "message": "Audio narration started"}
+
+        if payload.action == "stop":
+            query = db.query(schema.AudioNarrationUsage).filter(
+                schema.AudioNarrationUsage.record_result_id == record_id,
+                schema.AudioNarrationUsage.session_id == payload.session_id,
+                schema.AudioNarrationUsage.ended_at.is_(None),
+            )
+
+            if payload.usage_id is not None:
+                query = query.filter(schema.AudioNarrationUsage.id == payload.usage_id)
+
+            usage = query.order_by(schema.AudioNarrationUsage.started_at.desc()).first()
+
+            if not usage:
+                raise HTTPException(status_code=404, detail="Active audio narration session not found")
+
+            usage.ended_at = payload.timestamp
+            db.commit()
+            db.refresh(usage)
+            return {"usage_id": usage.id, "message": "Audio narration stopped"}
+
+        raise HTTPException(status_code=400, detail="Unsupported action")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"Error logging audio narration usage: {str(e)}")
+
 @app.put('/api/record_result/{record_id}/rating')
 def update_rating(record_id: int, rating_update: UpdateRatingModel, db: Session = Depends(get_db)):
     try:

@@ -39,6 +39,7 @@ function HomeChildren() {
   const [isImageLoading, setIsImageLoading] = useState(false);
   const [isReferenceLoading, setIsReferenceLoading] = useState(false);
   const [isFeedbackLoading, setIsFeedbackLoading] = useState(false);
+  const [currentRecordId, setCurrentRecordId] = useState<number | null>(null);
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [selectedPromptEngineering, setSelectedPromptEngineering] = useState<string>("rag_cot");
@@ -330,8 +331,11 @@ function HomeChildren() {
 
   const recordResultToDatabase = async (result: RecordResultInput) => {
     try {
-      await axios.post("/api/record_result", result);
-      // console.log("Successfully recorded result to db:", result);
+      const response = await axios.post("/api/record_result", result);
+      const newId = response.data?.id ?? null;
+      if (newId) {
+        setCurrentRecordId(newId);
+      }
     } catch (error) {
       console.error("Error recording result to database:", error);
     }
@@ -350,6 +354,7 @@ function HomeChildren() {
     setIsFeedbackLoading(true);
     setIsImageLoading(true);
     setIsReferenceLoading(true);
+    setCurrentRecordId(null);
 
     const startTime = Date.now();
     let retrievalResult = null;
@@ -510,6 +515,10 @@ function HomeChildren() {
                 totalCount={totalCount}
                 studentAnswer={answer}
                 feedback={typeof result === 'string' ? result : (result as StructuredFeedback)?.feedback || ''}
+                course_version={course_version || undefined}
+                recordId={currentRecordId}
+                sessionId={sessionId}
+                participantId={participantId || null}
               />
             </div>
           )}

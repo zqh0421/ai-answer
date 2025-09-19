@@ -79,7 +79,7 @@ export default function RightInputPanel({
       animate={{ opacity: 1, x: 0 }}
       transition={{ duration: 0.6, delay: 0.2 }}
     >
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 sticky top-24 z-0">
+      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 sticky top-[75px] z-0">
         {/* Tabs Header */}
         <TabNavigation
           activeTab={activeTab}

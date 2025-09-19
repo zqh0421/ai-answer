@@ -1133,7 +1133,6 @@ function PageChildren({
           totalCount={totalCount}
           onImageClick={handleImageClick}
           studentAnswer={answer}
-          feedback={typeof result === "string" ? result : (result as { feedback?: string })?.feedback || ""}
           showFeedback={true}
           showReference={true}
           isStreaming={isStreaming}
@@ -1145,6 +1144,8 @@ function PageChildren({
           options={questionPreset?.options}
           correctAnswer={questionPreset?.options?.filter((opt: { text: string; isCorrect: boolean } | string) => typeof opt === 'object' && opt.isCorrect).map((opt: { text: string; isCorrect: boolean } | string) => typeof opt === 'string' ? opt : opt.text).join(', ')}
           recordId={currentRecordId}
+          sessionId={sessionId}
+          participantId={prolificPid || participantId || null}
         />
 
         <RightInputPanel

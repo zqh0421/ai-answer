@@ -43,22 +43,22 @@ const HTMLFeedbackArea: React.FC<HTMLFeedbackAreaProps> = ({
     if (recordId) {
       try {
         const response = await fetch(`/api/record_result/${recordId}/rating`, {
-          method: 'PUT',
+          method: "PUT",
           headers: {
-            'Content-Type': 'application/json',
+            "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            rating: rating === "good"
+            rating: rating === "good",
           }),
         });
 
         if (!response.ok) {
-          throw new Error('Failed to save rating');
+          throw new Error("Failed to save rating");
         }
 
         console.log(`Rating saved successfully: ${rating}`);
       } catch (error) {
-        console.error('Error saving rating:', error);
+        console.error("Error saving rating:", error);
         // Optionally show user feedback about the error
       }
     } else {
@@ -333,7 +333,7 @@ const TermWithTooltip = ({
   tooltip: string;
 }) => {
   const [showTooltip, setShowTooltip] = useState(false);
-  const [position, setPosition] = useState({ x: 0, y: 0 });
+  const [position, setPosition] = useState({ x: 0, y: 0, height: 0 });
   const [timeoutId, setTimeoutId] = useState<NodeJS.Timeout | null>(null);
 
   const handleMouseEnter = useCallback(
@@ -348,13 +348,15 @@ const TermWithTooltip = ({
       const newPosition = {
         x: rect.left + rect.width / 2,
         y: rect.top,
+        height: rect.height,
       };
 
       // Only update position if it actually changed
       setPosition((prev) => {
         if (
           Math.abs(prev.x - newPosition.x) > 1 ||
-          Math.abs(prev.y - newPosition.y) > 1
+          Math.abs(prev.y - newPosition.y) > 1 ||
+          Math.abs(prev.height - newPosition.height) > 1
         ) {
           return newPosition;
         }
@@ -401,85 +403,107 @@ const CustomTooltip = ({
   children: React.ReactNode;
   content: string;
   isVisible: boolean;
-  position: { x: number; y: number };
+  position: { x: number; y: number; height: number };
 }) => {
   if (!isVisible) return <>{children}</>;
 
-  const tooltipWidth = 300;
+  const tooltipWidth = 260;
   const viewportWidth = window.innerWidth;
+  const gap = 12;
 
-  // Default position (show above)
-  let finalTop = position.y - 70;
+  // Default placement: above the highlighted term with a safe gap
+  let finalTop = position.y - gap;
   let finalLeft = position.x;
-  let transformX = "translateX(-50%)";
+  let transform = "translate(-50%, -100%)";
+  let animationTransformFrom = "translate(-50%, calc(-100% + 5px))";
+  let isTooltipAbove = true;
 
-  // Check if would overflow left boundary
-  if (position.x - tooltipWidth / 2 < 10) {
-    finalLeft = tooltipWidth / 2 + 10;
-    transformX = "translateX(-50%)";
+  const minCenter = tooltipWidth / 2 + 10;
+  const maxCenter = viewportWidth - tooltipWidth / 2 - 10;
+  if (finalLeft < minCenter) {
+    finalLeft = minCenter;
+  } else if (finalLeft > maxCenter) {
+    finalLeft = maxCenter;
   }
 
-  // Check if would overflow right boundary
-  if (position.x + tooltipWidth / 2 > viewportWidth - 10) {
-    finalLeft = viewportWidth - tooltipWidth / 2 - 10;
-    transformX = "translateX(-50%)";
+  // Reserve horizontal breathing room for the QA panel on the right
+  const qaPanelWidth = 360;
+  const qaPanelGutter = 24;
+  const qaSafeCenter = Math.max(
+    minCenter,
+    viewportWidth - qaPanelWidth - qaPanelGutter - tooltipWidth / 2
+  );
+  if (finalLeft > qaSafeCenter) {
+    finalLeft = qaSafeCenter;
   }
+
+  // Shift bubble slightly left to avoid QA panel overlap
+  const bubbleShift = 24;
+  finalLeft = Math.max(minCenter, finalLeft - bubbleShift);
+
+  const caretOffsetRaw = position.x - finalLeft;
+  const maxCaretOffset = tooltipWidth / 2 - 16;
+  const caretOffset =
+    caretOffsetRaw > maxCaretOffset
+      ? maxCaretOffset
+      : caretOffsetRaw < -maxCaretOffset
+      ? -maxCaretOffset
+      : caretOffsetRaw;
 
   // Check if would overflow top boundary, if so show below
   if (finalTop < 10) {
-    finalTop = position.y + 30;
+    finalTop = position.y + position.height + gap;
+    transform = "translate(-50%, 0)";
+    animationTransformFrom = "translate(-50%, 5px)";
+    isTooltipAbove = false;
   }
+
+  const arrowContainerClass = isTooltipAbove
+    ? "pointer-events-none absolute top-full"
+    : "pointer-events-none absolute top-0";
+  const arrowContainerStyle = isTooltipAbove
+    ? { left: `calc(50% + ${caretOffset}px)`, transform: "translate(-50%, 0)" }
+    : {
+        left: `calc(50% + ${caretOffset}px)`,
+        transform: "translate(-50%, -100%)",
+      };
+  const outerArrowClass = isTooltipAbove
+    ? "h-0 w-0 border-x-4 border-t-[6px] border-x-transparent border-t-slate-300"
+    : "h-0 w-0 border-x-4 border-b-[6px] border-x-transparent border-b-slate-300";
+  const innerArrowClass = isTooltipAbove
+    ? "absolute left-1/2 -top-[5px] -translate-x-1/2 h-0 w-0 border-x-[3px] border-t-[5px] border-x-transparent border-t-white"
+    : "absolute left-1/2 top-[1px] -translate-x-1/2 h-0 w-0 border-x-[3px] border-b-[5px] border-x-transparent border-b-white";
 
   return (
     <>
       {children}
       <div
-        className="fixed px-4 py-3 text-sm text-slate-700 bg-white border border-slate-200 rounded-xl shadow-lg max-w-xs backdrop-blur-sm pointer-events-none"
+        className="fixed px-4 py-3 text-sm text-slate-700 bg-white border border-slate-300 rounded-xl shadow-lg max-w-[16rem] backdrop-blur-sm pointer-events-none"
         style={{
           left: finalLeft,
           top: finalTop,
-          transform: transformX,
+          transform,
           animation: "tooltipFadeIn 0.2s ease-out",
           zIndex: 9999,
         }}
       >
         <span className="text-slate-600 leading-normal block">{content}</span>
-
-        {/* Outer arrow - border color */}
-        <div
-          className="absolute w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent"
-          style={{
-            left: "50%",
-            top: finalTop < position.y ? "100%" : "-4px",
-            transform: "translateX(-50%)",
-            borderTopColor: finalTop < position.y ? "#e2e8f0" : "transparent",
-            borderBottomColor:
-              finalTop > position.y ? "#e2e8f0" : "transparent",
-          }}
-        ></div>
-
-        {/* Inner arrow - background color */}
-        <div
-          className="absolute w-0 h-0 border-l-3 border-r-3 border-t-3 border-transparent"
-          style={{
-            left: "50%",
-            top: finalTop < position.y ? "calc(100% - 1px)" : "-3px",
-            transform: "translateX(-50%)",
-            borderTopColor: finalTop < position.y ? "#ffffff" : "transparent",
-            borderBottomColor:
-              finalTop > position.y ? "#ffffff" : "transparent",
-          }}
-        ></div>
+        <div className={arrowContainerClass} style={arrowContainerStyle}>
+          <div className="relative">
+            <div className={outerArrowClass}></div>
+            <div className={innerArrowClass}></div>
+          </div>
+        </div>
       </div>
       <style jsx>{`
         @keyframes tooltipFadeIn {
           from {
             opacity: 0;
-            transform: ${transformX} translateY(5px);
+            transform: ${animationTransformFrom};
           }
           to {
             opacity: 1;
-            transform: ${transformX} translateY(0);
+            transform: ${transform};
           }
         }
       `}</style>

@@ -1,5 +1,17 @@
-import { StructuredFeedback, FeedbackResult, ProcessedFeedbackData } from "@/app/types";
-import { MessageSquare, Loader2, Sparkles, Target, Quote, ThumbsUp, ThumbsDown } from 'lucide-react';
+import {
+  StructuredFeedback,
+  FeedbackResult,
+  ProcessedFeedbackData,
+} from "@/app/types";
+import {
+  MessageSquare,
+  Loader2,
+  Sparkles,
+  Target,
+  Quote,
+  ThumbsUp,
+  ThumbsDown,
+} from "lucide-react";
 import React, { useState, useCallback } from "react";
 
 // Helper functions to safely access feedback data
@@ -8,11 +20,15 @@ const getConcisedFeedback = (data: StructuredFeedback): string => {
 };
 
 const isStructuredFeedback = (obj: unknown): obj is StructuredFeedback => {
-  return typeof obj === 'object' && obj !== null && 'structured_feedback' in obj;
+  return (
+    typeof obj === "object" && obj !== null && "structured_feedback" in obj
+  );
 };
 
-const isFeedbackWrapper = (obj: unknown): obj is { feedback: string | StructuredFeedback } => {
-  return typeof obj === 'object' && obj !== null && 'feedback' in obj;
+const isFeedbackWrapper = (
+  obj: unknown
+): obj is { feedback: string | StructuredFeedback } => {
+  return typeof obj === "object" && obj !== null && "feedback" in obj;
 };
 
 // function highlightTerms(text: string, terms: string[], className: string = 'highlight-term') {
@@ -60,7 +76,7 @@ function highlightTermsAndPhrasesWithTooltip(
 ) {
   // Build a map of term → tooltip
   const termMap = Object.fromEntries(
-    terms.map(obj => [Object.keys(obj)[0], Object.values(obj)[0]])
+    terms.map((obj) => [Object.keys(obj)[0], Object.values(obj)[0]])
   );
   const termList = Object.keys(termMap);
 
@@ -75,48 +91,50 @@ function highlightTermsAndPhrasesWithTooltip(
 
   // Create a simple word-by-word highlighting approach using React components
   let result = text;
-  
+
   // Highlight terms first (longer terms first to avoid partial matches)
   const sortedTerms = termList.sort((a, b) => b.length - a.length);
   for (const term of sortedTerms) {
-    const regex = new RegExp(`\\b${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'gi');
+    const regex = new RegExp(
+      `\\b${term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`,
+      "gi"
+    );
     result = result.replace(regex, `__TERM_${term}__`);
   }
 
   // Highlight phrases
   const sortedPhrases = phrases.sort((a, b) => b.length - a.length);
   for (const phrase of sortedPhrases) {
-    const regex = new RegExp(phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+    const regex = new RegExp(
+      phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+      "gi"
+    );
     result = result.replace(regex, `__PHRASE_${phrase}__`);
   }
 
   // Split the text and create React components
   const parts = result.split(/(__TERM_.*?__|__PHRASE_.*?__)/);
-  
+
   return parts.map((part, index) => {
-    if (part.startsWith('__TERM_')) {
-      const term = part.replace('__TERM_', '').replace('__', '');
+    if (part.startsWith("__TERM_")) {
+      const term = part.replace("__TERM_", "").replace("__", "");
       return (
-        <HighlightedTerm 
-          key={index} 
-          term={term} 
-          tooltip={termMap[term]} 
-        />
+        <HighlightedTerm key={index} term={term} tooltip={termMap[term]} />
       );
-    } else if (part.startsWith('__PHRASE_')) {
-      const phrase = part.replace('__PHRASE_', '').replace('__', '');
+    } else if (part.startsWith("__PHRASE_")) {
+      const phrase = part.replace("__PHRASE_", "").replace("__", "");
       return (
-        <span 
-          key={index} 
-          className='highlight-phrase transition-all duration-200 hover:scale-105' 
-          style={{ 
-            background: 'linear-gradient(135deg, #fef3c7 0%, #fde68a 100%)',
-            borderRadius: '4px', // 减小圆角
-            padding: '0px 4px', // 减少垂直padding，保持水平padding
-            border: '1px solid #f59e0b',
-            color: '#92400e',
-            fontWeight: '500',
-            boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)'
+        <span
+          key={index}
+          className="highlight-phrase transition-all duration-200 hover:scale-105"
+          style={{
+            background: "linear-gradient(135deg, #fef3c7 0%, #fde68a 100%)",
+            borderRadius: "4px", // 减小圆角
+            padding: "0px 4px", // 减少垂直padding，保持水平padding
+            border: "1px solid #f59e0b",
+            color: "#92400e",
+            fontWeight: "500",
+            boxShadow: "0 1px 2px rgba(0, 0, 0, 0.05)",
           }}
         >
           {phrase}
@@ -129,34 +147,46 @@ function highlightTermsAndPhrasesWithTooltip(
 }
 
 // Component for highlighted terms with tooltips
-const HighlightedTerm = ({ term, tooltip }: { term: string; tooltip: string }) => {
+const HighlightedTerm = ({
+  term,
+  tooltip,
+}: {
+  term: string;
+  tooltip: string;
+}) => {
   const [showTooltip, setShowTooltip] = useState(false);
   const [position, setPosition] = useState({ x: 0, y: 0 });
   const [timeoutId, setTimeoutId] = useState<NodeJS.Timeout | null>(null);
 
-  const handleMouseEnter = useCallback((e: React.MouseEvent) => {
-    // 清除之前的延迟
-    if (timeoutId) {
-      clearTimeout(timeoutId);
-      setTimeoutId(null);
-    }
-
-    const rect = e.currentTarget.getBoundingClientRect();
-    const newPosition = {
-      x: rect.left + rect.width / 2,
-      y: rect.top
-    };
-    
-    // 只有当位置真正改变时才更新，避免不必要的重渲染
-    setPosition(prev => {
-      if (Math.abs(prev.x - newPosition.x) > 1 || Math.abs(prev.y - newPosition.y) > 1) {
-        return newPosition;
+  const handleMouseEnter = useCallback(
+    (e: React.MouseEvent) => {
+      // 清除之前的延迟
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        setTimeoutId(null);
       }
-      return prev;
-    });
-    
-    setShowTooltip(true);
-  }, [timeoutId]);
+
+      const rect = e.currentTarget.getBoundingClientRect();
+      const newPosition = {
+        x: rect.left + rect.width / 2,
+        y: rect.top,
+      };
+
+      // 只有当位置真正改变时才更新，避免不必要的重渲染
+      setPosition((prev) => {
+        if (
+          Math.abs(prev.x - newPosition.x) > 1 ||
+          Math.abs(prev.y - newPosition.y) > 1
+        ) {
+          return newPosition;
+        }
+        return prev;
+      });
+
+      setShowTooltip(true);
+    },
+    [timeoutId]
+  );
 
   const handleMouseLeave = useCallback(() => {
     // 添加小延迟，避免鼠标快速移动时的频闪
@@ -167,26 +197,26 @@ const HighlightedTerm = ({ term, tooltip }: { term: string; tooltip: string }) =
   }, []);
 
   return (
-    <CustomTooltip 
-      content={tooltip} 
-      isVisible={showTooltip} 
+    <CustomTooltip
+      content={tooltip}
+      isVisible={showTooltip}
       position={position}
     >
       <span
-        className='highlight-term transition-all duration-200 hover:scale-105'
-        style={{ 
-          background: 'linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%)',
-          borderRadius: '4px', // 减小圆角
-          padding: '0px 4px', // 减少垂直padding，保持水平padding
-          border: '1px solid #93c5fd',
-          color: '#1e40af',
-          fontWeight: '500',
-          cursor: 'help',
-          boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)',
-          display: 'inline-block', // 确保元素有正确的盒模型
-          position: 'relative', // 确保定位上下文正确
+        className="highlight-term transition-all duration-200 hover:scale-105"
+        style={{
+          background: "linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%)",
+          borderRadius: "4px", // 减小圆角
+          padding: "0px 4px", // 减少垂直padding，保持水平padding
+          border: "1px solid #93c5fd",
+          color: "#1e40af",
+          fontWeight: "500",
+          cursor: "help",
+          boxShadow: "0 1px 2px rgba(0, 0, 0, 0.05)",
+          display: "inline-block", // 确保元素有正确的盒模型
+          position: "relative", // 确保定位上下文正确
           zIndex: 1, // 确保在tooltip下方
-          lineHeight: '1.2',
+          lineHeight: "1.2",
         }}
         onMouseEnter={handleMouseEnter}
         onMouseLeave={handleMouseLeave}
@@ -198,44 +228,49 @@ const HighlightedTerm = ({ term, tooltip }: { term: string; tooltip: string }) =
 };
 
 // Custom Tooltip Component
-const CustomTooltip = ({ children, content, isVisible, position }: { 
-  children: React.ReactNode; 
-  content: string; 
-  isVisible: boolean; 
-  position: { x: number; y: number; } 
+const CustomTooltip = ({
+  children,
+  content,
+  isVisible,
+  position,
+}: {
+  children: React.ReactNode;
+  content: string;
+  isVisible: boolean;
+  position: { x: number; y: number };
 }) => {
   if (!isVisible) return <>{children}</>;
-  
+
   // 计算气泡应该显示的位置，避免被遮挡
   // const tooltipHeight = 80; // 估算气泡高度
   const tooltipWidth = 300; // 估算气泡宽度
   const viewportWidth = window.innerWidth;
   // const viewportHeight = window.innerHeight;
-  
+
   // 默认位置（向上显示）
   let finalTop = position.y - 70; // 向上移动更多
   let finalLeft = position.x;
-  let transformX = 'translateX(-50%)';
-  
+  let transformX = "translateX(-50%)";
+
   // 检查是否会超出左边界
   if (position.x - tooltipWidth / 2 < 10) {
     finalLeft = tooltipWidth / 2 + 10;
-    transformX = 'translateX(-50%)';
+    transformX = "translateX(-50%)";
   }
-  
+
   // 检查是否会超出右边界
   if (position.x + tooltipWidth / 2 > viewportWidth - 10) {
     finalLeft = viewportWidth - tooltipWidth / 2 - 10;
-    transformX = 'translateX(-50%)';
+    transformX = "translateX(-50%)";
   }
-  
+
   // 检查是否会超出上边界，如果会则显示在下方
   if (finalTop < 10) {
     finalTop = position.y + 30; // 显示在下方
   }
-  
+
   return (
-    <>
+    <div className="z-[9999]">
       {children}
       <div
         className="fixed px-3 py-2 text-sm text-slate-700 bg-white border border-slate-200 rounded-xl shadow-lg max-w-xs backdrop-blur-sm pointer-events-none"
@@ -243,33 +278,35 @@ const CustomTooltip = ({ children, content, isVisible, position }: {
           left: finalLeft,
           top: finalTop,
           transform: transformX,
-          animation: 'tooltipFadeIn 0.2s ease-out',
-          zIndex: 9999 // 使用非常高的z-index确保在最顶层
+          animation: "tooltipFadeIn 0.2s ease-out",
+          zIndex: 9999, // 使用非常高的z-index确保在最顶层
         }}
       >
         <p className="text-slate-600 leading-normal">{content}</p>
-        
+
         {/* 外层箭头 - 边框颜色 */}
-        <div 
+        <div
           className="absolute w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent"
           style={{
-            left: '50%',
-            top: finalTop < position.y ? '100%' : '-4px', // 根据位置调整箭头方向
-            transform: 'translateX(-50%)',
-            borderTopColor: finalTop < position.y ? '#e2e8f0' : 'transparent',
-            borderBottomColor: finalTop > position.y ? '#e2e8f0' : 'transparent'
+            left: "50%",
+            top: finalTop < position.y ? "100%" : "-4px", // 根据位置调整箭头方向
+            transform: "translateX(-50%)",
+            borderTopColor: finalTop < position.y ? "#e2e8f0" : "transparent",
+            borderBottomColor:
+              finalTop > position.y ? "#e2e8f0" : "transparent",
           }}
         ></div>
-        
+
         {/* 内层箭头 - 背景颜色 */}
-        <div 
+        <div
           className="absolute w-0 h-0 border-l-3 border-r-3 border-t-3 border-transparent"
           style={{
-            left: '50%',
-            top: finalTop < position.y ? 'calc(100% - 1px)' : '-3px', // 根据位置调整箭头方向
-            transform: 'translateX(-50%)',
-            borderTopColor: finalTop < position.y ? '#ffffff' : 'transparent',
-            borderBottomColor: finalTop > position.y ? '#ffffff' : 'transparent'
+            left: "50%",
+            top: finalTop < position.y ? "calc(100% - 1px)" : "-3px", // 根据位置调整箭头方向
+            transform: "translateX(-50%)",
+            borderTopColor: finalTop < position.y ? "#ffffff" : "transparent",
+            borderBottomColor:
+              finalTop > position.y ? "#ffffff" : "transparent",
           }}
         ></div>
       </div>
@@ -285,31 +322,42 @@ const CustomTooltip = ({ children, content, isVisible, position }: {
           }
         }
       `}</style>
-    </>
+    </div>
   );
 };
 
-export default function FeedbackArea({ result, isFeedbackLoading }: { result: FeedbackResult, isFeedbackLoading: boolean }) {
-  const [feedbackRating, setFeedbackRating] = useState<'good' | 'bad' | null>(null);
+export default function FeedbackArea({
+  result,
+  isFeedbackLoading,
+}: {
+  result: FeedbackResult;
+  isFeedbackLoading: boolean;
+}) {
+  const [feedbackRating, setFeedbackRating] = useState<"good" | "bad" | null>(
+    null
+  );
   const [hasRated, setHasRated] = useState(false);
 
   console.log("FeedbackArea received result:", result);
   console.log("Result type:", typeof result);
-  if (typeof result === 'object' && result !== null) {
+  if (typeof result === "object" && result !== null) {
     console.log("Result keys:", Object.keys(result));
     if (isStructuredFeedback(result)) {
-      console.log("Concised feedback in component:", getConcisedFeedback(result));
+      console.log(
+        "Concised feedback in component:",
+        getConcisedFeedback(result)
+      );
     }
   }
 
   // Handle feedback rating
-  const handleFeedbackRating = (rating: 'good' | 'bad') => {
+  const handleFeedbackRating = (rating: "good" | "bad") => {
     setFeedbackRating(rating);
     setHasRated(true);
-    
+
     // Here you can add logic to send the rating to your backend
     console.log(`User rated feedback as: ${rating}`);
-    
+
     // Example: Send to backend
     // sendFeedbackRating(rating, result);
   };
@@ -353,38 +401,44 @@ export default function FeedbackArea({ result, isFeedbackLoading }: { result: Fe
               <Sparkles className="w-4 h-4 text-white" />
             </div>
             <div className="flex-1">
-              <p className="text-slate-700 leading-normal text-base">{feedbackData}</p>
+              <p className="text-slate-700 leading-normal text-base">
+                {feedbackData}
+              </p>
             </div>
           </div>
-          
+
           {/* Feedback Rating Buttons - Bottom Right */}
           <div className="absolute bottom-3 right-3 flex items-center">
-            <span className="text-xs text-slate-500 font-medium">Rate this feedback:</span>
+            <span className="text-xs text-slate-500 font-medium">
+              Rate this feedback:
+            </span>
             <div className="flex items-center gap-1">
               <button
-                onClick={() => handleFeedbackRating('good')}
+                onClick={() => handleFeedbackRating("good")}
                 className={`
                   p-1.5 rounded-md transition-all duration-200
-                  ${feedbackRating === 'good' 
-                    ? 'text-blue-600 bg-blue-50 border border-blue-200' 
-                    : hasRated 
-                      ? 'text-slate-400 hover:text-slate-600 hover:bg-slate-50' 
-                      : 'text-slate-600 hover:text-slate-800 hover:bg-slate-100'
+                  ${
+                    feedbackRating === "good"
+                      ? "text-blue-600 bg-blue-50 border border-blue-200"
+                      : hasRated
+                      ? "text-slate-400 hover:text-slate-600 hover:bg-slate-50"
+                      : "text-slate-600 hover:text-slate-800 hover:bg-slate-100"
                   }
                 `}
               >
                 <ThumbsUp className="w-4 h-4" />
               </button>
-              
+
               <button
-                onClick={() => handleFeedbackRating('bad')}
+                onClick={() => handleFeedbackRating("bad")}
                 className={`
                   p-1.5 rounded-md transition-all duration-200
-                  ${feedbackRating === 'bad' 
-                    ? 'text-blue-600 bg-blue-50 border border-blue-200' 
-                    : hasRated 
-                      ? 'text-slate-400 hover:text-slate-600 hover:bg-slate-50' 
-                      : 'text-slate-600 hover:text-slate-800 hover:bg-slate-100'
+                  ${
+                    feedbackRating === "bad"
+                      ? "text-blue-600 bg-blue-50 border border-blue-200"
+                      : hasRated
+                      ? "text-slate-400 hover:text-slate-600 hover:bg-slate-50"
+                      : "text-slate-600 hover:text-slate-800 hover:bg-slate-100"
                   }
                 `}
               >
@@ -404,46 +458,60 @@ export default function FeedbackArea({ result, isFeedbackLoading }: { result: Fe
                 <Target className="w-4 h-4 text-white" />
               </div>
               <div className="flex-1">
-                <h4 className="text-sm font-semibold text-emerald-700 mb-2 uppercase tracking-wide">Feedback</h4>
+                <h4 className="text-sm font-semibold text-emerald-700 mb-2 uppercase tracking-wide">
+                  Feedback
+                </h4>
                 <p className="text-slate-700 leading-normal text-base">
-                  {isStructuredFeedback(feedbackData) ? getConcisedFeedback(feedbackData) : feedbackData}
+                  {isStructuredFeedback(feedbackData)
+                    ? getConcisedFeedback(feedbackData)
+                    : feedbackData}
                 </p>
               </div>
             </div>
-            
+
             {/* Feedback Rating Buttons - Bottom Right */}
             <div className="absolute bottom-3 right-3 flex items-center gap-2">
               <button
-                onClick={() => handleFeedbackRating('good')}
+                onClick={() => handleFeedbackRating("good")}
                 disabled={hasRated}
                 className={`
                   flex items-center gap-1 px-2 py-1 rounded-md transition-all duration-200 text-xs font-medium
-                  ${feedbackRating === 'good' 
-                    ? 'bg-green-100 text-green-700 border border-green-300' 
-                    : hasRated 
-                      ? 'bg-slate-100 text-slate-400 cursor-not-allowed' 
-                      : 'bg-white/80 text-slate-600 border border-slate-300 hover:bg-green-50 hover:border-green-300 hover:text-green-700'
+                  ${
+                    feedbackRating === "good"
+                      ? "bg-green-100 text-green-700 border border-green-300"
+                      : hasRated
+                      ? "bg-slate-100 text-slate-400 cursor-not-allowed"
+                      : "bg-white/80 text-slate-600 border border-slate-300 hover:bg-green-50 hover:border-green-300 hover:text-green-700"
                   }
                 `}
               >
-                <ThumbsUp className={`w-3 h-3 ${feedbackRating === 'good' ? 'text-green-600' : ''}`} />
+                <ThumbsUp
+                  className={`w-3 h-3 ${
+                    feedbackRating === "good" ? "text-green-600" : ""
+                  }`}
+                />
                 Good
               </button>
-              
+
               <button
-                onClick={() => handleFeedbackRating('bad')}
+                onClick={() => handleFeedbackRating("bad")}
                 disabled={hasRated}
                 className={`
                   flex items-center gap-1 px-2 py-1 rounded-md transition-all duration-200 text-xs font-medium
-                  ${feedbackRating === 'bad' 
-                    ? 'bg-red-100 text-red-700 border border-red-300' 
-                    : hasRated 
-                      ? 'bg-slate-100 text-slate-400 cursor-not-allowed' 
-                      : 'bg-white/80 text-slate-600 border border-slate-300 hover:bg-red-50 hover:border-red-300 hover:text-red-700'
+                  ${
+                    feedbackRating === "bad"
+                      ? "bg-red-100 text-red-700 border border-red-300"
+                      : hasRated
+                      ? "bg-slate-100 text-slate-400 cursor-not-allowed"
+                      : "bg-white/80 text-slate-600 border border-slate-300 hover:bg-red-50 hover:border-red-300 hover:text-red-700"
                   }
                 `}
               >
-                <ThumbsDown className={`w-3 h-3 ${feedbackRating === 'bad' ? 'text-red-600' : ''}`} />
+                <ThumbsDown
+                  className={`w-3 h-3 ${
+                    feedbackRating === "bad" ? "text-red-600" : ""
+                  }`}
+                />
                 Bad
               </button>
             </div>
@@ -455,18 +523,23 @@ export default function FeedbackArea({ result, isFeedbackLoading }: { result: Fe
 
   // Test the highlighting function with sample data
   const testHighlighting = () => {
-    const testText = "The student has not provided an answer to the question regarding the air pressure inside the pump if the inlet valve remains open when the rod is pushed in.";
+    const testText =
+      "The student has not provided an answer to the question regarding the air pressure inside the pump if the inlet valve remains open when the rod is pushed in.";
     const testTerms: { [key: string]: string }[] = [
-      { "inlet valve": "A valve that allows air to enter the pump." }, 
-      { "air pressure": "The force exerted by air within a confined space." }
+      { "inlet valve": "A valve that allows air to enter the pump." },
+      { "air pressure": "The force exerted by air within a confined space." },
     ];
     const testPhrases = ["The student has not answered the question."];
-    
+
     console.log("Testing highlighting function...");
-    const result = highlightTermsAndPhrasesWithTooltip(testText, testTerms, testPhrases);
+    const result = highlightTermsAndPhrasesWithTooltip(
+      testText,
+      testTerms,
+      testPhrases
+    );
     console.log("Test result:", result);
   };
-  
+
   // Run test once
   React.useEffect(() => {
     testHighlighting();
@@ -480,10 +553,12 @@ export default function FeedbackArea({ result, isFeedbackLoading }: { result: Fe
         </div>
         <div>
           <h3 className="text-lg font-bold text-slate-800">Feedback</h3>
-          <p className="text-xs text-slate-600">Detailed analysis of your answer</p>
+          <p className="text-xs text-slate-600">
+            Detailed analysis of your answer
+          </p>
         </div>
       </div>
-      
+
       {isFeedbackLoading ? (
         <div className="flex items-center justify-center py-8">
           <div className="flex items-center gap-2 text-slate-600">
@@ -496,7 +571,9 @@ export default function FeedbackArea({ result, isFeedbackLoading }: { result: Fe
       ) : (
         <div className="text-center py-8">
           <MessageSquare className="w-10 h-10 text-slate-300 mx-auto mb-2" />
-          <p className="text-sm text-slate-500">No feedback yet. Submit your answer to get started.</p>
+          <p className="text-sm text-slate-500">
+            No feedback yet. Submit your answer to get started.
+          </p>
         </div>
       )}
     </div>

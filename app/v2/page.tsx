@@ -424,10 +424,11 @@ function HomeChildren() {
           totalCount={totalCount}
           onImageClick={handleImageClick}
           studentAnswer={answer}
-          feedback={typeof result === "string" ? result : (result as { feedback?: string })?.feedback || ""}
           showFeedback={true}
           showReference={true}
+          course_version={course_version}
           recordId={currentRecordId}
+          sessionId={sessionId}
         />
 
         <RightInputPanel

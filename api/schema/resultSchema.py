@@ -1,5 +1,6 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, Text, ARRAY, Boolean
+from sqlalchemy import Column, Integer, String, Float, DateTime, Text, ARRAY, Boolean, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import relationship
 from datetime import datetime
 
 Base = declarative_base()
@@ -32,3 +33,15 @@ class RecordResult(Base):
     
     # Rating feedback
     rating = Column(Boolean, nullable=True)  # Rating from learner: True (thumb up), False (thumb down), None (no rating)
+
+
+class AudioNarrationUsage(Base):
+    __tablename__ = 'audio_narration_usage'
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    record_result_id = Column(Integer, ForeignKey('record_result.id'), nullable=False, index=True)
+    session_id = Column(String, nullable=False)
+    started_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    ended_at = Column(DateTime, nullable=True)
+
+    record_result = relationship('RecordResult', backref='audio_sessions')

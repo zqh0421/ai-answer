@@ -743,7 +743,6 @@ function PageChildren({
           totalCount={totalCount}
           onImageClick={handleImageClick}
           studentAnswer={answer}
-          feedback={typeof result === "string" ? result : (result as { feedback?: string })?.feedback || ""}
           showFeedback={true}
           showReference={true}
           isStreaming={isStreaming}
@@ -752,6 +751,8 @@ function PageChildren({
           promptVersion={promptVersion}
           course_version={course_version}
           recordId={currentRecordId}
+          sessionId={sessionId}
+          participantId={prolificPid || participantId || null}
         />
 
         <RightInputPanel

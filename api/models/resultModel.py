@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Literal
 from datetime import datetime
 class RecordResultModel(BaseModel):
     learner_id: str
@@ -23,3 +23,10 @@ class RecordResultModel(BaseModel):
 
 class UpdateRatingModel(BaseModel):
     rating: bool
+
+
+class AudioNarrationUsageEvent(BaseModel):
+    action: Literal["start", "stop"]
+    session_id: str
+    timestamp: datetime
+    usage_id: Optional[int] = None
