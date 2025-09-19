@@ -64,6 +64,7 @@ function PageChildren({
   const [abortController, setAbortController] = useState<AbortController | null>(null);
   const [useStreaming, setUseStreaming] = useState(true);
   const [promptVersion, setPromptVersion] = useState<string | null>(null);
+  const [currentRecordId, setCurrentRecordId] = useState<number | null>(null);
 
   const [selectedPromptEngineering, setSelectedPromptEngineering] = useState<string>("rag_cot");
   const [selectedFeedbackFramework, setSelectedFeedbackFramework] = useState<string>("feature");
@@ -293,7 +294,11 @@ function PageChildren({
 
   const recordResultToDatabase = async (payload: RecordResultInput) => {
     try {
-      await axios.post("/api/record_result", payload);
+      const response = await axios.post("/api/record_result", payload);
+      if (response.data?.id) {
+        setCurrentRecordId(response.data.id);
+        console.log("Record created with ID:", response.data.id);
+      }
     } catch (error) {
       console.error("Error recording result to database:", error);
     }
@@ -746,6 +751,7 @@ function PageChildren({
           isFeedbackLoading={isFeedbackLoading}
           promptVersion={promptVersion}
           course_version={course_version}
+          recordId={currentRecordId}
         />
 
         <RightInputPanel

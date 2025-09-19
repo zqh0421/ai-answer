@@ -46,6 +46,7 @@ function HomeChildren() {
   const [isImageLoading, setIsImageLoading] = useState(false);
   const [isReferenceLoading, setIsReferenceLoading] = useState(false);
   const [isFeedbackLoading, setIsFeedbackLoading] = useState(false);
+  const [currentRecordId, setCurrentRecordId] = useState<number | null>(null);
 
   const [selectedPromptEngineering, setSelectedPromptEngineering] = useState<string>("rag_cot");
   const [selectedFeedbackFramework, setSelectedFeedbackFramework] = useState<string>("feature");
@@ -265,7 +266,11 @@ function HomeChildren() {
 
   const recordResultToDatabase = async (result: RecordResultInput) => {
     try {
-      await axios.post("/api/record_result", result);
+      const response = await axios.post("/api/record_result", result);
+      if (response.data?.id) {
+        setCurrentRecordId(response.data.id);
+        console.log("Record created with ID:", response.data.id);
+      }
     } catch (error) {
       console.error("Error recording result to database:", error);
     }
@@ -422,6 +427,7 @@ function HomeChildren() {
           feedback={typeof result === "string" ? result : (result as { feedback?: string })?.feedback || ""}
           showFeedback={true}
           showReference={true}
+          recordId={currentRecordId}
         />
 
         <RightInputPanel

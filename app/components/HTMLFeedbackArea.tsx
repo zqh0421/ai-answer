@@ -15,6 +15,7 @@ interface HTMLFeedbackAreaProps {
   score?: string; // 0, 1, or 2 for color coding (incorrect, correct, partially correct)
   isStreaming?: boolean;
   promptVersion?: string | null;
+  recordId?: number; // Record ID for saving rating
 }
 
 // Component to render HTML feedback as a coherent paragraph with inline formatting
@@ -23,7 +24,8 @@ const HTMLFeedbackArea: React.FC<HTMLFeedbackAreaProps> = ({
   isFeedbackLoading,
   score,
   isStreaming = false,
-  promptVersion = null,
+  promptVersion = null, // eslint-disable-line @typescript-eslint/no-unused-vars
+  recordId,
 }) => {
   const [feedbackRating, setFeedbackRating] = useState<"good" | "bad" | null>(
     null
@@ -33,15 +35,35 @@ const HTMLFeedbackArea: React.FC<HTMLFeedbackAreaProps> = ({
   // Both learner and corrective feedback now show score-based icons
 
   // Handle feedback rating
-  const handleFeedbackRating = (rating: "good" | "bad") => {
+  const handleFeedbackRating = async (rating: "good" | "bad") => {
     setFeedbackRating(rating);
     setHasRated(true);
 
-    // Here you can add logic to send the rating to your backend
-    console.log(`User rated feedback as: ${rating}`);
+    // Send rating to backend if recordId is available
+    if (recordId) {
+      try {
+        const response = await fetch(`/api/record_result/${recordId}/rating`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            rating: rating === "good"
+          }),
+        });
 
-    // Example: Send to backend
-    // sendFeedbackRating(rating, html);
+        if (!response.ok) {
+          throw new Error('Failed to save rating');
+        }
+
+        console.log(`Rating saved successfully: ${rating}`);
+      } catch (error) {
+        console.error('Error saving rating:', error);
+        // Optionally show user feedback about the error
+      }
+    } else {
+      console.log(`User rated feedback as: ${rating} (no record ID provided)`);
+    }
   };
 
   // Reset rating when new feedback is received

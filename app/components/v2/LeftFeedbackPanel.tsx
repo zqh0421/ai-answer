@@ -26,6 +26,7 @@ interface LeftFeedbackPanelProps {
   options?: any[];
   correctAnswer?: string;
   course_version?: string;
+  recordId?: number; // Add recordId prop for rating functionality
 }
 
 export default function LeftFeedbackPanel({
@@ -49,6 +50,7 @@ export default function LeftFeedbackPanel({
   options,
   correctAnswer,
   course_version,
+  recordId,
 }: LeftFeedbackPanelProps) {
   return (
     <motion.div
@@ -77,6 +79,7 @@ export default function LeftFeedbackPanel({
               : ""}
           isStreaming={isStreaming}
           promptVersion={promptVersion}
+          recordId={recordId}
         />
       )}
 

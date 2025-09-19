@@ -20,3 +20,6 @@ class RecordResultModel(BaseModel):
     system_total_response_time: int
 
     submission_time: datetime
+
+class UpdateRatingModel(BaseModel):
+    rating: bool

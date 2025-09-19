@@ -64,6 +64,7 @@ function PageChildren({
   const [abortController, setAbortController] = useState<AbortController | null>(null);
   const [useStreaming, setUseStreaming] = useState(true);
   const [promptVersion, setPromptVersion] = useState<string | null>(null);
+  const [currentRecordId, setCurrentRecordId] = useState<number | null>(null);
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [selectedPromptEngineering, setSelectedPromptEngineering] = useState<string>("rag_cot");
@@ -700,7 +701,11 @@ function PageChildren({
 
   const recordResultToDatabase = async (payload: RecordResultInput) => {
     try {
-      await axios.post("/api/record_result", payload);
+      const response = await axios.post("/api/record_result", payload);
+      if (response.data?.id) {
+        setCurrentRecordId(response.data.id);
+        console.log("Record created with ID:", response.data.id);
+      }
     } catch (error) {
       console.error("Error recording result to database:", error);
     }
@@ -1139,6 +1144,7 @@ function PageChildren({
           question={questionPreset?.content || question}
           options={questionPreset?.options}
           correctAnswer={questionPreset?.options?.filter((opt: { text: string; isCorrect: boolean } | string) => typeof opt === 'object' && opt.isCorrect).map((opt: { text: string; isCorrect: boolean } | string) => typeof opt === 'string' ? opt : opt.text).join(', ')}
+          recordId={currentRecordId}
         />
 
         <RightInputPanel

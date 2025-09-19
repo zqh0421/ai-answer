@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, Text, ARRAY
+from sqlalchemy import Column, Integer, String, Float, DateTime, Text, ARRAY, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
 
@@ -29,3 +29,6 @@ class RecordResult(Base):
     slide_retrieval_range = Column(ARRAY(String), nullable=True)  # Array of slide IDs in the retrieval range
     system_total_response_time = Column(Integer)  # Total system response time in seconds
     submission_time = Column(DateTime)  # Timestamp when the result was recorded
+    
+    # Rating feedback
+    rating = Column(Boolean, nullable=True)  # Rating from learner: True (thumb up), False (thumb down), None (no rating)

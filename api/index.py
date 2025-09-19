@@ -12,6 +12,7 @@ from sqlalchemy.dialects.postgresql import insert
 import tempfile
 from io import BytesIO
 from .models import AskModel, EmbedModel, ConvertModel, VisionModel, ConvertBatchModel, FeedbackRequestModel, FeedbackRequestRagModel, AuthModel, TTSRequestModel, InteractiveNarrationModel
+from .models.resultModel import UpdateRatingModel
 from .controllers import askController, embedController, convertController, convertBatchController, visionController, encode_image
 from .controllers import generate_feedback_using_zero, generate_feedback_using_few
 from .controllers import generate_feedback_using_graph_rag, generate_feedback_using_rag_cot, generate_feedback_using_rag_zero, generate_feedback_using_rag_few
@@ -1045,12 +1046,30 @@ def record_result(result: models.RecordResultModel, db: Session = Depends(get_db
         # 添加到数据库
         db.add(db_result)
         db.commit()
+        db.refresh(db_result)  # Refresh to get the generated ID
 
-        return db_result
+        return {"id": db_result.id, "message": "Record created successfully"}
 
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=f"Error recording result: {str(e)}")
+
+@app.put('/api/record_result/{record_id}/rating')
+def update_rating(record_id: int, rating_update: UpdateRatingModel, db: Session = Depends(get_db)):
+    try:
+        # Find the existing record
+        db_record = db.query(schema.RecordResult).filter(schema.RecordResult.id == record_id).first()
+        if not db_record:
+            raise HTTPException(status_code=404, detail="Record not found")
+        
+        # Update only the rating field
+        db_record.rating = rating_update.rating
+        db.commit()
+        
+        return {"message": "Rating updated successfully", "rating": rating_update.rating}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=f"Error updating rating: {str(e)}")
 
 @app.get('/api/record_result/count/{question_id}')
 def get_record_count(question_id: str, learner_id: str = None, db: Session = Depends(get_db)):
