@@ -26,7 +26,7 @@ interface LeftFeedbackPanelProps {
   options?: any[];
   correctAnswer?: string;
   course_version?: string;
-  recordId?: number; // Add recordId prop for rating functionality
+  recordId?: number | null; // Add recordId prop for rating functionality
 }
 
 export default function LeftFeedbackPanel({

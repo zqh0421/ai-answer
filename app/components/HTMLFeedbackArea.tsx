@@ -15,7 +15,7 @@ interface HTMLFeedbackAreaProps {
   score?: string; // 0, 1, or 2 for color coding (incorrect, correct, partially correct)
   isStreaming?: boolean;
   promptVersion?: string | null;
-  recordId?: number; // Record ID for saving rating
+  recordId?: number | null; // Record ID for saving rating
 }
 
 // Component to render HTML feedback as a coherent paragraph with inline formatting
