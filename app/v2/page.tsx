@@ -426,7 +426,7 @@ function HomeChildren() {
           studentAnswer={answer}
           showFeedback={true}
           showReference={true}
-          course_version={course_version}
+          course_version={course_version ?? undefined}
           recordId={currentRecordId}
           sessionId={sessionId}
         />
