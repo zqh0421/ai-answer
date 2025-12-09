@@ -26,7 +26,7 @@
     "framer-motion": "^11.5.6",
     "lodash": "^4.17.21",
     "lucide-react": "^0.475.0",
-    "next": "15.0.0-canary.179",
+    "next": "15.6.0-canary.58",
     "next-auth": "5.0.0-beta.22",
     "react": "^18",
     "react-dom": "^18",
