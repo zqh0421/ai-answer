@@ -2,7 +2,8 @@ from fastapi import Depends
 from openai import OpenAI
 from ...config import Settings, get_settings
 from typing_extensions import Annotated, List
-from .call_gpt import call_gpt, format_question
+from .call_gpt import call_gpt
+from ...services.question_formatter import format_question
 
 def generate_feedback_using_few(question: List[dict], answer: str, feedbackFramework: str, settings: Annotated[Settings, Depends(get_settings)]) -> str:
     prompt_none = (

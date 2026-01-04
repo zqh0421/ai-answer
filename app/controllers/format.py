@@ -3,7 +3,8 @@ from fastapi import Depends
 from openai import OpenAI
 from ..config import Settings, get_settings
 from typing_extensions import Annotated
-from .feedback.call_gpt import call_gpt, format_question
+from .feedback.call_gpt import call_gpt
+from ..services.question_formatter import format_question
 import json
 
 def process_feedback_to_json(

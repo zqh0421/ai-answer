@@ -3,11 +3,10 @@ from fastapi import Depends
 from .config import Settings, get_settings
 from typing_extensions import Annotated
 from typing import List
-import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
+import math
 import requests
 from io import BytesIO
-from .controllers.feedback.call_gpt import format_question
+from .services.question_formatter import format_question
 
 def fetch_pdf_from_drive(file_id: str, settings: Annotated[Settings, Depends(get_settings)]):
     download_url = f'https://www.googleapis.com/drive/v3/files/{file_id}/export?mimeType=application/pdf&key={settings.next_public_google_drive_api_key}'
@@ -93,10 +92,26 @@ def create_embedding(
 
     return result.data[0].embedding
 
+def _weighted_sum(vectors: List[List[float]], weights: List[float]) -> List[float]:
+    if not vectors:
+        raise ValueError("vectors list cannot be empty")
+    if len(vectors) != len(weights):
+        raise ValueError("Weights count must match vectors count.")
+
+    length = len(vectors[0])
+    for vector in vectors:
+        if len(vector) != length:
+            raise ValueError("All vectors must have the same length.")
+
+    combined = [0.0] * length
+    for weight, vector in zip(weights, vectors):
+        for i, value in enumerate(vector):
+            combined[i] += weight * value
+    return combined
+
+
 def combine_embedding(q_vector, a_vector, r_vector, weights = [0.5, 0.4, 0.1]):
-    q_weight, a_weight, r_weight = weights
-    combined_vector = q_weight * np.array(q_vector) + a_weight * np.array(a_vector) + r_weight * np.array(r_vector)
-    return combined_vector
+    return _weighted_sum([q_vector, a_vector, r_vector], weights)
 
 def embed_slide(contents, settings: Annotated[Settings, Depends(get_settings)], ):
     api_key = settings.openai_api_key  # Corrected to access openai_api_key
@@ -118,16 +133,29 @@ def embed_slide(contents, settings: Annotated[Settings, Depends(get_settings)], 
     embeddings = [item.embedding for item in result.data]
     return embeddings
 
+def _cosine_similarity(vec_a: List[float], vec_b: List[float]) -> float:
+    if len(vec_a) != len(vec_b):
+        raise ValueError("Vectors must share the same dimensionality.")
+
+    dot_product = sum(a * b for a, b in zip(vec_a, vec_b))
+    norm_a = math.sqrt(sum(a * a for a in vec_a))
+    norm_b = math.sqrt(sum(b * b for b in vec_b))
+
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot_product / (norm_a * norm_b)
+
+
 def retrieve_reference(text_vector, content_vectors, contents, top_n=3):
     """
     Retrieve the top N most relevant slides based on cosine similarity between the query vector and slide vectors.
     """
-    # Convert lists to numpy arrays for cosine similarity
-    text_vector = np.array(text_vector).reshape(1, -1)
-    content_vectors = np.array(content_vectors)
+    if not content_vectors:
+        return []
 
-    # Compute cosine similarity between query vector and content vectors
-    similarities = cosine_similarity(text_vector, content_vectors).flatten()
+    similarities = [
+        _cosine_similarity(text_vector, vector) for vector in content_vectors
+    ]
  
     # Get the indices of the top N highest similarities
     top_indices = similarities.argsort()[-top_n:][::-1]  # Sort and get top N indices

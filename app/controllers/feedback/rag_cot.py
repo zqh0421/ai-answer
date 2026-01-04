@@ -2,7 +2,8 @@ from typing import List, Optional
 from fastapi import Depends
 from ...config import Settings, get_settings
 from typing_extensions import Annotated
-from .call_gpt import call_gpt, format_question
+from .call_gpt import call_gpt
+from ...services.question_formatter import format_question
 from sqlalchemy.orm import Session
 from ...schema.resultSchema import RecordResult
 

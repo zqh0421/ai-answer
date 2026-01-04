@@ -3,7 +3,8 @@ from fastapi import Depends
 from openai import OpenAI
 from ...config import Settings, get_settings
 from typing_extensions import Annotated
-from .call_gpt import call_gpt, format_question
+from .call_gpt import call_gpt
+from ...services.question_formatter import format_question
 
 def generate_feedback_using_rag_zero(question: List[dict], answer: str, slide_text_arr: List[str], feedbackFramework: str, settings: Annotated[Settings, Depends(get_settings)]) -> str:
     # print("slide_text_arr:",slide_text_arr)

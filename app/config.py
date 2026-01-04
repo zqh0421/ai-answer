@@ -1,5 +1,6 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+
 class Settings(BaseSettings):
     openai_api_key: str
     openai_api_proj: str
@@ -22,10 +23,17 @@ class Settings(BaseSettings):
     s3_secret_access_key: str
     s3_region_name: str
     s3_bucket_name: str
+    production_frontend_url: str
+    development_frontend_url: str
+    production_backend_url: str
+    development_backend_url: str
+    backend_env: str
+    frontend_env: str
     model_config = SettingsConfigDict(
         # `.env.local` takes priority over `.env`
         env_file=('.env', '.env.local')
     )
 
+
 def get_settings():
-    return Settings() 
+    return Settings()

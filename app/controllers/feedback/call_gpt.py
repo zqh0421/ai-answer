@@ -1,34 +1,11 @@
 from fastapi import Depends
 from openai import OpenAI
 from ...config import Settings, get_settings
-from typing_extensions import Annotated, List
+from typing_extensions import Annotated
 import time
 from openai.types.responses import (
-    ResponseInputParam,
-    ResponseInputImageParam,
-    ResponseInputTextParam,
     ResponseInputItemParam
 )
-
-
-def format_question(question: List[dict]) -> ResponseInputParam:
-    """
-    Formats the question into a list of dictionaries that align with OpenAI's expected format.
-    """
-    formatted_question: ResponseInputParam = []
-    for item in question:
-        if item["type"] == "text":
-            input_text: ResponseInputTextParam = {
-                "type": "input_text", "text": item["content"]}
-            formatted_question.append(input_text)
-        elif item["type"] == "image":
-            input_image: ResponseInputImageParam = {
-                "type": "input_image", "image_url": f"{item['content']}", "detail": "auto"}
-            formatted_question.append(input_image)
-        else:
-            raise ValueError(
-                f"Unsupported question content type: {item['type']}")
-    return formatted_question
 
 
 def call_gpt(system_prompt: str, user_prompt: list[ResponseInputItemParam], settings: Annotated[Settings, Depends(get_settings)]) -> str:

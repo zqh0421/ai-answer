@@ -1,0 +1,7 @@
+.next/
+.pnpm-store/
+venv/
+node_modules/
+*.pem
+.env.*
+__pycache__/
