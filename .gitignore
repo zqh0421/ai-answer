@@ -1,2 +1,6 @@
 .pnpm-store/
 node_modules/
+.next/
+venv/
+.env.*
+*.pem

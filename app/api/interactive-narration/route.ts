@@ -29,7 +29,9 @@ export async function POST(request: NextRequest) {
     // Call the Python backend API
     const response = await fetch(
       `${
-        process.env.BACKEND_URL || "http://localhost:8000"
+        process.env.NODE_ENV == "production"
+          ? process.env.PRODUCTION_BACKEND_URL
+          : process.env.DEVELOPMENT_BACKEND_URL
       }/api/v2/interactive-narration`,
       {
         method: "POST",
