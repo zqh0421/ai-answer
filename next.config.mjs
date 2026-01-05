@@ -55,28 +55,28 @@ const nextConfig = {
       {
         source: "/api/:path((?!auth).*)", // Excludes any paths starting with "auth",
         destination:
-          process.env.NODE_ENV === "development"
+          process.env.BACKEND_ENV === "development"
             ? "http://127.0.0.1:8000/api/:path*"
-            : "http://127.0.0.1:8000/api/:path*",
+            : "https://api.muf-in.com/api/:path*",
       },
       {
         source: "/docs",
         destination:
-          process.env.NODE_ENV === "development"
+          process.env.BACKEND_ENV === "development"
             ? "http://127.0.0.1:8000/docs"
             : "/docs",
       },
       {
         source: "/openapi.json",
         destination:
-          process.env.NODE_ENV === "development"
+          process.env.BACKEND_ENV === "development"
             ? "http://127.0.0.1:8000/openapi.json"
             : "/openapi.json",
       }
     ];
   },
   env: {
-    NEXT_PUBLIC_API_URL: 'http://ec2-3-133-205-224.us-east-2.compute.amazonaws.com:3000/',
+    NEXT_PUBLIC_API_URL: 'https://mufin.com',
   },
 };
 

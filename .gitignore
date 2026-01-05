@@ -4,3 +4,8 @@ node_modules/
 venv/
 .env.*
 *.pem
+/__pycache__/*
+*/__pycache__/*
+*/*/__pycache__/*
+*/*/*/__pycache__/*
+*/*/*/*/__pycache__/*
