@@ -12,7 +12,7 @@ const nextConfig = {
         headers: [
           {
             key: 'Content-Security-Policy',
-            value: "frame-ancestors 'self' https://*.qualtrics.com https://qualtrics.com http://localhost:* http://127.0.0.1:* http://*.cmu.edu https://*.cmu.edu http://stellarator.oli.cmu.edu https://stellarator.oli.cmu.edu;",
+            value: "frame-ancestors 'self' https://*.qualtrics.com https://qualtrics.com http://localhost:* http://127.0.0.1:* http://*.cmu.edu https://*.cmu.edu http://stellarator.oli.cmu.edu https://stellarator.oli.cmu.edu http://*.muf-in.com https://*.muf-in.com;",
           },
           {
             key: 'X-Frame-Options',
@@ -26,7 +26,7 @@ const nextConfig = {
         headers: [
           {
             key: 'Content-Security-Policy', 
-            value: "frame-ancestors 'self' https://*.qualtrics.com https://qualtrics.com http://localhost:* http://127.0.0.1:* http://*.cmu.edu https://*.cmu.edu http://stellarator.oli.cmu.edu https://stellarator.oli.cmu.edu;",
+            value: "frame-ancestors 'self' https://*.qualtrics.com https://qualtrics.com http://localhost:* http://127.0.0.1:* http://*.cmu.edu https://*.cmu.edu http://stellarator.oli.cmu.edu https://stellarator.oli.cmu.edu http://*.muf-in.com https://*.muf-in.com;",
           },
           {
             key: 'X-Frame-Options',

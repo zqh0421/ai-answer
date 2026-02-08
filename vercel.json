@@ -1,0 +1,7 @@
+{
+  "rewrites": [
+    { "source": "/login", "destination": "https://api.muf-in.com/api/lti/login" },
+    { "source": "/launch", "destination": "https://api.muf-in.com/api/lti/launch" },
+    { "source": "/.well-known/jwks.json", "destination": "https://api.muf-in.com/api/lti/.well-known/jwks.json" }
+  ]
+}
