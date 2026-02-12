@@ -1,4 +1,5 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing import Optional
 
 
 class Settings(BaseSettings):
@@ -33,6 +34,17 @@ class Settings(BaseSettings):
         # `.env.local` takes priority over `.env`
         env_file=('.env', '.env.local')
     )
+    public_base_url: str
+    lti_tool_issuer: Optional[str] = None
+    lti_private_key_pem: str
+    lti_private_key_path: str
+    lti_jwk_kid: str
+    lti_tool_key_id: str = "tool-key-1"
+    lti_state_ttl_seconds: int = 300
+    lti_clock_skew_seconds: int = 300
+    lti_platforms_json: str = "{}"
+    lti_platforms_path: str
+
 
 
 def get_settings():

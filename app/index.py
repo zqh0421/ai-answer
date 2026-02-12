@@ -37,6 +37,7 @@ import json
 import traceback
 # from .controllers.format import process_feedback_to_json
 import openai
+from app.lti import lti_router
 
 # Import v2 routers
 from .v2 import index_oeq, index_shared, index_mcq
@@ -47,6 +48,7 @@ app = FastAPI()
 app.include_router(index_oeq.router)
 app.include_router(index_shared.router)
 app.include_router(index_mcq.router)
+app.include_router(lti_router)
 
 def get_db():
     db = SessionLocal()

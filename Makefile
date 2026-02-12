@@ -1,6 +1,6 @@
 PYTHON ?= python3
 PIP ?= $(PYTHON) -m pip
-VENV ?= venv
+VENV ?= .venv
 ACTIVATE = . $(VENV)/bin/activate
 APP ?= app.index:app
 HOST ?= 0.0.0.0
