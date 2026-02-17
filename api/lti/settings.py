@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, Optional
 
-from app.config import Settings
+from api.config import Settings
 
 
 @dataclass(frozen=True)
@@ -19,10 +19,17 @@ class PlatformConfig:
 
 
 def get_platform_config(settings: Settings, iss: str, client_id: str) -> PlatformConfig:
+    path = Path(settings.lti_platforms_path)
     try:
-       data: Dict[str, Any] = json.loads(settings.lti_platforms_json)
+        raw = path.read_text(encoding="utf-8")
+    except Exception as e:
+        raise RuntimeError(f"Failed to read LTI_PLATFORMS_PATH='{path}': {e}") from e
+
+    try:
+        data: Dict[str, Any] = json.loads(raw)
     except json.JSONDecodeError as e:
-        raise RuntimeError("Invalid LTI_PLATFORMS_JSON") from e
+        raise RuntimeError(f"Invalid JSON in LTI_PLATFORMS_PATH='{path}'") from e
+
     iss_obj = data.get(iss) or {}
     cfg = iss_obj.get(client_id)
 

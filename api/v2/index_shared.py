@@ -11,7 +11,7 @@ from .controllers_shared import (
 )
 
 # Create router for shared endpoints (used by both OEQ and MCQ)
-router = APIRouter(prefix="/api/v2/shared", tags=["Shared"])
+router = APIRouter(prefix="/api/v2/shared", tags=["Media / Shared (v2)"])
 
 @router.post("/text-to-speech")
 async def text_to_speech(request: TTSRequestModel, settings: Annotated[Settings, Depends(get_settings)]):

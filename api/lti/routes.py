@@ -7,7 +7,7 @@ from typing import Optional
 
 
 from fastapi import APIRouter, Request, Depends
-from app.config import Settings, get_settings
+from api.config import Settings, get_settings
 
 from fastapi.responses import JSONResponse, RedirectResponse, PlainTextResponse
 
@@ -19,7 +19,7 @@ from .oidc import build_login_redirect_url
 from .models import LaunchSession
 # from .deep_linking import is_deep_linking_request, get_deep_link_return_url
 
-router = APIRouter(prefix="/api/lti", tags=["lti"])
+router = APIRouter(prefix="/api/lti", tags=["Identity / LTI"])
 
 # For now, in-memory storage. Swap to DB later.
 _STORAGE = InMemoryLtiStorage()
@@ -164,7 +164,7 @@ async def lti_launch(request: Request, settings: Settings = Depends(get_settings
 
     # _STORAGE.create_launch_session(launch_session)
 
-    # # Redirect to your public Next.js UI page (no "lti" in path if you prefer)
+    # # Redirect to your public Next.js UI page (no "Identity / LTI" in path if you prefer)
     # # Example: https://muf-in.com/app?sid=...
     # ui_url = f"{settings.public_base_url}/app?sid={session_id}"
     # return RedirectResponse(url=ui_url, status_code=302)

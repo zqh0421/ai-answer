@@ -2,7 +2,7 @@ PYTHON ?= python3
 PIP ?= $(PYTHON) -m pip
 VENV ?= .venv
 ACTIVATE = . $(VENV)/bin/activate
-APP ?= app.index:app
+APP ?= api.index:app
 HOST ?= 0.0.0.0
 PORT ?= 8000
 

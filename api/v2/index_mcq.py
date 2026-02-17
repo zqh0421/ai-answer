@@ -13,7 +13,7 @@ from .controllers_mcq.feedback.rag_cot_mcq import (
 from ..schema.questionSchema import Question
 import uuid
 
-router = APIRouter(prefix="/api/v2/mcq", tags=["MCQ"])
+router = APIRouter(prefix="/api/v2/mcq", tags=["Feedback / MCQ (v2)"])
 
 def get_db():
     db = SessionLocal()

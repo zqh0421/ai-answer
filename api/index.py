@@ -37,12 +37,43 @@ import json
 import traceback
 # from .controllers.format import process_feedback_to_json
 import openai
-from app.lti import lti_router
+from api.lti import lti_router
+
+# Ordered tags for predictable Swagger grouping.
+tags_metadata = [
+    {"name": "System / Health", "description": "Service availability checks."},
+    {"name": "Feedback / Core (v1)", "description": "Legacy feedback generation endpoints."},
+    {"name": "Feedback / OEQ (v2)", "description": "Open-ended feedback flows in v2."},
+    {"name": "Feedback / MCQ (v2)", "description": "Multiple-choice feedback flows in v2."},
+    {"name": "Media / Shared (v1)", "description": "Legacy text/audio narration endpoints."},
+    {"name": "Media / Shared (v2)", "description": "Shared v2 narration, TTS, and vision endpoints."},
+    {"name": "Media / Vision (v1)", "description": "Legacy vision helpers."},
+    {"name": "Media / Conversion", "description": "PDF/image conversion endpoints."},
+    {"name": "Content / Courses", "description": "Course CRUD and listing."},
+    {"name": "Content / Modules", "description": "Module CRUD and module-level operations."},
+    {"name": "Content / Slides", "description": "Slide publishing and vector/vision updates."},
+    {"name": "Content / Questions", "description": "Question CRUD and feedback updates."},
+    {"name": "Content / Uploads", "description": "File upload endpoints."},
+    {"name": "Content / Records", "description": "Attempt records, usage logs, and ratings."},
+    {"name": "Identity / Auth", "description": "Administrative authentication."},
+    {"name": "Identity / Users", "description": "User lookup endpoints."},
+    {"name": "Identity / LTI", "description": "LTI 1.3 login, launch, and JWKS endpoints."},
+    {"name": "Legacy / QA", "description": "Legacy ask/embed endpoints."},
+]
 
 # Import v2 routers
 from .v2 import index_oeq, index_shared, index_mcq
 
-app = FastAPI()
+app = FastAPI(
+    title="AI Answer API",
+    version="0.1.0",
+    openapi_tags=tags_metadata,
+    swagger_ui_parameters={
+        "docExpansion": "list",
+        "defaultModelsExpandDepth": -1,
+        "displayRequestDuration": True,
+    },
+)
 
 # Include the v2 routers
 app.include_router(index_oeq.router)
@@ -62,13 +93,13 @@ async def shutdown_event():
     if tunnel:
         tunnel.stop()
 
-@app.get("/api/test")
+@app.get("/api/test", tags=["System / Health"])
 def test():
     return {
         "message": "Backend Connected!"
     }
 
-@app.post("/api/text-to-speech")
+@app.post("/api/text-to-speech", tags=["Media / Shared (v1)"])
 async def text_to_speech(request: TTSRequestModel, settings: Annotated[Settings, Depends(get_settings)]):
     """
     Generate audio narration for reference material using OpenAI TTS
@@ -97,7 +128,7 @@ async def text_to_speech(request: TTSRequestModel, settings: Annotated[Settings,
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"TTS generation failed: {str(e)}")
 
-@app.post("/api/interactive-narration")
+@app.post("/api/interactive-narration", tags=["Media / Shared (v1)"])
 async def interactive_narration(request: InteractiveNarrationModel, settings: Annotated[Settings, Depends(get_settings)]):
     """
     Generate interactive, conversational narration using GPT-4o with visual analysis
@@ -241,7 +272,7 @@ Generate a response that directly helps this specific student solve their specif
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Interactive narration generation failed: {str(e)}")
 
-@app.post("/api/ask")
+@app.post("/api/ask", tags=["Legacy / QA"])
 def ask(askModel: AskModel, settings: Annotated[Settings, Depends(get_settings)]):
     result = askController(askModel.question, askModel.answer, settings)
     return {"result": f"{result}"}
@@ -255,7 +286,7 @@ def serialize_with_uuid(obj):
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 
-@app.post("/api/embed")
+@app.post("/api/embed", tags=["Legacy / QA"])
 async def embed(embedModel: EmbedModel, settings: Annotated[Settings, Depends(get_settings)], db: Session = Depends(get_db)):
     result = None
 
@@ -292,7 +323,7 @@ async def embed(embedModel: EmbedModel, settings: Annotated[Settings, Depends(ge
     return result
 
 
-@app.post("/api/pdf-to-image")
+@app.post("/api/pdf-to-image", tags=["Media / Conversion"])
 async def convert(convertModel: ConvertModel, db: Session = Depends(get_db)):
     try:
         # Query the page table for the matching slide_id and page_number
@@ -315,12 +346,12 @@ async def convert(convertModel: ConvertModel, db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/openai-vision")
+@app.post("/api/openai-vision", tags=["Media / Vision (v1)"])
 def vision(visionModel: VisionModel, settings: Annotated[Settings, Depends(get_settings)]):
     result = setVision(visionModel.base64_image_arr, settings)
     return result
 
-@app.post("/api/pdf-to-img-rephrase")
+@app.post("/api/pdf-to-img-rephrase", tags=["Media / Conversion"])
 async def convert_batch(convertBatchModel: ConvertBatchModel, settings: Annotated[Settings, Depends(get_settings)]):
     result = await convertBatchController(convertBatchModel, settings)
     return result
@@ -340,7 +371,7 @@ async def convert_batch(convertBatchModel: ConvertBatchModel, settings: Annotate
 #     return new_user
 
 # 查找用户
-@app.get("/api/users/{user_id}")
+@app.get("/api/users/{user_id}", tags=["Identity / Users"])
 def read_user(user_id: str, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.id == user_id).first()
     if user is None:
@@ -358,7 +389,7 @@ def read_user(user_id: str, db: Session = Depends(get_db)):
 #     return {"detail": "User deleted"}
 
 # 根据邮箱验证用户
-@app.post("/api/admin_auth")
+@app.post("/api/admin_auth", tags=["Identity / Auth"])
 def verify_user(auth: AuthModel, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == auth.email).first()
     if user:
@@ -378,7 +409,7 @@ def verify_user(auth: AuthModel, db: Session = Depends(get_db)):
     }
         
 
-@app.post("/api/generate_feedback")
+@app.post("/api/generate_feedback", tags=["Feedback / Core (v1)"])
 async def generate_feedback(request: FeedbackRequestModel, settings: Annotated[Settings, Depends(get_settings)]):
     feedback = ""
     if request.promptEngineering == "zero":
@@ -393,7 +424,7 @@ async def generate_feedback(request: FeedbackRequestModel, settings: Annotated[S
         "feedback": feedback
     }
 
-@app.post("/api/generate_feedback_rag")
+@app.post("/api/generate_feedback_rag", tags=["Feedback / Core (v1)"])
 async def generate_feedback_rag(request: FeedbackRequestRagModel, settings: Annotated[Settings, Depends(get_settings)], db: Session = Depends(get_db)):
     feedback = ""
     if request.promptEngineering == "rag_zero":
@@ -449,7 +480,7 @@ async def generate_feedback_rag(request: FeedbackRequestRagModel, settings: Anno
             "feedback": feedback
         }
 
-@app.post("/api/generate_feedback_rag_stream")
+@app.post("/api/generate_feedback_rag_stream", tags=["Feedback / Core (v1)"])
 async def generate_feedback_rag_stream(request: FeedbackRequestRagModel, settings: Annotated[Settings, Depends(get_settings)], db: Session = Depends(get_db)):
     """
     Streaming version of generate_feedback_rag that returns Server-Sent Events
@@ -507,7 +538,7 @@ async def generate_feedback_rag_stream(request: FeedbackRequestRagModel, setting
 
 
 
-@app.get("/api/courses/createdby/{creater_email}")
+@app.get("/api/courses/createdby/{creater_email}", tags=["Content / Courses"])
 def get_courses_created_by(creater_email: str, db: Session = Depends(get_db)):
     user = db.query(schema.User).filter(schema.User.email == creater_email).first()
 
@@ -522,7 +553,7 @@ def get_courses_created_by(creater_email: str, db: Session = Depends(get_db)):
 
     return courses
 
-@app.post("/api/courses/create")
+@app.post("/api/courses/create", tags=["Content / Courses"])
 def create_course(course: models.CourseResponse, db: Session = Depends(get_db)):
     db_course = schema.Course(
         course_title=course.title,
@@ -534,7 +565,7 @@ def create_course(course: models.CourseResponse, db: Session = Depends(get_db)):
     db.refresh(db_course)
     return db_course
 
-@app.get("/api/courses/by_id/{course_id}")
+@app.get("/api/courses/by_id/{course_id}", tags=["Content / Courses"])
 def get_course_by_id(course_id: str, db: Session = Depends(get_db)):
     print("getting")
     print(course_id)
@@ -543,7 +574,7 @@ def get_course_by_id(course_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Course not found")
     return course
 
-@app.put("/api/courses/by_id/{course_id}")
+@app.put("/api/courses/by_id/{course_id}", tags=["Content / Courses"])
 def update_course(course_id: str, course: models.CourseResponse, db: Session = Depends(get_db)):
     db_course = db.query(schema.Course).filter(schema.Course.course_id == course_id).first()
     if db_course is None:
@@ -555,7 +586,7 @@ def update_course(course_id: str, course: models.CourseResponse, db: Session = D
     db.refresh(db_course)
     return db_course
 
-@app.delete("/api/courses/by_id/{course_id}")
+@app.delete("/api/courses/by_id/{course_id}", tags=["Content / Courses"])
 def delete_course(course_id: str, db: Session = Depends(get_db)):
     db_course = db.query(schema.Course).filter(schema.Course.course_id == course_id).first()
     if db_course is None:
@@ -565,7 +596,7 @@ def delete_course(course_id: str, db: Session = Depends(get_db)):
     db.commit()
     return {"message": "Course deleted successfully"}
 
-@app.get("/api/courses/by_id/{course_id}/modules")
+@app.get("/api/courses/by_id/{course_id}/modules", tags=["Content / Modules"])
 def get_modules_by_course(course_id: str, db: Session = Depends(get_db)):
     course = db.query(schema.Course).filter(schema.Course.course_id == course_id).first()
     if not course:
@@ -574,7 +605,7 @@ def get_modules_by_course(course_id: str, db: Session = Depends(get_db)):
     modules = db.query(schema.Module).filter(schema.Module.course_id == course_id).order_by(schema.Module.module_order.asc()).all()
     return {"modules": modules}
 
-@app.post("/api/courses/by_id/{course_id}/modules", status_code=201)
+@app.post("/api/courses/by_id/{course_id}/modules", status_code=201, tags=["Content / Modules"])
 def create_module(course_id: str, module: models.ModuleCreate, db: Session = Depends(get_db)):
     course = db.query(schema.Course).filter(schema.Course.course_id == course_id).first()
     if not course:
@@ -587,7 +618,7 @@ def create_module(course_id: str, module: models.ModuleCreate, db: Session = Dep
     
     return db_module
 
-@app.get("/api/modules/{module_id}/slides")
+@app.get("/api/modules/{module_id}/slides", tags=["Content / Slides"])
 def get_slides_by_module(module_id: str, db: Session = Depends(get_db)):
     module = db.query(schema.Module).filter(schema.Module.module_id == module_id).first()
     if not module:
@@ -612,7 +643,7 @@ def get_slides_by_module(module_id: str, db: Session = Depends(get_db)):
         "slides": result
     }
 
-@app.post("/api/modules/{module_id}/slides/batch", status_code=status.HTTP_201_CREATED)
+@app.post("/api/modules/{module_id}/slides/batch", status_code=status.HTTP_201_CREATED, tags=["Content / Slides"])
 def create_slides_batch(module_id: str, slides: models.SlidesCreate, db: Session = Depends(get_db)):
     # Check if module exists
     module = db.query(schema.Module).filter(schema.Module.module_id == module_id).first()
@@ -643,7 +674,7 @@ def create_slides_batch(module_id: str, slides: models.SlidesCreate, db: Session
     return {"message": f"{len(slides.slides)} slides uploaded successfully!"}
 
 # Delete module and all slides associated with it
-@app.delete("/api/modules/by_id/{module_id}")
+@app.delete("/api/modules/by_id/{module_id}", tags=["Content / Modules"])
 def delete_module(module_id: str, db: Session = Depends(get_db)):
     # Find the module by its ID
     module = db.query(schema.Module).filter(schema.Module.module_id == module_id).first()
@@ -660,7 +691,7 @@ def delete_module(module_id: str, db: Session = Depends(get_db)):
     return {"detail": "Module and its slides deleted successfully"}
 
 # Delete a slide by its ID
-@app.delete("/api/modules/{module_id}/slides/{slide_id}")
+@app.delete("/api/modules/{module_id}/slides/{slide_id}", tags=["Content / Slides"])
 def delete_slide(module_id: str, slide_id: str, db: Session = Depends(get_db)):
     # Find the slide by its ID
     slide = db.query(schema.Slide).filter(schema.Slide.id == slide_id, schema.Slide.module_id == module_id).first()
@@ -673,14 +704,14 @@ def delete_slide(module_id: str, slide_id: str, db: Session = Depends(get_db)):
 
     return {"detail": "Slide deleted successfully"}
 
-@app.get("/api/courses/public")
+@app.get("/api/courses/public", tags=["Content / Courses"])
 def get_public_courses(db: Session = Depends(get_db)):
     # 查询所有状态为 public 的课程
     public_courses = db.query(schema.Course).filter(schema.Course.authority == "public").order_by(schema.Course.course_title.asc()).all()
     
     return public_courses
 
-@app.post("/api/slides/{slide_id}/{slide_google_id}/publish")
+@app.post("/api/slides/{slide_id}/{slide_google_id}/publish", tags=["Content / Slides"])
 async def publish_slide(slide_id: str, slide_google_id: str, settings: Annotated[Settings, Depends(get_settings)], db: Session = Depends(get_db)):
     pdfstream = fetch_pdf_from_drive(slide_google_id, settings)
     if pdfstream is None:
@@ -744,7 +775,7 @@ async def publish_slide(slide_id: str, slide_google_id: str, settings: Annotated
             except Exception as e:
                 print("Failed to delete temporary file:", str(e))
 
-@app.post("/api/slides/{slide_id}/{slide_google_id}/set-vision")
+@app.post("/api/slides/{slide_id}/{slide_google_id}/set-vision", tags=["Content / Slides"])
 async def set_vision(slide_id: str, slide_google_id: str, settings: Annotated[Settings, Depends(get_settings)], db: Session = Depends(get_db)):
     slide = db.query(schema.Slide).filter(schema.Slide.id == slide_id, schema.Slide.slide_google_id == slide_google_id).first()
     if not slide:
@@ -800,7 +831,7 @@ async def set_vision(slide_id: str, slide_google_id: str, settings: Annotated[Se
 
     return {"message": "Vision set successfully"}
 
-@app.post("/api/slides/{slide_id}/{slide_google_id}/update-vision")
+@app.post("/api/slides/{slide_id}/{slide_google_id}/update-vision", tags=["Content / Slides"])
 async def update_vision(slide_id: str, slide_google_id: str, settings: Annotated[Settings, Depends(get_settings)], db: Session = Depends(get_db)):
     slide = db.query(schema.Slide).filter(schema.Slide.id == slide_id, schema.Slide.slide_google_id == slide_google_id).first()
     if not slide:
@@ -856,7 +887,7 @@ async def update_vision(slide_id: str, slide_google_id: str, settings: Annotated
 
     return {"message": "Vision info updated successfully"}
 
-@app.post("/api/slides/{slide_id}/update-vectors")
+@app.post("/api/slides/{slide_id}/update-vectors", tags=["Content / Slides"])
 async def update_slide_vectors(slide_id: str, settings: Annotated[Settings, Depends(get_settings)], db: Session = Depends(get_db)):
     slide = db.query(schema.Slide).filter(schema.Slide.id == slide_id).first()
     if not slide:
@@ -899,7 +930,7 @@ async def update_slide_vectors(slide_id: str, settings: Annotated[Settings, Depe
         print(error_message)
         raise HTTPException(status_code=500, detail=error_message)
 
-@app.post("/api/questions/create")
+@app.post("/api/questions/create", tags=["Content / Questions"])
 def create_question(request: models.QuestionResponse, db: Session = Depends(get_db)):
     user = db.query(schema.User).filter(schema.User.email == request.creater_email).first()
     if not user:
@@ -926,7 +957,7 @@ def create_question(request: models.QuestionResponse, db: Session = Depends(get_
     db.refresh(db_question)
     return db_question
 
-@app.get("/api/questions/all")
+@app.get("/api/questions/all", tags=["Content / Questions"])
 def get_all_question(db: Session = Depends(get_db)):
     questions = db.query(schema.Question).all()
     # result = [{
@@ -943,14 +974,14 @@ def get_all_question(db: Session = Depends(get_db)):
     # ]
     return questions
 
-@app.get("/api/questions/by_id/{question_id}")
+@app.get("/api/questions/by_id/{question_id}", tags=["Content / Questions"])
 def get_question_by_id(question_id: str, db: Session = Depends(get_db)):
     question = db.query(schema.Question).filter(schema.Question.question_id == question_id).first()
     if question is None:
         raise HTTPException(status_code=404, detail="Question not found")
     return question
 
-@app.patch("/api/questions/{question_id}/feedback")
+@app.patch("/api/questions/{question_id}/feedback", tags=["Content / Questions"])
 def update_question_feedback(question_id: str, feedback: models.QuestionUpdateFeedback, db: Session = Depends(get_db)):
     db_question = db.query(schema.Question).filter(schema.Question.question_id == question_id).first()
     
@@ -976,7 +1007,7 @@ def update_question_feedback(question_id: str, feedback: models.QuestionUpdateFe
     db.refresh(db_question)
     return {"message": "Feedback updated successfully", "question": db_question}
 
-@app.delete("/api/questions/by_id/{question_id}")
+@app.delete("/api/questions/by_id/{question_id}", tags=["Content / Questions"])
 def delete_question_by_id(question_id: str, db: Session = Depends(get_db)):
     db_question = db.query(schema.Question).filter(schema.Question.question_id == question_id).first()
 
@@ -987,7 +1018,7 @@ def delete_question_by_id(question_id: str, db: Session = Depends(get_db)):
     db.commit()
     return {"message": "Question deleted successfully"}
 
-@app.post("/api/s3upload")
+@app.post("/api/s3upload", tags=["Content / Uploads"])
 async def upload_file(settings: Annotated[Settings, Depends(get_settings)], file: UploadFile = File(...)):
     try:
         file.file.seek(0)
@@ -1016,7 +1047,7 @@ async def upload_file(settings: Annotated[Settings, Depends(get_settings)], file
     except Exception as e:
         print("error")
         raise HTTPException(status_code=404, detail=str(e))
-@app.post('/api/record_result')
+@app.post('/api/record_result', tags=["Content / Records"])
 def record_result(result: models.RecordResultModel, db: Session = Depends(get_db)):
     try:
         record_data = {
@@ -1057,7 +1088,7 @@ def record_result(result: models.RecordResultModel, db: Session = Depends(get_db
         raise HTTPException(status_code=400, detail=f"Error recording result: {str(e)}")
 
 
-@app.post('/api/record_result/{record_id}/audio-usage')
+@app.post('/api/record_result/{record_id}/audio-usage', tags=["Content / Records"])
 def log_audio_narration_usage(
     record_id: int,
     payload: models.AudioNarrationUsageEvent,
@@ -1107,7 +1138,7 @@ def log_audio_narration_usage(
         db.rollback()
         raise HTTPException(status_code=400, detail=f"Error logging audio narration usage: {str(e)}")
 
-@app.put('/api/record_result/{record_id}/rating')
+@app.put('/api/record_result/{record_id}/rating', tags=["Content / Records"])
 def update_rating(record_id: int, rating_update: UpdateRatingModel, db: Session = Depends(get_db)):
     try:
         # Find the existing record
@@ -1124,7 +1155,7 @@ def update_rating(record_id: int, rating_update: UpdateRatingModel, db: Session 
         db.rollback()
         raise HTTPException(status_code=400, detail=f"Error updating rating: {str(e)}")
 
-@app.get('/api/record_result/count/{question_id}')
+@app.get('/api/record_result/count/{question_id}', tags=["Content / Records"])
 def get_record_count(question_id: str, learner_id: str = None, db: Session = Depends(get_db)):
     """
     Get the count of records for a specific question and optionally a specific learner
@@ -1145,7 +1176,7 @@ def get_record_count(question_id: str, learner_id: str = None, db: Session = Dep
         raise HTTPException(status_code=400, detail=f"Error getting record count: {str(e)}")
 
 
-@app.get("/api/get_human_feedback/{question_id}")
+@app.get("/api/get_human_feedback/{question_id}", tags=["Feedback / Core (v1)"])
 def get_human_feedback(question_id: str, db: Session = Depends(get_db)):
     try:
         question = db.query(schema.Question).filter(schema.Question.question_id == question_id).first()

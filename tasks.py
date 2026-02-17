@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parent
 PYTHON = os.environ.get("PYTHON", "python3")
 VENV = ROOT / os.environ.get("VENV", "venv")
 ACTIVATE = f". {VENV}/bin/activate"
-UVICORN_APP = os.environ.get("UVICORN_APP", "app.index:app")
+UVICORN_APP = os.environ.get("UVICORN_APP", "api.index:app")
 UVICORN_HOST = os.environ.get("UVICORN_HOST", "0.0.0.0")
 UVICORN_PORT = os.environ.get("UVICORN_PORT", "8000")
 

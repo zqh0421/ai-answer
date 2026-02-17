@@ -5,7 +5,7 @@ from urllib.parse import urlencode
 
 from .settings import get_platform_config
 from .storage import InMemoryLtiStorage
-from app.config import Settings
+from api.config import Settings
 
 
 def build_login_redirect_url(

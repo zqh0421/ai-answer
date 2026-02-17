@@ -7,7 +7,7 @@ from fastapi import Depends
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from app.config import Settings, get_settings
+from api.config import Settings, get_settings
 
 
 def _b64url_uint(n: int) -> str:

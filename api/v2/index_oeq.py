@@ -15,7 +15,7 @@ from .controllers_oeq import (
 )
 
 # Create router for OEQ endpoints
-router = APIRouter(prefix="/api/v2", tags=["OEQ"])
+router = APIRouter(prefix="/api/v2", tags=["Feedback / OEQ (v2)"])
 
 def get_db():
     db = SessionLocal()
