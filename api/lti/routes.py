@@ -146,6 +146,7 @@ async def lti_launch(request: Request, settings: Settings = Depends(get_settings
 
     # Deep Linking handling (optional for now)
     if is_deep_linking_request(claims):
+        return PlainTextResponse("Deep Linking request received but not supported yet", status_code=501)
         try:
             dl_return_url = get_deep_link_return_url(claims)
             dl_settings = claims.get("https://purl.imsglobal.org/spec/lti-dl/claim/deep_linking_settings") or {}
