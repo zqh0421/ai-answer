@@ -91,16 +91,11 @@ async def lti_launch(request: Request, settings: Settings = Depends(get_settings
     Launch endpoint (receives form_post with id_token and state).
     """
     form = await request.form()
-    pass
     state = form.get("state")
     id_token = form.get("id_token")
 
     if not state or not id_token:
         return PlainTextResponse("Missing state or id_token", status_code=400)
-
-    cookie_state = request.cookies.get(LTI_STATE_COOKIE)
-    if not cookie_state or cookie_state != state:
-        return PlainTextResponse("State cookie mismatch", status_code=400)
 
 
     state_rec = _STORAGE.get_state(str(state))
