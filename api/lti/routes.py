@@ -15,9 +15,9 @@ from .settings import get_platform_config
 from .storage import InMemoryLtiStorage
 from .jwks import get_jwks
 from .oidc import build_login_redirect_url
-# from .jwt import verify_platform_id_token
+from .jwt import verify_platform_id_token
 from .models import LaunchSession
-# from .deep_linking import is_deep_linking_request, get_deep_link_return_url
+from .deep_linking import is_deep_linking_request, get_deep_link_return_url
 
 router = APIRouter(prefix="/api/lti", tags=["Identity / LTI"])
 
@@ -92,82 +92,82 @@ async def lti_launch(request: Request, settings: Settings = Depends(get_settings
     """
     form = await request.form()
     pass
-    # state = form.get("state")
-    # id_token = form.get("id_token")
+    state = form.get("state")
+    id_token = form.get("id_token")
 
-    # if not state or not id_token:
-    #     return PlainTextResponse("Missing state or id_token", status_code=400)
+    if not state or not id_token:
+        return PlainTextResponse("Missing state or id_token", status_code=400)
 
-    # cookie_state = request.cookies.get(LTI_STATE_COOKIE)
-    # if not cookie_state or cookie_state != state:
-    #     return PlainTextResponse("State cookie mismatch", status_code=400)
+    cookie_state = request.cookies.get(LTI_STATE_COOKIE)
+    if not cookie_state or cookie_state != state:
+        return PlainTextResponse("State cookie mismatch", status_code=400)
 
 
-    # state_rec = _STORAGE.get_state(str(state))
-    # if not state_rec:
-    #     return PlainTextResponse("Invalid or expired state", status_code=400)
+    state_rec = _STORAGE.get_state(str(state))
+    if not state_rec:
+        return PlainTextResponse("Invalid or expired state", status_code=400)
 
-    # platform = get_platform_config(settings, state_rec.iss, state_rec.client_id)
+    platform = get_platform_config(settings, state_rec.iss, state_rec.client_id)
 
-    # # Verify LMS JWT
-    # claims = await verify_platform_id_token(
-    #     id_token=str(id_token),
-    #     settings=settings,
-    #     platform=platform,
-    #     expected_nonce=state_rec.nonce,
-    # )
+    # Verify LMS JWT
+    claims = await verify_platform_id_token(
+        id_token=str(id_token),
+        settings=settings,
+        platform=platform,
+        expected_nonce=state_rec.nonce,
+    )
 
-    # # one-time state (reduce replay window)
-    # _STORAGE.delete_state(str(state))
+    # one-time state (reduce replay window)
+    _STORAGE.delete_state(str(state))
 
-    # # Determine message type
-    # msg_type = claims.get("https://purl.imsglobal.org/spec/lti/claim/message_type", "UNKNOWN")
-    # deployment_id = claims.get("https://purl.imsglobal.org/spec/lti/claim/deployment_id")
-    # sub = claims.get("sub", "")
+    # Determine message type
+    msg_type = claims.get("https://purl.imsglobal.org/spec/lti/claim/message_type", "UNKNOWN")
+    deployment_id = claims.get("https://purl.imsglobal.org/spec/lti/claim/deployment_id")
+    sub = claims.get("sub", "")
 
-    # # Extract some useful claims
-    # context = claims.get("https://purl.imsglobal.org/spec/lti/claim/context") or {}
-    # context_id = context.get("id")
+    # Extract some useful claims
+    context = claims.get("https://purl.imsglobal.org/spec/lti/claim/context") or {}
+    context_id = context.get("id")
 
-    # resource_link = claims.get("https://purl.imsglobal.org/spec/lti/claim/resource_link") or {}
-    # resource_link_id = resource_link.get("id")
+    resource_link = claims.get("https://purl.imsglobal.org/spec/lti/claim/resource_link") or {}
+    resource_link_id = resource_link.get("id")
 
-    # roles = claims.get("https://purl.imsglobal.org/spec/lti/claim/roles") or []
+    roles = claims.get("https://purl.imsglobal.org/spec/lti/claim/roles") or []
 
-    # session_id = secrets.token_urlsafe(24)
+    session_id = secrets.token_urlsafe(24)
 
-    # launch_session = LaunchSession(
-    #     session_id=session_id,
-    #     iss=platform.iss,
-    #     client_id=platform.client_id,
-    #     deployment_id=deployment_id,
-    #     sub=sub,
-    #     message_type=msg_type,
-    #     context_id=context_id,
-    #     resource_link_id=resource_link_id,
-    #     roles=roles,
-    #     raw_claims=claims,
-    # )
+    launch_session = LaunchSession(
+        session_id=session_id,
+        iss=platform.iss,
+        client_id=platform.client_id,
+        deployment_id=deployment_id,
+        sub=sub,
+        message_type=msg_type,
+        context_id=context_id,
+        resource_link_id=resource_link_id,
+        roles=roles,
+        raw_claims=claims,
+    )
 
-    # # Deep Linking handling (optional for now)
-    # if is_deep_linking_request(claims):
-    #     try:
-    #         dl_return_url = get_deep_link_return_url(claims)
-    #         dl_settings = claims.get("https://purl.imsglobal.org/spec/lti-dl/claim/deep_linking_settings") or {}
-    #         dl_data = dl_settings.get("data")
+    # Deep Linking handling (optional for now)
+    if is_deep_linking_request(claims):
+        try:
+            dl_return_url = get_deep_link_return_url(claims)
+            dl_settings = claims.get("https://purl.imsglobal.org/spec/lti-dl/claim/deep_linking_settings") or {}
+            dl_data = dl_settings.get("data")
 
-    #         launch_session.deep_link_return_url = dl_return_url
-    #         launch_session.deep_link_data = dl_data
-    #     except Exception:
-    #         # If platform sends DL request but we can't parse, fail clearly
-    #         return PlainTextResponse("Deep Linking request received but not supported yet", status_code=501)
+            launch_session.deep_link_return_url = dl_return_url
+            launch_session.deep_link_data = dl_data
+        except Exception:
+            # If platform sends DL request but we can't parse, fail clearly
+            return PlainTextResponse("Deep Linking request received but not supported yet", status_code=501)
 
-    # _STORAGE.create_launch_session(launch_session)
+    _STORAGE.create_launch_session(launch_session)
 
-    # # Redirect to your public Next.js UI page (no "Identity / LTI" in path if you prefer)
-    # # Example: https://muf-in.com/app?sid=...
-    # ui_url = f"{settings.public_base_url}/app?sid={session_id}"
-    # return RedirectResponse(url=ui_url, status_code=302)
+    # Redirect to your public Next.js UI page (no "Identity / LTI" in path if you prefer)
+    # Example: https://muf-in.com/app?sid=...
+    ui_url = f"{settings.public_base_url}/app?sid={session_id}"
+    return RedirectResponse(url=ui_url, status_code=302)
 
 
 @router.get("/.well-known/jwks.json")
