@@ -2,22 +2,27 @@ from __future__ import annotations
 
 import json
 import secrets
-from datetime import datetime, timezone
 from typing import Optional
 
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from pydantic import BaseModel
 
-from fastapi import APIRouter, Request, Depends
 from api.config import Settings, get_settings
 
-from fastapi.responses import JSONResponse, RedirectResponse, PlainTextResponse
-
-from .settings import get_platform_config
-from .storage import InMemoryLtiStorage
+from .deep_linking import (
+    build_auto_post_html,
+    build_deep_link_response_jwt,
+    get_deep_link_return_url,
+    get_deep_linking_settings,
+    is_deep_linking_request,
+)
 from .jwks import get_jwks
-from .oidc import build_login_redirect_url
 from .jwt import verify_platform_id_token
 from .models import LaunchSession
-from .deep_linking import is_deep_linking_request, get_deep_link_return_url
+from .oidc import build_login_redirect_url
+from .settings import get_platform_config
+from .storage import InMemoryLtiStorage
 
 router = APIRouter(prefix="/api/lti", tags=["Identity / LTI"])
 
@@ -25,7 +30,15 @@ router = APIRouter(prefix="/api/lti", tags=["Identity / LTI"])
 _STORAGE = InMemoryLtiStorage()
 
 LTI_STATE_COOKIE = "state"
+LTI_LAUNCH_COOKIE = "lti_launch"
 STATE_MAX_AGE = 60 * 60 * 24
+
+
+class DeepLinkSelectionRequest(BaseModel):
+    resource_url: str
+    title: Optional[str] = None
+    text: Optional[str] = None
+
 
 @router.api_route("/login", methods=["GET", "POST"])
 async def lti_login(request: Request, settings: Settings = Depends(get_settings)):
@@ -73,7 +86,7 @@ async def lti_login(request: Request, settings: Settings = Depends(get_settings)
     # 303 like the Simon test (302 also acceptable, but match the test)
     resp = RedirectResponse(url=redirect_url, status_code=303)
 
-    # Set cookie EXACTLY like the example semantics
+    # State cookie is currently set for compatibility; launch no longer enforces match.
     resp.set_cookie(
         key=LTI_STATE_COOKIE,
         value=state,
@@ -84,6 +97,7 @@ async def lti_login(request: Request, settings: Settings = Depends(get_settings)
         samesite="none",
     )
     return resp
+
 
 @router.post("/launch")
 async def lti_launch(request: Request, settings: Settings = Depends(get_settings)):
@@ -96,7 +110,6 @@ async def lti_launch(request: Request, settings: Settings = Depends(get_settings
 
     if not state or not id_token:
         return PlainTextResponse("Missing state or id_token", status_code=400)
-
 
     state_rec = _STORAGE.get_state(str(state))
     if not state_rec:
@@ -129,6 +142,22 @@ async def lti_launch(request: Request, settings: Settings = Depends(get_settings
 
     roles = claims.get("https://purl.imsglobal.org/spec/lti/claim/roles") or []
 
+    if msg_type == "LtiResourceLinkRequest":
+        learner_debug = {
+            "iss": platform.iss,
+            "client_id": platform.client_id,
+            "deployment_id": deployment_id,
+            "sub": sub,
+            "name": claims.get("name"),
+            "given_name": claims.get("given_name"),
+            "family_name": claims.get("family_name"),
+            "email": claims.get("email"),
+            "roles": roles,
+            "context_id": context_id,
+            "resource_link_id": resource_link_id,
+        }
+        print(f"[LTI_LEARNER_INFO] {json.dumps(learner_debug, ensure_ascii=True)}")
+
     session_id = secrets.token_urlsafe(24)
 
     launch_session = LaunchSession(
@@ -144,26 +173,96 @@ async def lti_launch(request: Request, settings: Settings = Depends(get_settings
         raw_claims=claims,
     )
 
-    # Deep Linking handling (optional for now)
     if is_deep_linking_request(claims):
-        return PlainTextResponse("Deep Linking request received but not supported yet", status_code=501)
         try:
             dl_return_url = get_deep_link_return_url(claims)
-            dl_settings = claims.get("https://purl.imsglobal.org/spec/lti-dl/claim/deep_linking_settings") or {}
+            dl_settings = get_deep_linking_settings(claims)
             dl_data = dl_settings.get("data")
-
             launch_session.deep_link_return_url = dl_return_url
             launch_session.deep_link_data = dl_data
-        except Exception:
-            # If platform sends DL request but we can't parse, fail clearly
-            return PlainTextResponse("Deep Linking request received but not supported yet", status_code=501)
+        except Exception as e:
+            return PlainTextResponse(f"Invalid Deep Linking launch: {e}", status_code=400)
 
     _STORAGE.create_launch_session(launch_session)
 
-    # Redirect to your public Next.js UI page (no "Identity / LTI" in path if you prefer)
-    # Example: https://muf-in.com/app?sid=...
-    ui_url = f"{settings.public_base_url}/app?sid={session_id}"
-    return RedirectResponse(url=ui_url, status_code=302)
+    ui_url = f"{settings.public_base_url}/manage"
+    if is_deep_linking_request(claims):
+        ui_url = f"{ui_url}?lti_mode=deep_link"
+    resp = RedirectResponse(url=ui_url, status_code=302)
+    resp.set_cookie(
+        key=LTI_LAUNCH_COOKIE,
+        value=session_id,
+        max_age=STATE_MAX_AGE,
+        path="/",
+        secure=True,
+        httponly=True,
+        samesite="none",
+    )
+    return resp
+
+
+def _complete_deep_link(
+    *,
+    request: Request,
+    resource_url: str,
+    title: Optional[str],
+    text: Optional[str],
+    settings: Settings,
+) -> HTMLResponse | PlainTextResponse:
+    launch_id = request.cookies.get(LTI_LAUNCH_COOKIE)
+    if not launch_id:
+        return PlainTextResponse("Missing launch cookie", status_code=400)
+
+    session = _STORAGE.get_launch_session(launch_id)
+    if not session:
+        return PlainTextResponse("Unknown session", status_code=404)
+    if session.message_type != "LtiDeepLinkingRequest":
+        return PlainTextResponse("Session is not a deep-linking launch", status_code=400)
+    if not session.deep_link_return_url:
+        return PlainTextResponse("Missing deep_link_return_url in session", status_code=400)
+
+    resolved_title = title or "AI Answer Practice"
+    jwt_value = build_deep_link_response_jwt(
+        settings=settings,
+        launch_session=session,
+        resource_url=resource_url,
+        title=resolved_title,
+        text=text,
+    )
+    html = build_auto_post_html(session.deep_link_return_url, jwt_value)
+    return HTMLResponse(content=html, status_code=200)
+
+
+@router.post("/deep-link/complete")
+async def complete_deep_link_post(
+    payload: DeepLinkSelectionRequest,
+    request: Request,
+    settings: Settings = Depends(get_settings),
+):
+    return _complete_deep_link(
+        request=request,
+        resource_url=payload.resource_url,
+        title=payload.title,
+        text=payload.text,
+        settings=settings,
+    )
+
+
+@router.get("/deep-link/complete")
+async def complete_deep_link_get(
+    request: Request,
+    resource_url: str,
+    title: Optional[str] = None,
+    text: Optional[str] = None,
+    settings: Settings = Depends(get_settings),
+):
+    return _complete_deep_link(
+        request=request,
+        resource_url=resource_url,
+        title=title,
+        text=text,
+        settings=settings,
+    )
 
 
 @router.get("/.well-known/jwks.json")
