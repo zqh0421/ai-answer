@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { Lato } from 'next/font/google';
+import { Suspense } from 'react';
 import './globals.css';
 import Header from './components/Header';
 import Footer from './components/Footer';
@@ -29,7 +30,9 @@ export default function RootLayout({
         <div className="flex flex-col min-h-screen">
           {/* Header */}
           <Header />
-          <LtiDeepLinkBanner />
+          <Suspense fallback={null}>
+            <LtiDeepLinkBanner />
+          </Suspense>
 
           {/* Main Content Area */}
           <main className="flex-grow container mx-2 min-w-full p-6">
