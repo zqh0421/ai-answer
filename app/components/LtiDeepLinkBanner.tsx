@@ -6,22 +6,6 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 const LTI_MODE_KEY = "lti_mode";
 const DEEP_LINK_MODE = "deep_link";
 
-function readCookie(name: string): string | null {
-  if (typeof document === "undefined") {
-    return null;
-  }
-
-  const key = `${name}=`;
-  const parts = document.cookie.split(";");
-  for (const part of parts) {
-    const trimmed = part.trim();
-    if (trimmed.startsWith(key)) {
-      return decodeURIComponent(trimmed.slice(key.length));
-    }
-  }
-  return null;
-}
-
 export default function LtiDeepLinkBanner() {
   const pathname = usePathname();
   const router = useRouter();
@@ -30,27 +14,17 @@ export default function LtiDeepLinkBanner() {
   const [error, setError] = useState<string | null>(null);
 
   const queryMode = searchParams.get(LTI_MODE_KEY);
-  const isDeepLinkMode = useMemo(() => {
-    if (queryMode === DEEP_LINK_MODE) {
-      return true;
-    }
-    return readCookie(LTI_MODE_KEY) === DEEP_LINK_MODE;
-  }, [queryMode]);
+  const isDeepLinkMode = useMemo(() => queryMode === DEEP_LINK_MODE, [queryMode]);
 
   useEffect(() => {
-    if (queryMode === DEEP_LINK_MODE) {
-      document.cookie = `${LTI_MODE_KEY}=${DEEP_LINK_MODE}; path=/; SameSite=Lax`;
-      return;
-    }
-
-    if (readCookie(LTI_MODE_KEY) !== DEEP_LINK_MODE) {
-      return;
-    }
-
+    if (queryMode !== DEEP_LINK_MODE) return;
     const nextParams = new URLSearchParams(searchParams.toString());
     nextParams.set(LTI_MODE_KEY, DEEP_LINK_MODE);
     const query = nextParams.toString();
-    router.replace(query ? `${pathname}?${query}` : pathname);
+    const nextUrl = query ? `${pathname}?${query}` : pathname;
+    if (nextUrl !== `${pathname}?${searchParams.toString()}`) {
+      router.replace(nextUrl);
+    }
   }, [pathname, queryMode, router, searchParams]);
 
   const handleSelectForLms = async () => {
@@ -60,8 +34,8 @@ export default function LtiDeepLinkBanner() {
     try {
       const payload = {
         resource_url: window.location.href,
-        title: document.title || undefined,
-        text: undefined,
+        title: document.title || "",
+        text: "",
       };
 
       const response = await fetch("/api/lti/deep-link/complete", {
@@ -76,21 +50,6 @@ export default function LtiDeepLinkBanner() {
       const responseBody = await response.text();
       if (!response.ok) {
         const bodyText = responseBody.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
-        if (bodyText.includes("Missing launch cookie")) {
-          throw new Error(
-            "LTI deep-link launch session is missing. Start from an LMS deep-link launch so the HttpOnly `lti_launch` cookie is set."
-          );
-        }
-        if (bodyText.includes("Session is not a deep-linking launch")) {
-          throw new Error(
-            "Current LTI session is not a deep-linking launch. Re-launch the tool from LMS resource selection flow."
-          );
-        }
-        if (bodyText.includes("Missing deep_link_return_url in session")) {
-          throw new Error(
-            "LTI launch session is incomplete (missing deep_link_return_url). Re-launch from LMS deep-link picker."
-          );
-        }
         throw new Error(
           `LTI deep-link completion failed: ${response.status}${bodyText ? ` - ${bodyText}` : ""}`
         );
