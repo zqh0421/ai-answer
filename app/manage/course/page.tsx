@@ -2,6 +2,7 @@
 import axios from "axios";
 import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react"
 import { Course } from "@/app/types";
 
@@ -13,6 +14,8 @@ const CourseOverview = () => {
   const [loading, setLoading] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null); // State to track deletion status
   const { data } = useSession();
+  const searchParams = useSearchParams();
+  const ltiQuery = searchParams.get("lti_mode") === "deep_link" ? "?lti_mode=deep_link" : "";
 
   // Fetch existing courses
   const fetchCourses = useCallback(async () => {
@@ -94,7 +97,7 @@ const CourseOverview = () => {
             courses.map((course) => (
               <li key={course.course_id} className="flex items-center justify-between bg-gray-100 p-4 rounded-lg shadow-sm">
                 <div className="flex items-center">
-                  <Link href={`/manage/course/${course.course_id}`}>
+                  <Link href={`/manage/course/${course.course_id}${ltiQuery}`}>
                     <span className="text-lg font-medium text-indigo-600 hover:text-indigo-800">
                       {course.course_title}
                     </span>

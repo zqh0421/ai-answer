@@ -4,6 +4,7 @@ import './globals.css';
 import Header from './components/Header';
 import Footer from './components/Footer';
 import ClientProvider from './components/ClientProvider'; // 引入客户端逻辑组件
+import LtiDeepLinkBanner from './components/LtiDeepLinkBanner';
 
 const lato = Lato({
   weight: '400',
@@ -28,6 +29,7 @@ export default function RootLayout({
         <div className="flex flex-col min-h-screen">
           {/* Header */}
           <Header />
+          <LtiDeepLinkBanner />
 
           {/* Main Content Area */}
           <main className="flex-grow container mx-2 min-w-full p-6">

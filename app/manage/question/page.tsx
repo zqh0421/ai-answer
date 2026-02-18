@@ -2,6 +2,7 @@
 import axios from "axios";
 import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 import { Slide } from "@/app/types";
 import ContentEditor from "@/app/components/ContentEditor";
@@ -70,6 +71,8 @@ const QuestionOverview = () => {
 
   const { data } = useSession();
   const userEmail = data?.user?.email ?? "";
+  const searchParams = useSearchParams();
+  const ltiQuery = searchParams.get("lti_mode") === "deep_link" ? "?lti_mode=deep_link" : "";
 
   // normalize different backend shapes into { id, slide_title, ... }
   const normalizeSlide = (s: any) => ({
@@ -420,7 +423,7 @@ const QuestionOverview = () => {
                 key={question.question_id}
                 className="flex justify-between items-center bg-gray-100 p-4 rounded-lg"
               >
-                <Link href={`/manage/question/${question.question_id}`}>
+                <Link href={`/manage/question/${question.question_id}${ltiQuery}`}>
                   <span className="text-lg font-medium text-indigo-600 hover:text-indigo-800">
                     {question.type === "multiple choice" && (
                       <span className={`inline-block mr-2 px-2 py-1 text-xs rounded ${
@@ -453,9 +456,9 @@ const QuestionOverview = () => {
                   <button
                     onClick={() => {
                       if (question.type === "multiple choice") {
-                        window.location.href = `/v2/mcq/${question.question_id}`;
+                        window.location.href = `/v2/mcq/${question.question_id}${ltiQuery}`;
                       } else if (question.type === "open ended") {
-                        window.location.href = `/v2/oeq/${question.question_id}`;
+                        window.location.href = `/v2/oeq/${question.question_id}${ltiQuery}`;
                       }
                     }}
                     className="py-2 px-4 text-white bg-green-600 hover:bg-green-700 rounded-md"

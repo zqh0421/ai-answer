@@ -2,6 +2,7 @@ import { auth, signOut } from "@/auth";
 import { redirect } from 'next/navigation';
 import axios from "axios";
 import Link from "next/link";
+import { headers } from "next/headers";
 
 interface AuthResponse {
   user: {
@@ -13,13 +14,23 @@ interface AuthResponse {
   expires: string
 }
  
-const Manage = async () => {
+interface ManageProps {
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
+}
+
+const Manage = async ({ searchParams }: ManageProps) => {
   const session = await auth() as AuthResponse;
+  const resolvedSearchParams = searchParams ? await searchParams : undefined;
+  const ltiMode = resolvedSearchParams?.lti_mode;
+  const isDeepLinkMode = ltiMode === "deep_link" || (
+    Array.isArray(ltiMode) && ltiMode.includes("deep_link")
+  );
+  const withLtiMode = (path: string) => (isDeepLinkMode ? `${path}?lti_mode=deep_link` : path);
   // console.log(session)
 
   if (!session) {
     console.log('No session found, redirecting to /admin/login');
-    return redirect('/manage/login');  // Ensure this is the correct path to redirect to
+    return redirect(withLtiMode('/manage/login'));  // Ensure this is the correct path to redirect to
   }
 
   // console.log(session.user)
@@ -27,7 +38,12 @@ const Manage = async () => {
   const handleAuth = async () => {
     let res;
     try {
-      res = await axios.post(`${process.env.NEXTAUTH_URL}/api/admin_auth`, {
+      const headerStore = await headers();
+      const host = headerStore.get("x-forwarded-host") ?? headerStore.get("host");
+      const proto = headerStore.get("x-forwarded-proto") ?? "http";
+      const origin = host ? `${proto}://${host}` : (process.env.AUTH_URL ?? "http://localhost:3000");
+
+      res = await axios.post(`${origin}/api/admin-auth`, {
         email: session?.user.email
       });
       // console.log("handleAuth")
@@ -40,7 +56,7 @@ const Manage = async () => {
       }
     }
     if (res?.data?.permitted === false) {
-      return redirect('/manage/noPermission');
+      return redirect(withLtiMode('/manage/noPermission'));
     }
   };
 
@@ -61,10 +77,10 @@ const Manage = async () => {
 
       {/* Button to go to Manage Course Overview */}
       <section className="flex flex-col gap-2">
-        <Link href="/manage/course">
+        <Link href={withLtiMode("/manage/course")}>
           <button type="button" className="text-blue-600">Go to Course Management</button>
         </Link>
-        <Link href="/manage/question">
+        <Link href={withLtiMode("/manage/question")}>
           <button type="button" className="text-blue-600">Go to Question Management</button>
         </Link>
       </section>
