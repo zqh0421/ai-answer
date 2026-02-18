@@ -72,7 +72,14 @@ const QuestionOverview = () => {
   const { data } = useSession();
   const userEmail = data?.user?.email ?? "";
   const searchParams = useSearchParams();
-  const ltiQuery = searchParams.get("lti_mode") === "deep_link" ? "?lti_mode=deep_link" : "";
+  const isDeepLinkMode = searchParams.get("lti_mode") === "deep_link";
+  const launchId = searchParams.get("launch_id");
+  const ltiParams = new URLSearchParams();
+  if (isDeepLinkMode) {
+    ltiParams.set("lti_mode", "deep_link");
+    if (launchId) ltiParams.set("launch_id", launchId);
+  }
+  const ltiQuery = ltiParams.toString() ? `?${ltiParams.toString()}` : "";
 
   // normalize different backend shapes into { id, slide_title, ... }
   const normalizeSlide = (s: any) => ({

@@ -22,10 +22,17 @@ const Manage = async ({ searchParams }: ManageProps) => {
   const session = await auth() as AuthResponse;
   const resolvedSearchParams = searchParams ? await searchParams : undefined;
   const ltiMode = resolvedSearchParams?.lti_mode;
+  const launchId = resolvedSearchParams?.launch_id;
   const isDeepLinkMode = ltiMode === "deep_link" || (
     Array.isArray(ltiMode) && ltiMode.includes("deep_link")
   );
-  const withLtiMode = (path: string) => (isDeepLinkMode ? `${path}?lti_mode=deep_link` : path);
+  const normalizedLaunchId = Array.isArray(launchId) ? launchId[0] : launchId;
+  const withLtiMode = (path: string) => {
+    if (!isDeepLinkMode) return path;
+    const params = new URLSearchParams({ lti_mode: "deep_link" });
+    if (normalizedLaunchId) params.set("launch_id", normalizedLaunchId);
+    return `${path}?${params.toString()}`;
+  };
   // console.log(session)
 
   if (!session) {

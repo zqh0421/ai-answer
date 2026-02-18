@@ -5,6 +5,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 const LTI_MODE_KEY = "lti_mode";
 const DEEP_LINK_MODE = "deep_link";
+const LAUNCH_ID_KEY = "launch_id";
 
 export default function LtiDeepLinkBanner() {
   const pathname = usePathname();
@@ -14,6 +15,7 @@ export default function LtiDeepLinkBanner() {
   const [error, setError] = useState<string | null>(null);
 
   const queryMode = searchParams.get(LTI_MODE_KEY);
+  const launchId = searchParams.get(LAUNCH_ID_KEY);
   const isDeepLinkMode = useMemo(() => queryMode === DEEP_LINK_MODE, [queryMode]);
 
   useEffect(() => {
@@ -32,7 +34,12 @@ export default function LtiDeepLinkBanner() {
     setIsSubmitting(true);
 
     try {
+      if (!launchId) {
+        throw new Error("Missing launch_id in URL. Please relaunch from LMS.");
+      }
+
       const payload = {
+        launch_id: launchId,
         resource_url: window.location.href,
         title: document.title || "",
         text: "",

@@ -15,7 +15,14 @@ const CourseOverview = () => {
   const [deleting, setDeleting] = useState<string | null>(null); // State to track deletion status
   const { data } = useSession();
   const searchParams = useSearchParams();
-  const ltiQuery = searchParams.get("lti_mode") === "deep_link" ? "?lti_mode=deep_link" : "";
+  const isDeepLinkMode = searchParams.get("lti_mode") === "deep_link";
+  const launchId = searchParams.get("launch_id");
+  const ltiParams = new URLSearchParams();
+  if (isDeepLinkMode) {
+    ltiParams.set("lti_mode", "deep_link");
+    if (launchId) ltiParams.set("launch_id", launchId);
+  }
+  const ltiQuery = ltiParams.toString() ? `?${ltiParams.toString()}` : "";
 
   // Fetch existing courses
   const fetchCourses = useCallback(async () => {
