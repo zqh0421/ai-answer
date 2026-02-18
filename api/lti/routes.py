@@ -220,8 +220,8 @@ async def complete_deep_link_post(
 
 @router.get("/deep-link/complete")
 async def complete_deep_link_get(
-    launch_id: str,
     resource_url: str,
+    launch_id: str,
     title: Optional[str] = None,
     text: Optional[str] = None,
     settings: Settings = Depends(get_settings),
