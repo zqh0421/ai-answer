@@ -29,12 +29,9 @@ router = APIRouter(prefix="/api/lti", tags=["Identity / LTI"])
 # For now, in-memory storage. Swap to DB later.
 _STORAGE = InMemoryLtiStorage()
 
-LTI_STATE_COOKIE = "state"
-LTI_LAUNCH_COOKIE = "lti_launch"
-STATE_MAX_AGE = 60 * 60 * 24
-
 
 class DeepLinkSelectionRequest(BaseModel):
+    launch_id: str
     resource_url: str
     title: Optional[str] = None
     text: Optional[str] = None
@@ -84,19 +81,7 @@ async def lti_login(request: Request, settings: Settings = Depends(get_settings)
     )
 
     # 303 like the Simon test (302 also acceptable, but match the test)
-    resp = RedirectResponse(url=redirect_url, status_code=303)
-
-    # State cookie is currently set for compatibility; launch no longer enforces match.
-    resp.set_cookie(
-        key=LTI_STATE_COOKIE,
-        value=state,
-        max_age=STATE_MAX_AGE,
-        path="/",
-        secure=True,
-        httponly=True,
-        samesite="none",
-    )
-    return resp
+    return RedirectResponse(url=redirect_url, status_code=303)
 
 
 @router.post("/launch")
@@ -187,32 +172,18 @@ async def lti_launch(request: Request, settings: Settings = Depends(get_settings
 
     ui_url = f"{settings.public_base_url}/manage"
     if is_deep_linking_request(claims):
-        ui_url = f"{ui_url}?lti_mode=deep_link"
-    resp = RedirectResponse(url=ui_url, status_code=302)
-    resp.set_cookie(
-        key=LTI_LAUNCH_COOKIE,
-        value=session_id,
-        max_age=STATE_MAX_AGE,
-        path="/",
-        secure=True,
-        httponly=True,
-        samesite="none",
-    )
-    return resp
+        ui_url = f"{ui_url}?lti_mode=deep_link&launch_id={session_id}"
+    return RedirectResponse(url=ui_url, status_code=302)
 
 
 def _complete_deep_link(
     *,
-    request: Request,
+    launch_id: str,
     resource_url: str,
     title: Optional[str],
     text: Optional[str],
     settings: Settings,
 ) -> HTMLResponse | PlainTextResponse:
-    launch_id = request.cookies.get(LTI_LAUNCH_COOKIE)
-    if not launch_id:
-        return PlainTextResponse("Missing launch cookie", status_code=400)
-
     session = _STORAGE.get_launch_session(launch_id)
     if not session:
         return PlainTextResponse("Unknown session", status_code=404)
@@ -236,11 +207,10 @@ def _complete_deep_link(
 @router.post("/deep-link/complete")
 async def complete_deep_link_post(
     payload: DeepLinkSelectionRequest,
-    request: Request,
     settings: Settings = Depends(get_settings),
 ):
     return _complete_deep_link(
-        request=request,
+        launch_id=payload.launch_id,
         resource_url=payload.resource_url,
         title=payload.title,
         text=payload.text,
@@ -250,14 +220,14 @@ async def complete_deep_link_post(
 
 @router.get("/deep-link/complete")
 async def complete_deep_link_get(
-    request: Request,
+    launch_id: str,
     resource_url: str,
     title: Optional[str] = None,
     text: Optional[str] = None,
     settings: Settings = Depends(get_settings),
 ):
     return _complete_deep_link(
-        request=request,
+        launch_id=launch_id,
         resource_url=resource_url,
         title=title,
         text=text,
