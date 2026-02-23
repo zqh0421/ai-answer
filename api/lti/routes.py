@@ -305,6 +305,16 @@ async def lti_launch(request: Request, settings: Settings = Depends(get_settings
             dl_data = dl_settings.get("data")
             launch_session.deep_link_return_url = dl_return_url
             launch_session.deep_link_data = dl_data
+            logger.info(
+                "lti_deep_link_launch_detected",
+                extra={
+                    "session_id": session_id,
+                    "deployment_id": deployment_id,
+                    "sub": sub,
+                    "deep_link_return_url": dl_return_url,
+                    "deep_link_data": dl_data,
+                },
+            )
         except Exception as e:
             return PlainTextResponse(f"Invalid Deep Linking launch: {e}", status_code=400)
 
@@ -313,6 +323,10 @@ async def lti_launch(request: Request, settings: Settings = Depends(get_settings
     ui_url = f"{settings.public_base_url}/lti/questions"
     if is_deep_linking_request(claims):
         ui_url = f"{ui_url}?lti_mode=deep_link&launch_id={session_id}"
+        logger.info(
+            "lti_deep_link_launch_redirect",
+            extra={"session_id": session_id, "ui_url": ui_url},
+        )
     return RedirectResponse(url=ui_url, status_code=302)
 
 
@@ -324,6 +338,15 @@ def _complete_deep_link(
     text: Optional[str],
     settings: Settings,
 ) -> HTMLResponse | PlainTextResponse:
+    logger.info(
+        "lti_deep_link_complete_received",
+        extra={
+            "launch_id": launch_id,
+            "resource_url": resource_url,
+            "title": title,
+            "has_text": bool(text),
+        },
+    )
     session = _STORAGE.get_launch_session(launch_id)
     if not session:
         return PlainTextResponse("Unknown session", status_code=404)
@@ -341,6 +364,18 @@ def _complete_deep_link(
         text=text,
     )
     html = build_auto_post_html(session.deep_link_return_url, jwt_value)
+    logger.info(
+        "lti_deep_link_complete_response_built",
+        extra={
+            "launch_id": launch_id,
+            "deep_link_return_url": session.deep_link_return_url,
+            "resource_url": resource_url,
+            "resolved_title": resolved_title,
+            "has_text": bool(text),
+            "jwt_length": len(jwt_value),
+            "html_length": len(html),
+        },
+    )
     return HTMLResponse(content=html, status_code=200)
 
 
@@ -349,6 +384,15 @@ async def complete_deep_link_post(
     payload: DeepLinkSelectionRequest,
     settings: Settings = Depends(get_settings),
 ):
+    logger.info(
+        "lti_deep_link_complete_post_input",
+        extra={
+            "launch_id": payload.launch_id,
+            "resource_url": payload.resource_url,
+            "title": payload.title,
+            "has_text": bool(payload.text),
+        },
+    )
     return _complete_deep_link(
         launch_id=payload.launch_id,
         resource_url=payload.resource_url,
@@ -366,6 +410,15 @@ async def complete_deep_link_get(
     text: Optional[str] = None,
     settings: Settings = Depends(get_settings),
 ):
+    logger.info(
+        "lti_deep_link_complete_get_input",
+        extra={
+            "launch_id": launch_id,
+            "resource_url": resource_url,
+            "title": title,
+            "has_text": bool(text),
+        },
+    )
     return _complete_deep_link(
         launch_id=launch_id,
         resource_url=resource_url,
