@@ -1,6 +1,6 @@
 import json
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from .. import models, schema
@@ -11,6 +11,15 @@ from ..schema.questionSchema import Question
 from ..lti.routes import try_submit_lti_grade_for_launch, find_latest_lti_launch_id_for_learner
 
 router = APIRouter(prefix="/api", tags=[Tags.CONTENT_RECORDS])
+
+_NON_LTI_SESSION_SENTINELS = {
+    "",
+    "unknown",
+    "none",
+    "null",
+    "undefined",
+    "unidentifiable_session",
+}
 
 
 def _resolve_mcq_score(db: Session, question_id: str, answer: str) -> tuple[float, float] | None:
@@ -49,18 +58,28 @@ def _attempt_lti_grade_passback(
     result: models.RecordResultModel,
     db: Session,
     settings: Settings,
+    cookie_launch_id: str | None = None,
 ) -> dict | None:
     mcq_score = _resolve_mcq_score(db, result.question_id, result.answer)
     score_given = mcq_score[0] if mcq_score else None
     score_maximum = mcq_score[1] if mcq_score else None
 
     candidate_launch_ids = []
-    if getattr(result, "session_id", None):
-        candidate_launch_ids.append(("record_result.session_id", str(result.session_id)))
+    explicit_lti_launch_id = (getattr(result, "lti_launch_id", None) or "").strip()
+    if explicit_lti_launch_id:
+        candidate_launch_ids.append(("record_result.lti_launch_id", explicit_lti_launch_id))
+
+    raw_session_id = str(getattr(result, "session_id", "") or "").strip()
+    if raw_session_id and raw_session_id.lower() not in _NON_LTI_SESSION_SENTINELS:
+        candidate_launch_ids.append(("record_result.session_id", raw_session_id))
 
     fallback_launch_id = find_latest_lti_launch_id_for_learner(result.learner_id)
     if fallback_launch_id and fallback_launch_id not in [cid for _, cid in candidate_launch_ids]:
         candidate_launch_ids.append(("learner_fallback", fallback_launch_id))
+
+    cookie_launch_id = (cookie_launch_id or "").strip()
+    if cookie_launch_id and cookie_launch_id not in [cid for _, cid in candidate_launch_ids]:
+        candidate_launch_ids.append(("lti_cookie", cookie_launch_id))
 
     if not candidate_launch_ids:
         print(
@@ -71,6 +90,8 @@ def _attempt_lti_grade_passback(
                     "learner_id": result.learner_id,
                     "question_id": result.question_id,
                     "session_id": getattr(result, "session_id", None),
+                    "lti_launch_id": getattr(result, "lti_launch_id", None),
+                    "cookie_launch_id": cookie_launch_id,
                 },
                 ensure_ascii=True,
                 default=str,
@@ -127,6 +148,7 @@ def _attempt_lti_grade_passback(
 
 @router.post("/record_result")
 def record_result(
+    request: Request,
     result: models.RecordResultModel,
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
@@ -165,6 +187,7 @@ def record_result(
             result=result,
             db=db,
             settings=settings,
+            cookie_launch_id=request.cookies.get("ai_answer_lti_launch_id"),
         )
 
         response = {"id": db_result.id, "message": "Record created successfully"}
