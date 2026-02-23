@@ -7,6 +7,7 @@ import time
 import re
 from pathlib import Path
 from typing import Optional
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
@@ -82,6 +83,16 @@ def _extract_score_from_feedback(text: Optional[str]) -> tuple[Optional[float], 
         return float(pct.group(1)), 100.0
 
     return None, None
+
+
+def _append_query_params(url: str, **params: Optional[str]) -> str:
+    parts = urlsplit(url)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    for key, value in params.items():
+        if value is None:
+            continue
+        query[key] = str(value)
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
 
 
 def _build_lti_client_assertion(settings: Settings, *, client_id: str, token_url: str) -> str:
@@ -538,6 +549,13 @@ async def lti_launch(request: Request, settings: Settings = Depends(get_settings
         if isinstance(claim_target_link_uri, str) and claim_target_link_uri.strip():
             ui_url = claim_target_link_uri.strip()
             redirect_source = "claim_target_link_uri"
+        ui_url = _append_query_params(
+            ui_url,
+            lti_launch_id=session_id,
+            lti_user_id=str(sub) if sub else None,
+            lti_context_id=str(context_id) if context_id else None,
+            lti_resource_link_id=str(resource_link_id) if resource_link_id else None,
+        )
         print(
             "[LTI_RESOURCE_LINK_LAUNCH_REDIRECT] "
             + json.dumps(

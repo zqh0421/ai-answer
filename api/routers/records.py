@@ -21,6 +21,16 @@ _NON_LTI_SESSION_SENTINELS = {
     "unidentifiable_session",
 }
 
+_NON_LTI_LEARNER_SENTINELS = {
+    "",
+    "anonymous_user",
+    "anonymous",
+    "unknown",
+    "none",
+    "null",
+    "undefined",
+}
+
 
 def _resolve_mcq_score(db: Session, question_id: str, answer: str) -> tuple[float, float] | None:
     question = db.query(Question).filter(Question.question_id == question_id).first()
@@ -73,13 +83,15 @@ def _attempt_lti_grade_passback(
     if raw_session_id and raw_session_id.lower() not in _NON_LTI_SESSION_SENTINELS:
         candidate_launch_ids.append(("record_result.session_id", raw_session_id))
 
-    fallback_launch_id = find_latest_lti_launch_id_for_learner(result.learner_id)
-    if fallback_launch_id and fallback_launch_id not in [cid for _, cid in candidate_launch_ids]:
-        candidate_launch_ids.append(("learner_fallback", fallback_launch_id))
-
     cookie_launch_id = (cookie_launch_id or "").strip()
     if cookie_launch_id and cookie_launch_id not in [cid for _, cid in candidate_launch_ids]:
         candidate_launch_ids.append(("lti_cookie", cookie_launch_id))
+
+    normalized_learner_id = str(result.learner_id or "").strip()
+    if normalized_learner_id.lower() not in _NON_LTI_LEARNER_SENTINELS:
+        fallback_launch_id = find_latest_lti_launch_id_for_learner(normalized_learner_id)
+        if fallback_launch_id and fallback_launch_id not in [cid for _, cid in candidate_launch_ids]:
+            candidate_launch_ids.append(("learner_fallback", fallback_launch_id))
 
     if not candidate_launch_ids:
         print(
@@ -92,6 +104,7 @@ def _attempt_lti_grade_passback(
                     "session_id": getattr(result, "session_id", None),
                     "lti_launch_id": getattr(result, "lti_launch_id", None),
                     "cookie_launch_id": cookie_launch_id,
+                    "candidate_launch_ids": candidate_launch_ids,
                 },
                 ensure_ascii=True,
                 default=str,
@@ -120,6 +133,7 @@ def _attempt_lti_grade_passback(
                         "learner_id": result.learner_id,
                         "question_id": result.question_id,
                         "score_inferred": mcq_score is not None,
+                        "candidate_launch_ids": candidate_launch_ids,
                         "result": grade_result,
                     },
                     ensure_ascii=True,
