@@ -70,3 +70,19 @@ class InMemoryLtiStorage:
     def get_launch_session(self, session_id: str) -> Optional[LaunchSession]:
         with self._lock:
             return self._sessions.get(session_id)
+
+    def get_latest_launch_session_for_sub(
+        self,
+        sub: str,
+        *,
+        message_type: Optional[str] = None,
+    ) -> Optional[LaunchSession]:
+        with self._lock:
+            # dict preserves insertion order; iterate backwards to get most recent launch
+            for session in reversed(list(self._sessions.values())):
+                if str(session.sub) != str(sub):
+                    continue
+                if message_type and session.message_type != message_type:
+                    continue
+                return session
+        return None

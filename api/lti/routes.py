@@ -169,6 +169,77 @@ def _post_lti_ags_score(*, session: LaunchSession, settings: Settings, score_giv
     }
 
 
+def try_submit_lti_grade_for_launch(
+    *,
+    launch_id: str,
+    settings: Settings,
+    score_given: Optional[float] = None,
+    score_maximum: Optional[float] = None,
+    ai_structure_feedback: Optional[str] = None,
+    comment: Optional[str] = None,
+    expected_sub: Optional[str] = None,
+) -> dict:
+    session = _STORAGE.get_launch_session(launch_id)
+    if not session:
+        return {"ok": False, "skipped": True, "reason": "unknown_session", "launch_id": launch_id}
+    if session.message_type != "LtiResourceLinkRequest":
+        return {"ok": False, "skipped": True, "reason": "not_resource_link_launch", "launch_id": launch_id}
+    if expected_sub and session.sub and str(session.sub) != str(expected_sub):
+        return {
+            "ok": False,
+            "skipped": True,
+            "reason": "learner_mismatch",
+            "launch_id": launch_id,
+            "expected_sub": str(expected_sub),
+            "session_sub": str(session.sub),
+        }
+
+    parsed_given, parsed_max = _extract_score_from_feedback(ai_structure_feedback)
+    resolved_max = (
+        score_maximum
+        if score_maximum is not None
+        else parsed_max
+        if parsed_max is not None
+        else 1.0
+    )
+    resolved_given = (
+        score_given
+        if score_given is not None
+        else parsed_given
+        if parsed_given is not None
+        else resolved_max
+    )
+
+    if resolved_max <= 0:
+        return {"ok": False, "skipped": True, "reason": "invalid_score_maximum", "launch_id": launch_id}
+    resolved_given = max(0.0, min(float(resolved_given), float(resolved_max)))
+
+    result = _post_lti_ags_score(
+        session=session,
+        settings=settings,
+        score_given=resolved_given,
+        score_maximum=resolved_max,
+        comment=comment or ai_structure_feedback,
+    )
+    return {
+        "ok": True,
+        "launch_id": launch_id,
+        "score_given": resolved_given,
+        "score_maximum": resolved_max,
+        **result,
+    }
+
+
+def find_latest_lti_launch_id_for_learner(learner_id: str) -> Optional[str]:
+    if not learner_id:
+        return None
+    session = _STORAGE.get_latest_launch_session_for_sub(
+        str(learner_id),
+        message_type="LtiResourceLinkRequest",
+    )
+    return session.session_id if session else None
+
+
 @router.api_route("/login", methods=["GET", "POST"])
 async def lti_login(request: Request, settings: Settings = Depends(get_settings)):
     # Merge params: query + form (form wins)
@@ -481,7 +552,27 @@ async def lti_launch(request: Request, settings: Settings = Depends(get_settings
                 default=str,
             )
         )
-    return RedirectResponse(url=ui_url, status_code=302)
+    is_https_public = str(settings.public_base_url or "").startswith("https://")
+    cookie_samesite = "none" if is_https_public else "lax"
+    response = RedirectResponse(url=ui_url, status_code=302)
+    response.set_cookie(
+        key="ai_answer_lti_launch_id",
+        value=session_id,
+        max_age=60 * 60 * 6,
+        httponly=False,
+        secure=is_https_public,
+        samesite=cookie_samesite,
+    )
+    if sub:
+        response.set_cookie(
+            key="ai_answer_lti_user_id",
+            value=str(sub),
+            max_age=60 * 60 * 6,
+            httponly=False,
+            secure=is_https_public,
+            samesite=cookie_samesite,
+        )
+    return response
 
 
 def _complete_deep_link(
@@ -542,15 +633,29 @@ def _complete_deep_link(
     return HTMLResponse(content=html, status_code=200)
 
 
-@router.post("/deep-link/complete")
-async def complete_deep_link_post(
-    payload: DeepLinkSelectionRequest,
+@router.api_route("/deep-link/complete", methods=["GET", "POST"])
+async def complete_deep_link(
+    request: Request,
     settings: Settings = Depends(get_settings),
 ):
+    if request.method == "POST":
+        payload_dict = {}
+        content_type = (request.headers.get("content-type") or "").lower()
+        if "application/json" in content_type:
+            payload_dict = await request.json()
+        else:
+            form = await request.form()
+            payload_dict = dict(form)
+    else:
+        payload_dict = dict(request.query_params)
+
+    payload = DeepLinkSelectionRequest(**payload_dict)
+
     print(
-        "[LTI_DEEP_LINK_COMPLETE_POST_INPUT] "
+        "[LTI_DEEP_LINK_COMPLETE_INPUT] "
         + json.dumps(
             {
+                "method": request.method,
                 "launch_id": payload.launch_id,
                 "resource_url": payload.resource_url,
                 "title": payload.title,
@@ -569,84 +674,26 @@ async def complete_deep_link_post(
     )
 
 
-@router.get("/deep-link/complete")
-async def complete_deep_link_get(
-    resource_url: str,
-    launch_id: str,
-    title: Optional[str] = None,
-    text: Optional[str] = None,
-    settings: Settings = Depends(get_settings),
-):
-    print(
-        "[LTI_DEEP_LINK_COMPLETE_GET_INPUT] "
-        + json.dumps(
-            {
-                "launch_id": launch_id,
-                "resource_url": resource_url,
-                "title": title,
-                "has_text": bool(text),
-            },
-            ensure_ascii=True,
-            default=str,
-        )
-    )
-    return _complete_deep_link(
-        launch_id=launch_id,
-        resource_url=resource_url,
-        title=title,
-        text=text,
-        settings=settings,
-    )
-
-
 @router.post("/grade")
 async def submit_lti_grade(
     payload: LtiGradeSubmitRequest,
     settings: Settings = Depends(get_settings),
 ):
-    session = _STORAGE.get_launch_session(payload.launch_id)
-    if not session:
-        return PlainTextResponse("Unknown session", status_code=404)
-    if session.message_type != "LtiResourceLinkRequest":
-        return PlainTextResponse("Session is not a resource-link launch", status_code=400)
-
-    parsed_given, parsed_max = _extract_score_from_feedback(payload.ai_structure_feedback)
-    score_maximum = (
-        payload.score_maximum
-        if payload.score_maximum is not None
-        else parsed_max
-        if parsed_max is not None
-        else payload.max_score
-        if payload.max_score is not None
-        else 1.0
-    )
-    score_given = (
-        payload.score_given
-        if payload.score_given is not None
-        else parsed_given
-        if parsed_given is not None
-        else score_maximum
-    )
-
-    if score_maximum <= 0:
-        return PlainTextResponse("score_maximum/max_score must be > 0", status_code=400)
-    score_given = max(0.0, min(float(score_given), float(score_maximum)))
-
     try:
-        result = _post_lti_ags_score(
-            session=session,
+        result = try_submit_lti_grade_for_launch(
+            launch_id=payload.launch_id,
             settings=settings,
-            score_given=score_given,
-            score_maximum=score_maximum,
+            score_given=payload.score_given,
+            score_maximum=payload.score_maximum if payload.score_maximum is not None else payload.max_score,
+            ai_structure_feedback=payload.ai_structure_feedback,
             comment=payload.comment or payload.ai_structure_feedback,
         )
+        if result.get("skipped"):
+            reason = result.get("reason", "grade_submission_skipped")
+            status_code = 404 if reason == "unknown_session" else 400
+            return JSONResponse(result, status_code=status_code)
         return JSONResponse(
             {
-                "ok": True,
-                "launch_id": payload.launch_id,
-                "score_given": score_given,
-                "score_maximum": score_maximum,
-                "score_source": "ai_feedback" if parsed_given is not None else "full_score_fallback",
                 **result,
             }
         )
@@ -662,6 +709,71 @@ async def submit_lti_grade(
         )
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+
+@router.get("/context")
+async def get_lti_context(
+    request: Request,
+    learner_id: Optional[str] = None,
+    launch_id: Optional[str] = None,
+):
+    cookie_launch_id = request.cookies.get("ai_answer_lti_launch_id")
+    resolved_launch_id = launch_id or find_latest_lti_launch_id_for_learner(learner_id or "") or cookie_launch_id
+    session = _STORAGE.get_launch_session(resolved_launch_id) if resolved_launch_id else None
+    ags_claim = {}
+    if session and isinstance(session.raw_claims, dict):
+        ags_claim = session.raw_claims.get("https://purl.imsglobal.org/spec/lti-ags/claim/endpoint") or {}
+
+    payload = {
+        "ok": True,
+        "detected": bool(session),
+        "lookup": {
+            "input_learner_id": learner_id,
+            "input_launch_id": launch_id,
+            "resolved_launch_id": resolved_launch_id,
+            "strategy": (
+                "launch_id"
+                if launch_id
+                else "learner_id"
+                if learner_id
+                else "cookie"
+                if cookie_launch_id
+                else "none"
+            ),
+        },
+        "session": None,
+        "grade_passback": {
+            "ags_available": bool(ags_claim.get("lineitem")) if session else False,
+            "lineitem": ags_claim.get("lineitem") if session else None,
+            "scope": ags_claim.get("scope") if session else None,
+        },
+    }
+
+    if session:
+        payload["session"] = {
+            "session_id": session.session_id,
+            "iss": session.iss,
+            "client_id": session.client_id,
+            "deployment_id": session.deployment_id,
+            "sub": session.sub,
+            "message_type": session.message_type,
+            "context_id": session.context_id,
+            "resource_link_id": session.resource_link_id,
+            "roles": session.roles,
+        }
+        if learner_id:
+            payload["learner_match"] = str(learner_id) == str(session.sub)
+    elif launch_id:
+        payload["reason"] = "input_launch_id_not_found"
+    elif learner_id:
+        payload["reason"] = "no_lti_session_found_for_learner"
+    elif cookie_launch_id:
+        payload["reason"] = "launch_cookie_present_but_session_not_found"
+    else:
+        payload["reason"] = "no_lookup_input"
+
+    print("[LTI_CONTEXT] " + json.dumps(payload, ensure_ascii=True, default=str))
+    return JSONResponse(payload)
 
 
 @router.get("/.well-known/jwks.json")
