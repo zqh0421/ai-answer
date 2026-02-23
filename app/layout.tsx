@@ -35,7 +35,7 @@ export default function RootLayout({
           </Suspense>
 
           {/* Main Content Area */}
-          <main className="flex-grow container mx-2 min-w-full p-6">
+          <main className="flex-grow">
             <ClientProvider>{children}</ClientProvider>
           </main>
 

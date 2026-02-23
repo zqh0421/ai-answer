@@ -14,6 +14,7 @@ const CourseOverview = () => {
   const [loading, setLoading] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null); // State to track deletion status
   const { data } = useSession();
+  const creatorEmail = data?.user?.email;
   const searchParams = useSearchParams();
   const isDeepLinkMode = searchParams.get("lti_mode") === "deep_link";
   const launchId = searchParams.get("launch_id");
@@ -26,15 +27,18 @@ const CourseOverview = () => {
 
   // Fetch existing courses
   const fetchCourses = useCallback(async () => {
+    if (!creatorEmail) {
+      return;
+    }
+
     try {
-      const createrEmail = data?.user?.email;
-      const res = await axios.get(`/api/courses/createdby/${createrEmail}`);
+      const res = await axios.get(`/api/courses/createdby/${creatorEmail}`);
       console.log(res.data);
       setCourses(res.data);
     } catch (err) {
       console.error("Error fetching courses:", err);
     }
-  }, [data?.user?.email]);
+  }, [creatorEmail]);
 
   useEffect(() => {
     fetchCourses();
@@ -99,10 +103,10 @@ const CourseOverview = () => {
         </div>
         <ul className="space-y-4 mt-4">
           {courses.length === 0 ? (
-            <li className="text-gray-500">No courses available</li>
+            <li key="no-courses" className="text-gray-500">No courses available</li>
           ) : (
-            courses.map((course) => (
-              <li key={course.course_id} className="flex items-center justify-between bg-gray-100 p-4 rounded-lg shadow-sm">
+            courses.map((course, index) => (
+              <li key={course.course_id || `course-${index}-${course.course_title}`} className="flex items-center justify-between bg-gray-100 p-4 rounded-lg shadow-sm">
                 <div className="flex items-center">
                   <Link href={`/manage/course/${course.course_id}${ltiQuery}`}>
                     <span className="text-lg font-medium text-indigo-600 hover:text-indigo-800">

@@ -15,7 +15,6 @@ import ImageModal from "@/app/components/v2/ImageModal";
 import LeftFeedbackPanel from "@/app/components/v2/LeftFeedbackPanel";
 import RightInputPanel from "@/app/components/v2/RightInputPanel";
 import { Reference, Course, Module, Slide, RecordResultInput, FeedbackResult } from "@/app/types";
-import { trackAttemptAndCheckCompletion, getPracticeStatus } from "@/app/utils/qualtricsSignal";
 
 function PageChildren({ 
   questionId, 
@@ -254,20 +253,6 @@ function PageChildren({
         feedback_type: feedbackData.feedbackType,
         response_time: endTime - startTime
       });
-      
-      // Track attempt and check for Qualtrics completion signal
-      if (prolificPid && course_version) {
-        const isComplete = trackAttemptAndCheckCompletion(
-          questionPreset.question_id,
-          prolificPid,
-          feedbackData.isCorrect,
-          course_version
-        );
-        
-        if (isComplete) {
-          console.log("Practice completion criteria met, signal sent to Qualtrics");
-        }
-      }
       
     } catch (error) {
       console.error("Error fetching MCQ feedback:", error);

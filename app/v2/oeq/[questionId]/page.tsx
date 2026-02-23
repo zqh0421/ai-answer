@@ -15,7 +15,6 @@ import ImageModal from "@/app/components/v2/ImageModal";
 import LeftFeedbackPanel from "@/app/components/v2/LeftFeedbackPanel";
 import RightInputPanel from "@/app/components/v2/RightInputPanel";
 import { Reference, Course, Module, Slide, RecordResultInput, FeedbackResult } from "@/app/types";
-import { trackAttemptAndCheckCompletion } from "@/app/utils/qualtricsSignal";
 
 function PageChildren({ 
   questionId, 
@@ -464,21 +463,6 @@ function PageChildren({
               };
               await recordResultToDatabase(recordPayload);
               
-              // Track attempt and check for Qualtrics completion signal (OEQ)
-              if (prolificPid && course_version && questionPreset) {
-                // For OEQ, we consider any feedback as an attempt. 
-                // We don't have a clear "correct" indicator, so we count based on attempts only
-                const isComplete = trackAttemptAndCheckCompletion(
-                  questionPreset.question_id,
-                  prolificPid,
-                  false, // OEQ doesn't have definitive correct/incorrect
-                  course_version
-                );
-                
-                if (isComplete) {
-                  console.log("OEQ Practice completion criteria met, signal sent to Qualtrics");
-                }
-              }
             }
             break;
           }
@@ -583,20 +567,6 @@ function PageChildren({
           };
           await recordResultToDatabase(recordPayload);
           
-          // Track attempt and check for Qualtrics completion signal (OEQ Human)
-          if (prolificPid && course_version && questionPreset) {
-            const isComplete = trackAttemptAndCheckCompletion(
-              questionPreset.question_id,
-              prolificPid,
-              false, // OEQ doesn't have definitive correct/incorrect
-              course_version
-            );
-            
-            if (isComplete) {
-              console.log("OEQ Human feedback completion criteria met, signal sent to Qualtrics");
-            }
-          }
-
           setResult(response.data.human_feedback);
           setIsFeedbackLoading(false);
           setIsImageLoading(false);
@@ -663,19 +633,6 @@ function PageChildren({
           };
           await recordResultToDatabase(recordPayload);
           
-          // Track attempt and check for Qualtrics completion signal (OEQ AI)
-          if (prolificPid && course_version && questionPreset) {
-            const isComplete = trackAttemptAndCheckCompletion(
-              questionPreset.question_id,
-              prolificPid,
-              false, // OEQ doesn't have definitive correct/incorrect
-              course_version
-            );
-            
-            if (isComplete) {
-              console.log("OEQ AI feedback completion criteria met, signal sent to Qualtrics");
-            }
-          }
         }
 
         // Handle the response which might be structured or plain text

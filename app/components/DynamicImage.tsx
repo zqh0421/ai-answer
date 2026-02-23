@@ -9,9 +9,10 @@ interface DynamicImageProps {
   alt: string;
   maxWidth?: number;
   className?: string;
+  disableHoverShadow?: boolean;
 }
 
-export default function DynamicImage({ src, alt, className, maxWidth }: DynamicImageProps) {
+export default function DynamicImage({ src, alt, className, maxWidth, disableHoverShadow = false }: DynamicImageProps) {
   const [dimensions, setDimensions] = useState<{ width: number; height: number } | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
@@ -91,7 +92,7 @@ export default function DynamicImage({ src, alt, className, maxWidth }: DynamicI
         alt={alt}
         width={finalWidth}
         height={finalHeight}
-        className={`${className} transition-all duration-300 hover:shadow-lg`}
+        className={`${className} transition-all duration-300 ${disableHoverShadow ? '' : 'hover:shadow-lg'}`}
         style={{
           maxWidth: '100%',
           height: 'auto',

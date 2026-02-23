@@ -22,9 +22,18 @@ export interface Slide {
   published: boolean; // New field to track publish status
   publishing?: boolean; // Temporary state for ongoing publishing
   gotVision: boolean;
+  gotVectors?: boolean;
   gettingVision?: boolean;
   updatingVision?: boolean; // Temporary state for updating vision
   updatingVectors?: boolean; // Temporary state for updating vectors
+  pageCount?: number;
+  rawInfoStatus?: 'not_started' | 'queued' | 'processing' | 'processed' | 'skipped' | 'failed' | 'cancelled';
+  rawInfoProgress?: {
+    total_steps: number;
+    completed_steps: number;
+    current_step_label: string | null;
+    error: string | null;
+  } | null;
 }
 
 export interface Reference {

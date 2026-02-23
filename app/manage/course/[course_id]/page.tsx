@@ -1,15 +1,64 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import axios from 'axios';
+import { useEffect, useRef, useState } from 'react';
 import { AxiosError } from 'axios';
 import { usePathname } from 'next/navigation';
-import { Disclosure, DisclosureButton, DisclosurePanel } from '@headlessui/react';
-import DynamicImage from '@/app/components/DynamicImage';
-import { Course, Module, Slide, modulesNslides } from "@/app/types";
+import { useDispatch, useSelector } from 'react-redux';
+import ActionButton from '@/app/components/ActionButton';
+import AddSlidesModal from './components/AddSlidesModal';
+import ConfirmUploadModal from './components/ConfirmUploadModal';
+import CreateModuleModal from './components/CreateModuleModal';
+import JobSummaryPanel from './components/JobSummaryPanel';
+import ModuleSlidesSection from './components/ModuleSlidesSection';
+import { Course, Module, Slide } from "@/app/types";
+import { AppDispatch, RootState } from '@/app/store/store';
+import {
+  ProcessJobStatus,
+  ProcessJobSummary,
+  setJobPanelOpen,
+  upsertProcessJob as upsertProcessJobAction,
+} from '@/app/slices/processJobsSlice';
+import {
+  asBool,
+  normalizeDataUrl,
+  normalizeSlideFromApi,
+} from './utils/slideUtils';
+import {
+  extractFailedDetails,
+  extractSlideIdsFromResult,
+  humanizeProcessError,
+  isTerminalBatchJobStatus,
+  normalizeBatchJobResponse,
+  normalizeJobItems,
+  toProcessJobStatus,
+} from './utils/jobUtils';
+import type {
+  BatchJobResponse,
+  DeleteBatchRequest,
+  ProcessBatchRequest,
+  UiProcessStatus,
+  UploadSlidesBatchResponse,
+} from './types';
+import {
+  cancelProcessBatchJobApi,
+  createCourseModuleApi,
+  deleteModuleApi,
+  deleteSlidesBatchApi,
+  fetchCourseByIdApi,
+  fetchCourseModulesApi,
+  fetchDriveFolderFilesApi,
+  fetchModuleSlidesApi,
+  getPageImportBatchJobApi,
+  getProcessBatchJobApi,
+  startProcessBatchApi,
+  uploadModuleSlidesBatchApi,
+} from './services/courseSlidesApi';
 
 const CoursePage = () => {
+  const JOB_POLL_INTERVAL_MS = 2000;
+  const JOB_TIMEOUT_WARNING_MS = 2 * 60 * 1000;
   const pathname = usePathname();
+  const dispatch = useDispatch<AppDispatch>();
   const pathnames = pathname.split('/');
   const courseId = pathnames[pathnames.length - 1];
   const [course, setCourse] = useState<Course | null>(null);
@@ -25,22 +74,38 @@ const CoursePage = () => {
   const [isSlideModalOpen, setIsSlideModalOpen] = useState(false);
   const [slideInfoList, setSlideInfoList] = useState<Slide[]>([]);
   const [showConfirmation, setShowConfirmation] = useState(false);
-  const [courseFolderLink, setCourseFolderLink] = useState('');
-  const [isModulesUploadModalOpen, setIsModulesUploadModalOpen] = useState(false);
-  const [showModulesUploadConfirmation, setShowModulesUploadConfirmation] = useState(false);
-  const [modulesUploadList, setModulesUploadList] = useState<modulesNslides[]>([]);
+  const [selectedSlidesByModule, setSelectedSlidesByModule] = useState<Record<string, string[]>>({});
+  const [batchActionLoading, setBatchActionLoading] = useState(false);
+  const [selectionScope, setSelectionScope] = useState<'all' | string>('all');
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [slideProcessStatusById, setSlideProcessStatusById] = useState<Record<string, UiProcessStatus>>({});
+  const [activePageImportJobId, setActivePageImportJobId] = useState<string | null>(null);
+  const [activePageImportModuleId, setActivePageImportModuleId] = useState<string | null>(null);
+  const [pageImportJobState, setPageImportJobState] = useState<BatchJobResponse | null>(null);
+  const [activeProcessJobId, setActiveProcessJobId] = useState<string | null>(null);
+  const [isPageImportPollingReconnecting, setIsPageImportPollingReconnecting] = useState(false);
+  const [isProcessPollingReconnecting, setIsProcessPollingReconnecting] = useState(false);
+  const [pageImportPollFailureCount, setPageImportPollFailureCount] = useState(0);
+  const [processPollFailureCount, setProcessPollFailureCount] = useState(0);
+  const [pageImportPollRestartNonce, setPageImportPollRestartNonce] = useState(0);
+  const [processPollRestartNonce, setProcessPollRestartNonce] = useState(0);
+  const processJobs = useSelector((state: RootState) => state.processJobs.jobs);
+  const isJobPanelOpen = useSelector((state: RootState) => state.processJobs.isJobPanelOpen);
+  const [jobClockMs, setJobClockMs] = useState<number>(Date.now());
+  const isSyncingJobsRef = useRef(false);
+  const pageImportListRefreshCounterRef = useRef(0);
   // Fetch the course details and modules when the component mounts
   useEffect(() => {
     if (courseId) {
       const fetchCourseData = async () => {
         try {
           // Fetch course details
-          const courseRes = await axios.get(`/api/courses/by_id/${courseId}`);
-          setCourse(courseRes.data);
+          const courseData = await fetchCourseByIdApi(courseId);
+          setCourse(courseData);
 
           // Fetch course modules
-          const modulesRes = await axios.get(`/api/courses/by_id/${courseId}/modules`);
-          setModules(modulesRes.data.modules);
+          const modulesData = await fetchCourseModulesApi(courseId);
+          setModules(modulesData);
 
           setLoading(false);
         } catch (err) {
@@ -52,6 +117,13 @@ const CoursePage = () => {
     }
   }, [courseId]);
 
+  useEffect(() => {
+    const hasRunningJobs = processJobs.some((job) => ['queued', 'processing', 'stopping'].includes(job.status));
+    if (!hasRunningJobs) return;
+    const timer = window.setInterval(() => setJobClockMs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [processJobs]);
+
 
   // Helper function to extract Google Drive folder ID from the link
   const extractFolderIdFromLink = (link: string): string | null => {
@@ -60,67 +132,13 @@ const CoursePage = () => {
     return match ? match[1] : null;
   };  
 
-  const fetchImageAsBase64 = async (url: string): Promise<string | null> => {
-    try {
-      const response = await axios.get(url, { responseType: 'arraybuffer' });
-      return `data:image/jpeg;base64,${Buffer.from(response.data, 'binary').toString('base64')}`;
-    } catch (error) {
-      console.error('Error fetching image:', error);
-      return null;
-    }
-  };
-
-  // Helper function to fetch files' metadata inside a Google Drive folder
-  const fetchDriveFolderFiles = async (folderId: string): Promise<Slide[]> => {
-    try {
-      const apiKey = process.env.NEXT_PUBLIC_GOOGLE_DRIVE_API_KEY;
-      const requestUrl = `https://www.googleapis.com/drive/v3/files?q='${folderId}'+in+parents&fields=files(id,name,mimeType,thumbnailLink)&key=${apiKey}`;
-      const res = await axios.get(requestUrl);
-  
-      const slidesInfo: Slide[] = await Promise.all(
-        res.data.files.map(async (file: { id: string; name: string; mimeType: string; thumbnailLink: string }) => {
-          const slide_cover = file.thumbnailLink ? await fetchImageAsBase64(file.thumbnailLink) : null;
-
-          if (file.mimeType === 'application/vnd.google-apps.presentation') {
-            // If it's a Google Slides (PPT), export it as PDF
-            const exportUrl = `https://www.googleapis.com/drive/v3/files/${file.id}/export?mimeType=application/pdf&key=${apiKey}`;
-            return {
-              slide_google_id: file.id,
-              slide_title: file.name,
-              slide_url: exportUrl,
-              slide_cover: slide_cover,
-            };
-          } else if (file.mimeType === 'application/pdf') {
-            // If it's already a PDF, no conversion needed
-            return {
-              slide_google_id: file.id,
-              slide_title: file.name,
-              slide_url: `https://drive.google.com/file/d/${file.id}/view`,
-              slide_cover: slide_cover,
-            };
-          }
-          return null; // Skip other file types
-        })
-      );
-  
-      return slidesInfo.filter((slide) => slide !== null); // Filter out any null entries
-    } catch (error: unknown) {
-      if (error instanceof AxiosError) {
-        console.error('Error fetching subfolders:', error.response?.data || error.message);
-      } else {
-        console.error('Unexpected error:', error);
-      }
-      return [];
-    }
-  };
-
   // Function to delete a module
   const handleDeleteModule = async (moduleId: string) => {
     const confirmDelete = window.confirm('Are you sure you want to delete this module?');
     if (!confirmDelete) return;
 
     try {
-      await axios.delete(`/api/modules/by_id/${moduleId}`);
+      await deleteModuleApi(moduleId);
       setModules((prevModules) => prevModules.filter(module => module.module_id !== moduleId));
       alert('Module deleted successfully');
     } catch (error) {
@@ -129,283 +147,601 @@ const CoursePage = () => {
     }
   };
 
-  // Function to delete a slide
-  const handleDeleteSlide = async (moduleId: string, slideId: string) => {
-    const confirmDelete = window.confirm('Are you sure you want to delete this slide?');
-    if (!confirmDelete) return;
-
-    try {
-      await axios.delete(`/api/modules/${moduleId}/slides/${slideId}`);
-      setSlidesByModule((prevSlides) => ({
-        ...prevSlides,
-        [moduleId]: prevSlides[moduleId].filter(slide => slide.id !== slideId),
-      }));
-      alert('Slide deleted successfully');
-    } catch (error) {
-      console.error('Error deleting slide:', error);
-      alert('Failed to delete slide');
-    }
-  };
-
   // Fetch metadata for the files in the pasted Drive folder link
   const handleFetchSlidesFromFolder = async () => {
-    // console.log("fetch")
     const folderId = extractFolderIdFromLink(driveFolderLink);
     if (folderId) {
-      // console.log("YEs")
-      const slidesInfo = await fetchDriveFolderFiles(folderId);
+      const slidesInfo = await fetchDriveFolderFilesApi(folderId, process.env.NEXT_PUBLIC_GOOGLE_DRIVE_API_KEY);
       setSlideInfoList(slidesInfo); // Store fetched slide metadata
       setShowConfirmation(true); // Trigger confirmation pop-up
     }
   };
 
-  interface Folder {
-    folder_id: string;
-    folder_name: string;
-  }
-  
-  const fetchSubfoldersFromFolder = async (folderId: string): Promise<Folder[]> => {
-    try {
-      const apiKey = process.env.NEXT_PUBLIC_GOOGLE_DRIVE_API_KEY;
-      // Google Drive API query to get subfolders within a folder
-      const requestUrl = `https://www.googleapis.com/drive/v3/files?q='${folderId}'+in+parents+and+mimeType='application/vnd.google-apps.folder'&fields=files(id,name)&key=${apiKey}`;
-      
-      const res = await axios.get(requestUrl);
-  
-      // Map the results to a folder object with folder_id and folder_name
-      const folders: Folder[] = res.data.files.map((file: { id: string; name: string; mimeType: string; thumbnailLink: string }) => ({
-        folder_id: file.id,
-        folder_name: file.name,
-      }));
-  
-      return folders; // Return the list of subfolders
-    } catch (error: unknown) {
-      if (error instanceof AxiosError) {
-        console.error('Error fetching subfolders:', error.response?.data || error.message);
-      } else {
-        console.error('Unexpected error:', error);
-      }
-      return [];
-    }
-  };  
-
-  const handleFetchModulesFromFolder = async () => {
-    // console.log(courseFolderLink)
-    const folderId = extractFolderIdFromLink(courseFolderLink);
-    if (folderId) {
-      // console.log(folderId)
-      const subfolders = await fetchSubfoldersFromFolder(folderId);
-
-      let temp: modulesNslides[] = [];
-
-      // Loop through each subfolder (module) and fetch slides
-      for (const subfolder of subfolders) {
-        const slidesInfo = await fetchDriveFolderFiles(subfolder.folder_id); // Fetch slides for each subfolder
-        temp = [...temp, {
-          module_id: subfolder.folder_id,
-          module_title: subfolder.folder_name,
-          slides: slidesInfo
-        }];
-      setModulesUploadList(temp);
-      setShowModulesUploadConfirmation(true); // Trigger confirmation pop-up
-      }
-    };
-  }
-
   // Fetch slides for a specific module
-  const fetchSlides = async (moduleId: string) => {
+  const fetchSlides = async (moduleId: string): Promise<Slide[]> => {
     try {
-      const slidesRes = await axios.get(`/api/modules/${moduleId}/slides`);
+      const rawSlides = await fetchModuleSlidesApi(moduleId);
+      const slides = rawSlides.map((slide: unknown) => normalizeSlideFromApi(slide));
       
       setSlidesByModule((prevSlides) => ({
         ...prevSlides,
-        [moduleId]: slidesRes.data.slides, // Store slides by module ID
+        [moduleId]: slides, // Store slides by module ID
       }));
+      return slides;
     } catch (err) {
       console.error('Error fetching slides:', err);
+      return [];
+    }
+  };
+
+  const getSelectedSlideIds = (moduleId: string) => selectedSlidesByModule[moduleId] ?? [];
+
+  const showToast = (message: string) => {
+    setToastMessage(message);
+    setTimeout(() => {
+      setToastMessage(null);
+    }, 3000);
+  };
+
+  const upsertProcessJob = (jobId: string, patch: Partial<ProcessJobSummary>) => {
+    const current = processJobs.find((job) => job.jobId === jobId);
+    const createdAtMs = patch.createdAtMs ?? current?.createdAtMs ?? Date.now();
+    const now = Date.now();
+    const queuedCount = patch.queuedCount ?? current?.queuedCount ?? 0;
+    const processingCount = patch.processingCount ?? current?.processingCount ?? 0;
+    const processedCount = patch.processedCount ?? current?.processedCount ?? 0;
+    const skippedCount = patch.skippedCount ?? current?.skippedCount ?? 0;
+    const failedCount = patch.failedCount ?? current?.failedCount ?? 0;
+    const cancelledCount = patch.cancelledCount ?? current?.cancelledCount ?? 0;
+    const progressSignature = `${queuedCount}|${processingCount}|${processedCount}|${skippedCount}|${failedCount}|${cancelledCount}`;
+    const itemsUpdatedSignature = patch.lastItemsUpdatedSignature ?? current?.lastItemsUpdatedSignature ?? '';
+    const progressChanged =
+      progressSignature !== (current?.lastProgressSignature ?? '') ||
+      itemsUpdatedSignature !== (current?.lastItemsUpdatedSignature ?? '');
+    const nextJob: ProcessJobSummary = {
+      jobId,
+      status: patch.status ?? current?.status ?? 'queued',
+      createdAtMs,
+      finishedAtMs: patch.finishedAtMs ?? current?.finishedAtMs,
+      queuedCount,
+      processingCount,
+      processedCount,
+      skippedCount,
+      failedCount,
+      cancelledCount,
+      totalCount: patch.totalCount ?? current?.totalCount ?? 0,
+      cancelRequested: patch.cancelRequested ?? current?.cancelRequested ?? false,
+      scopeLabel: patch.scopeLabel ?? current?.scopeLabel ?? selectionScope,
+      forceProcessAll: patch.forceProcessAll ?? current?.forceProcessAll ?? false,
+      failedDetails: patch.failedDetails ?? current?.failedDetails ?? [],
+      processingSlideIds: patch.processingSlideIds ?? current?.processingSlideIds ?? [],
+      items: patch.items ?? current?.items ?? [],
+      lastProgressSignature: progressSignature,
+      lastItemsUpdatedSignature: itemsUpdatedSignature,
+      lastProgressChangeAtMs: progressChanged ? now : (patch.lastProgressChangeAtMs ?? current?.lastProgressChangeAtMs ?? createdAtMs),
+    };
+    dispatch(upsertProcessJobAction(nextJob));
+  };
+
+  const formatJobDuration = (job: ProcessJobSummary) => {
+    const endMs = job.finishedAtMs ?? jobClockMs;
+    const deltaSeconds = Math.max(0, Math.floor((endMs - job.createdAtMs) / 1000));
+    const mm = Math.floor(deltaSeconds / 60);
+    const ss = deltaSeconds % 60;
+    return `${mm}:${String(ss).padStart(2, '0')}`;
+  };
+
+  const slideTitleById = Object.values(slidesByModule).flat().reduce<Record<string, string>>((acc, slide) => {
+    if (slide.id) acc[slide.id] = slide.slide_title || slide.id;
+    return acc;
+  }, {});
+
+  const getVisionStatus = (slide: Slide): UiProcessStatus => {
+    const jobStatus = slideProcessStatusById[slide.id];
+    if (jobStatus) {
+      return jobStatus;
+    }
+    const s = slide as unknown as Record<string, unknown>;
+    const gotVision = asBool(s.gotVision ?? s.got_vision ?? s.has_vision ?? s.hasVision ?? s.vision_ready);
+    const isVisionProcessing = asBool(s.gettingVision ?? s.getting_vision) || asBool(s.updatingVision ?? s.updating_vision);
+    if (isVisionProcessing) {
+      return 'Processing';
+    }
+    if (gotVision) {
+      return 'Processed';
+    }
+    return 'Unprocessed';
+  };
+
+  const getVectorStatus = (slide: Slide): UiProcessStatus => {
+    const jobStatus = slideProcessStatusById[slide.id];
+    if (jobStatus === 'Processing') {
+      return 'Processing';
+    }
+    const s = slide as unknown as Record<string, unknown>;
+    const gotVectors = asBool((s as { gotVectors?: unknown; got_vectors?: unknown; hasVectors?: unknown; has_vectors?: unknown }).gotVectors
+      ?? (s as { got_vectors?: unknown }).got_vectors
+      ?? (s as { hasVectors?: unknown }).hasVectors
+      ?? (s as { has_vectors?: unknown }).has_vectors);
+    const isVectorProcessing = asBool(s.updatingVectors ?? s.updating_vectors);
+    if (isVectorProcessing) {
+      return 'Processing';
+    }
+    if (gotVectors) {
+      return 'Processed';
+    }
+    return 'Unprocessed';
+  };
+
+  const setProcessStatusForSlides = (slideIds: string[], status: UiProcessStatus) => {
+    if (slideIds.length === 0) return;
+    setSlideProcessStatusById((prev) => {
+      const next = { ...prev };
+      slideIds.forEach((id) => {
+        next[id] = status;
+      });
+      return next;
+    });
+  };
+
+  const syncPageImportJob = async (jobId: string, moduleId?: string) => {
+    const job = normalizeBatchJobResponse(await getPageImportBatchJobApi(jobId));
+    setPageImportJobState(job);
+    setActivePageImportJobId(job.job_id || jobId);
+
+    pageImportListRefreshCounterRef.current += 1;
+    if (moduleId && (isTerminalBatchJobStatus(job.status) || pageImportListRefreshCounterRef.current % 3 === 0)) {
+      await fetchSlides(moduleId);
+    }
+
+    if (isTerminalBatchJobStatus(job.status)) {
+      if (moduleId) {
+        await fetchSlides(moduleId);
+      }
+      setActivePageImportJobId(null);
+      setActivePageImportModuleId(null);
+      if (job.status === 'completed') {
+        showToast(`Page import completed: ${job.processed_count} processed, ${job.skipped_count} skipped, ${job.failed_count} failed.`);
+      } else if (job.status === 'failed') {
+        showToast(`Page import failed: ${job.failed_count} item(s) failed.`);
+      } else if (job.status === 'cancelled') {
+        showToast('Page import job cancelled.');
+      }
+    }
+
+    return job.status;
+  };
+
+  const syncSingleJob = async (jobId: string, moduleIds: string[]): Promise<ProcessJobStatus> => {
+    const data = (await getProcessBatchJobApi(jobId)) ?? {};
+    const items = normalizeJobItems(data.items);
+    const processedIds = extractSlideIdsFromResult(data.processed);
+    const skippedIds = extractSlideIdsFromResult(data.skipped);
+    const failedIds = extractSlideIdsFromResult(data.failed);
+    const processingIdsFromItems = items.filter((item) => item.status === 'processing').map((item) => item.slideId);
+    const queuedIdsFromItems = items.filter((item) => item.status === 'queued').map((item) => item.slideId);
+    const processedIdsFromItems = items.filter((item) => item.status === 'processed').map((item) => item.slideId);
+    const skippedIdsFromItems = items.filter((item) => item.status === 'skipped').map((item) => item.slideId);
+    const failedIdsFromItems = items.filter((item) => item.status === 'failed').map((item) => item.slideId);
+    const cancelledIdsFromItems = items.filter((item) => item.status === 'cancelled').map((item) => item.slideId);
+    const failedDetailsFromItems = items
+      .filter((item) => item.status === 'failed' && item.error)
+      .map((item) => ({ slideId: item.slideId, error: item.error as string }));
+    const failedDetails = failedDetailsFromItems.length > 0 ? failedDetailsFromItems : extractFailedDetails(data.failed);
+
+    const resolvedProcessedIds = Array.from(new Set([...processedIds, ...processedIdsFromItems]));
+    const resolvedSkippedIds = Array.from(new Set([...skippedIds, ...skippedIdsFromItems]));
+    const resolvedFailedIds = Array.from(new Set([...failedIds, ...failedIdsFromItems, ...cancelledIdsFromItems]));
+    const resolvedProcessingIds = Array.from(new Set([...(Array.isArray(data.processing) ? extractSlideIdsFromResult(data.processing) : []), ...processingIdsFromItems]));
+
+    setProcessStatusForSlides(resolvedProcessingIds, 'Processing');
+    setProcessStatusForSlides(resolvedProcessedIds, 'Processed');
+    setProcessStatusForSlides([...resolvedSkippedIds, ...resolvedFailedIds, ...queuedIdsFromItems], 'Unprocessed');
+
+    const status = String(data.status ?? '').toLowerCase();
+    const jobStatus = toProcessJobStatus(status || 'processing');
+    const processed = Number(data.processed_count ?? resolvedProcessedIds.length ?? 0);
+    const skipped = Number(data.skipped_count ?? resolvedSkippedIds.length ?? 0);
+    const failed = Number(data.failed_count ?? resolvedFailedIds.length ?? 0);
+    const queued = Number(data.queued_count ?? items.filter((item) => item.status === 'queued').length ?? 0);
+    const processing = Number(data.processing_count ?? resolvedProcessingIds.length ?? 0);
+    const cancelled = Number(data.cancelled_count ?? cancelledIdsFromItems.length ?? 0);
+    const total = Number(data.total_count ?? processed + skipped + failed + queued + processing + cancelled);
+    const itemsUpdatedSignature = items.map((item) => `${item.slideId}:${item.status}:${item.updatedAt ?? ''}:${item.retryCount}`).sort().join('|');
+
+    upsertProcessJob(jobId, {
+      status: jobStatus,
+      queuedCount: queued,
+      processingCount: processing,
+      processedCount: processed,
+      skippedCount: skipped,
+      failedCount: failed,
+      cancelledCount: cancelled,
+      totalCount: total,
+      cancelRequested: Boolean(data.cancel_requested ?? false),
+      failedDetails,
+      processingSlideIds: resolvedProcessingIds,
+      items,
+      lastItemsUpdatedSignature: itemsUpdatedSignature,
+      finishedAtMs: ['completed', 'failed', 'cancelled'].includes(jobStatus) ? Date.now() : undefined,
+    });
+
+    if (['completed', 'failed', 'cancelled'].includes(jobStatus)) {
+      if (activeProcessJobId === jobId) {
+        setActiveProcessJobId(null);
+      }
+      const firstError = humanizeProcessError(failedDetails[0]?.error);
+      showToast(
+        firstError
+          ? `Processed ${processed}, Skipped ${skipped}, Failed ${failed}, Cancelled ${cancelled}. First error: ${firstError}`
+          : `Processed ${processed}, Skipped ${skipped}, Failed ${failed}, Cancelled ${cancelled}`
+      );
+      await Promise.all(moduleIds.map((moduleId) => fetchSlides(moduleId)));
+    }
+    return jobStatus;
+  };
+
+  const handleStopJob = async (jobId: string) => {
+    upsertProcessJob(jobId, { status: 'stopping', cancelRequested: true });
+    try {
+      await cancelProcessBatchJobApi(jobId);
+      showToast(`Cancel requested for job ${jobId}.`);
+    } catch (error) {
+      console.error('Error stopping job:', error);
+      upsertProcessJob(jobId, { status: 'processing', cancelRequested: false });
+      showToast(`Failed to stop job ${jobId}.`);
+    }
+  };
+
+  const toggleSlideSelection = (moduleId: string, slideId: string) => {
+    setSelectedSlidesByModule((prev) => {
+      const current = prev[moduleId] ?? [];
+      const next = current.includes(slideId)
+        ? current.filter((id) => id !== slideId)
+        : [...current, slideId];
+      return { ...prev, [moduleId]: next };
+    });
+  };
+
+  const toggleSelectAllForModule = (moduleId: string, slides: Slide[]) => {
+    const moduleSlideIds = slides.map((slide) => slide.id);
+    setSelectedSlidesByModule((prev) => {
+      const current = prev[moduleId] ?? [];
+      const allSelected = moduleSlideIds.length > 0 && moduleSlideIds.every((id) => current.includes(id));
+      return {
+        ...prev,
+        [moduleId]: allSelected ? [] : moduleSlideIds,
+      };
+    });
+  };
+
+  const clearSelectionForModule = (moduleId: string) => {
+    setSelectedSlidesByModule((prev) => ({ ...prev, [moduleId]: [] }));
+  };
+
+  const ensureSlidesLoaded = async (moduleId: string): Promise<Slide[]> => {
+    if (slidesByModule[moduleId]) {
+      return slidesByModule[moduleId];
+    }
+    return fetchSlides(moduleId);
+  };
+
+  const getScopeSelectedSlideIds = () => {
+    if (selectionScope === 'all') {
+      return Array.from(new Set(Object.values(selectedSlidesByModule).flat()));
+    }
+    return getSelectedSlideIds(selectionScope);
+  };
+
+  const getScopeModuleIds = () => {
+    if (selectionScope === 'all') {
+      return Object.keys(selectedSlidesByModule).filter((moduleId) => (selectedSlidesByModule[moduleId] ?? []).length > 0);
+    }
+    return [selectionScope];
+  };
+
+  const clearSelectionForScope = () => {
+    if (selectionScope === 'all') {
+      setSelectedSlidesByModule({});
+      return;
+    }
+    clearSelectionForModule(selectionScope);
+  };
+
+  const handleSelectAllForScope = async () => {
+    if (selectionScope === 'all') {
+      const moduleEntries = await Promise.all(
+        modules.map(async (module) => {
+          const slides = await ensureSlidesLoaded(module.module_id);
+          return [module.module_id, slides.map((slide) => slide.id)] as const;
+        })
+      );
+      const next: Record<string, string[]> = {};
+      moduleEntries.forEach(([moduleId, slideIds]) => {
+        next[moduleId] = slideIds;
+      });
+      setSelectedSlidesByModule(next);
+      return;
+    }
+
+    const slides = await ensureSlidesLoaded(selectionScope);
+    toggleSelectAllForModule(selectionScope, slides);
+  };
+
+  const handleProcessBatch = async (forceProcessAll: boolean) => {
+    const slideIds = getScopeSelectedSlideIds();
+    const moduleIds = getScopeModuleIds();
+    if (slideIds.length === 0) return;
+
+    setBatchActionLoading(true);
+    setProcessStatusForSlides(slideIds, 'Processing');
+    try {
+      const payload: ProcessBatchRequest = {
+        slide_ids: slideIds,
+        force_process_all: forceProcessAll,
+      };
+      const data = await startProcessBatchApi(payload);
+      const jobId = data?.job_id || data?.batch_job_id;
+      if (jobId) {
+        const processJobId = String(jobId);
+        const initialJobStatus = toProcessJobStatus(String(data?.status ?? 'queued'));
+        setActiveProcessJobId(processJobId);
+        upsertProcessJob(processJobId, {
+          status: initialJobStatus,
+          createdAtMs: Date.now(),
+          queuedCount: slideIds.length,
+          processingCount: 0,
+          processedCount: 0,
+          skippedCount: 0,
+          failedCount: 0,
+          cancelledCount: 0,
+          totalCount: slideIds.length,
+          cancelRequested: false,
+          scopeLabel: selectionScope,
+          forceProcessAll,
+          failedDetails: [],
+          processingSlideIds: [],
+          items: [],
+          lastItemsUpdatedSignature: '',
+        });
+        clearSelectionForScope();
+        dispatch(setJobPanelOpen(true));
+        let syncedStatus: ProcessJobStatus = initialJobStatus;
+        try {
+          syncedStatus = await syncSingleJob(processJobId, moduleIds);
+        } catch (syncError) {
+          console.error('Failed to sync process job immediately after creation:', syncError);
+        }
+        if (!['completed', 'failed', 'cancelled'].includes(syncedStatus)) {
+          showToast(`Job created: ${jobId}`);
+        }
+      } else {
+        const processed = Number(data?.processed_count ?? 0);
+        const skipped = Number(data?.skipped_count ?? 0);
+        const failed = Number(data?.failed_count ?? 0);
+        const cancelled = Number(data?.cancelled_count ?? 0);
+        const firstError = humanizeProcessError(extractFailedDetails(data?.failed)[0]?.error);
+        showToast(
+          firstError
+            ? `Processed ${processed}, Skipped ${skipped}, Failed ${failed}, Cancelled ${cancelled}. First error: ${firstError}`
+            : `Processed ${processed}, Skipped ${skipped}, Failed ${failed}, Cancelled ${cancelled}`
+        );
+        await Promise.all(moduleIds.map((moduleId) => fetchSlides(moduleId)));
+        setProcessStatusForSlides(extractSlideIdsFromResult(data?.processed), 'Processed');
+        setProcessStatusForSlides(
+          [...extractSlideIdsFromResult(data?.skipped), ...extractSlideIdsFromResult(data?.failed)],
+          'Unprocessed'
+        );
+      }
+      clearSelectionForScope();
+    } catch (error) {
+      console.error('Error processing slides in batch:', error);
+      showToast('Failed to process selected slides.');
+      setProcessStatusForSlides(slideIds, 'Unprocessed');
+    } finally {
+      setBatchActionLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!activePageImportJobId) return;
+    let cancelled = false;
+    let timeoutId: number | undefined;
+    let consecutiveFailures = 0;
+
+    const tick = async () => {
+      if (cancelled || !activePageImportJobId) return;
+      try {
+        const status = await syncPageImportJob(activePageImportJobId, activePageImportModuleId ?? undefined);
+        consecutiveFailures = 0;
+        setPageImportPollFailureCount(0);
+        setIsPageImportPollingReconnecting(false);
+        if (!cancelled && !isTerminalBatchJobStatus(status)) {
+          timeoutId = window.setTimeout(tick, JOB_POLL_INTERVAL_MS);
+        }
+      } catch (error) {
+        consecutiveFailures += 1;
+        setPageImportPollFailureCount(consecutiveFailures);
+        setIsPageImportPollingReconnecting(true);
+        console.error('Failed to sync page import job:', error);
+        if (!cancelled && consecutiveFailures < 10) {
+          timeoutId = window.setTimeout(tick, JOB_POLL_INTERVAL_MS);
+        } else if (!cancelled) {
+          showToast(`Page import polling paused after ${consecutiveFailures} failed attempts.`);
+        }
+      }
+    };
+
+    timeoutId = window.setTimeout(tick, JOB_POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      if (timeoutId) window.clearTimeout(timeoutId);
+    };
+  }, [activePageImportJobId, activePageImportModuleId, pageImportPollRestartNonce]);
+
+  useEffect(() => {
+    const runningJobs = processJobs.filter((job) => ['queued', 'processing', 'stopping'].includes(job.status));
+    if (runningJobs.length === 0) {
+      setIsProcessPollingReconnecting(false);
+      setProcessPollFailureCount(0);
+      return;
+    }
+    let cancelled = false;
+    let timeoutId: number | undefined;
+    let consecutiveFailures = 0;
+
+    const tick = async () => {
+      if (cancelled || isSyncingJobsRef.current) return;
+      isSyncingJobsRef.current = true;
+      try {
+        for (const job of runningJobs) {
+          const moduleIds = job.scopeLabel === 'all'
+            ? modules.map((m) => m.module_id)
+            : [job.scopeLabel];
+          await syncSingleJob(job.jobId, moduleIds);
+        }
+        consecutiveFailures = 0;
+        setProcessPollFailureCount(0);
+        setIsProcessPollingReconnecting(false);
+      } catch (error) {
+        consecutiveFailures += 1;
+        setProcessPollFailureCount(consecutiveFailures);
+        setIsProcessPollingReconnecting(true);
+        console.error('Failed to sync running jobs:', error);
+      } finally {
+        isSyncingJobsRef.current = false;
+        if (!cancelled) {
+          if (consecutiveFailures < 10) {
+            timeoutId = window.setTimeout(tick, JOB_POLL_INTERVAL_MS);
+          } else {
+            showToast(`Process polling paused after ${consecutiveFailures} failed attempts.`);
+          }
+        }
+      }
+    };
+
+    timeoutId = window.setTimeout(tick, JOB_POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      if (timeoutId) window.clearTimeout(timeoutId);
+    };
+  }, [processJobs, modules, processPollRestartNonce]);
+
+  const handleDeleteBatch = async () => {
+    const slideIds = getScopeSelectedSlideIds();
+    const moduleIds = getScopeModuleIds();
+    if (slideIds.length === 0) return;
+
+    const confirmed = window.confirm(`Delete ${slideIds.length} selected slide(s)? This cannot be undone.`);
+    if (!confirmed) return;
+
+    setBatchActionLoading(true);
+    try {
+      const payload: DeleteBatchRequest = { slide_ids: slideIds };
+      const data = await deleteSlidesBatchApi(payload);
+      const deletedCount = Number(data?.deleted_count ?? 0);
+      showToast(`Deleted ${deletedCount} slide(s).`);
+      await Promise.all(moduleIds.map((moduleId) => fetchSlides(moduleId)));
+      clearSelectionForScope();
+    } catch (error) {
+      console.error('Error deleting slides in batch:', error);
+      showToast('Failed to delete selected slides.');
+    } finally {
+      setBatchActionLoading(false);
     }
   };
 
   // Submit fetched slides metadata to the backend
   const handleCreateSlides = async () => {
     if (!selectedModuleForSlide || slideInfoList.length === 0) return;
-    // console.log(slideInfoList[0])
+    const uploadSlides = slideInfoList.map((slide, index) => {
+      const normalizedCover = slide.slide_cover ? normalizeDataUrl(slide.slide_cover) : '';
+      return {
+        slide_google_id: slide.slide_google_id,
+        slide_title: slide.slide_title,
+        slide_url: slide.slide_url,
+        slide_cover: normalizedCover,
+        // Compatibility aliases for backend schema variants
+        google_id: slide.slide_google_id,
+        title: slide.slide_title,
+        url: slide.slide_url,
+        cover: normalizedCover,
+        // Common defaults when backend model requires non-null flags/order
+        gotVision: false,
+        slide_order: index,
+      };
+    });
+
     try {
-      const res = await axios.post(`/api/modules/${selectedModuleForSlide}/slides/batch`, {
-        slides: slideInfoList,
-      });
+      const res = await uploadModuleSlidesBatchApi(selectedModuleForSlide, uploadSlides);
   
       if (res.status === 201) {
-        // console.log("selected: " + selectedModuleForSlide)
-        fetchSlides(selectedModuleForSlide);
+        const pageImportJobId = res.data?.page_import_job_id ? String(res.data.page_import_job_id) : null;
+        if (pageImportJobId) {
+          setActivePageImportJobId(pageImportJobId);
+          setActivePageImportModuleId(selectedModuleForSlide);
+          pageImportListRefreshCounterRef.current = 0;
+          setPageImportJobState(null);
+        }
+        await fetchSlides(selectedModuleForSlide);
         setIsSlideModalOpen(false);
         setShowConfirmation(false);
-        alert('Slides uploaded successfully!');
+        showToast(
+          pageImportJobId
+            ? `Slides uploaded. Page import started in background (${Number(res.data?.page_import_jobs_queued ?? slideInfoList.length)} jobs).`
+            : 'Slides uploaded successfully!'
+        );
       }
-    } catch (error) {
-      console.error('Error uploading slides:', error);
-      alert('Failed to upload slides.');
+    } catch (error: unknown) {
+      if (error instanceof AxiosError) {
+        const status = error.response?.status;
+        const detail = typeof error.response?.data === 'string'
+          ? error.response.data
+          : JSON.stringify(error.response?.data);
+        console.error('Error uploading slides:', status, error.response?.data);
+
+        if (status === 500) {
+          try {
+            const slidesWithoutCover = uploadSlides.map((slide) => ({ ...slide, slide_cover: '' }));
+            const retryRes = await uploadModuleSlidesBatchApi(selectedModuleForSlide, slidesWithoutCover);
+
+            if (retryRes.status === 201) {
+              const retryPageImportJobId = retryRes.data?.page_import_job_id ? String(retryRes.data.page_import_job_id) : null;
+              if (retryPageImportJobId) {
+                setActivePageImportJobId(retryPageImportJobId);
+                setActivePageImportModuleId(selectedModuleForSlide);
+                pageImportListRefreshCounterRef.current = 0;
+                setPageImportJobState(null);
+              }
+              await fetchSlides(selectedModuleForSlide);
+              setIsSlideModalOpen(false);
+              setShowConfirmation(false);
+              showToast(
+                retryPageImportJobId
+                  ? `Slides uploaded (without thumbnail cover). Page import started in background (${Number(retryRes.data?.page_import_jobs_queued ?? slideInfoList.length)} jobs).`
+                  : 'Slides uploaded successfully (without thumbnail cover).'
+              );
+              return;
+            }
+          } catch (retryError: unknown) {
+            if (retryError instanceof AxiosError) {
+              const retryDetail = typeof retryError.response?.data === 'string'
+                ? retryError.response.data
+                : JSON.stringify(retryError.response?.data);
+              alert(`Failed to upload slides (with and without cover). status=${retryError.response?.status ?? 'unknown'} detail=${retryDetail ?? retryError.message}`);
+              return;
+            }
+          }
+        }
+
+        alert(`Failed to upload slides. status=${status ?? 'unknown'} detail=${detail ?? error.message}`);
+      } else {
+        console.error('Error uploading slides:', error);
+        alert('Failed to upload slides.');
+      }
     }
   };
   
-  const handlePublishSlide = async (slideGoogleId: string, slideId: string, moduleId: string) => {
-    setSlidesByModule((prevSlides) => ({
-      ...prevSlides,
-      [moduleId]: prevSlides[moduleId].map((slide) =>
-        slide.id === slideId ? { ...slide, publishing: true } : slide
-      ),
-    }));
-    try {
-      const publishRes = await axios.post(`/api/slides/${slideId}/${slideGoogleId}/publish`);
-      // console.log("FINISHED")
-      if (publishRes.status === 200) {
-        setSlidesByModule((prevSlides) => ({
-          ...prevSlides,
-          [moduleId]: prevSlides[moduleId].map((slide) =>
-            slide.id === slideId ? { ...slide, published: true, publishing: false } : slide
-          ),
-        }));
-        // console.log('Slide published status updated to true');
-      } else {
-        setSlidesByModule((prevSlides) => ({
-          ...prevSlides,
-          [moduleId]: prevSlides[moduleId].map((slide) =>
-            slide.id === slideId ? { ...slide, published: false, publishing: false } : slide
-          ),
-        }));
-      }
-    } catch (error) {
-      console.error('Error publishing slide:', error);
-      setSlidesByModule((prevSlides) => ({
-        ...prevSlides,
-        [moduleId]: prevSlides[moduleId].map((slide) =>
-          slide.id === slideId ? { ...slide, published: false, publishing: false } : slide
-        ),
-      }));
-    }
-  };
-
-  const handleSetVision = async (slideGoogleId: string, slideId: string, moduleId: string) => {
-    setSlidesByModule((prevSlides) => ({
-      ...prevSlides,
-      [moduleId]: prevSlides[moduleId].map((slide) =>
-        slide.id === slideId ? { ...slide, gettingVision: true } : slide
-      ),
-    }));
-    try {
-      const response = await axios.post(`/api/slides/${slideId}/${slideGoogleId}/set-vision`, { timeout: 100000});
-      
-      if (response.status === 200) {
-        setSlidesByModule((prevSlides) => ({
-          ...prevSlides,
-          [moduleId]: prevSlides[moduleId].map((slide) =>
-            slide.id === slideId ? { ...slide, gotVision: true, gettingVision: false } : slide
-          ),
-        }));
-      } else {
-        setSlidesByModule((prevSlides) => ({
-          ...prevSlides,
-          [moduleId]: prevSlides[moduleId].map((slide) =>
-            slide.id === slideId ? { ...slide, gotVision: false, gettingVision: false } : slide
-          ),
-        }));
-      }
-    } catch (error) {
-      console.error('Error setting vision:', error);
-      setSlidesByModule((prevSlides) => ({
-        ...prevSlides,
-        [moduleId]: prevSlides[moduleId].map((slide) =>
-          slide.id === slideId ? { ...slide, gotVision: false, gettingVision: false } : slide
-        ),
-      }));
-    }
-  };
-
-  const handleUpdateVision = async (slideGoogleId: string, slideId: string, moduleId: string) => {
-    const confirmUpdate = window.confirm('Are you sure you want to update the vision info for this slide? This will overwrite the existing vision data.');
-    if (!confirmUpdate) return;
-
-    setSlidesByModule((prevSlides) => ({
-      ...prevSlides,
-      [moduleId]: prevSlides[moduleId].map((slide) =>
-        slide.id === slideId ? { ...slide, updatingVision: true } : slide
-      ),
-    }));
-    try {
-      const response = await axios.post(`/api/slides/${slideId}/${slideGoogleId}/update-vision`, { timeout: 100000});
-      
-      if (response.status === 200) {
-        setSlidesByModule((prevSlides) => ({
-          ...prevSlides,
-          [moduleId]: prevSlides[moduleId].map((slide) =>
-            slide.id === slideId ? { ...slide, gotVision: true, updatingVision: false } : slide
-          ),
-        }));
-        alert('Vision info updated successfully!');
-      } else {
-        setSlidesByModule((prevSlides) => ({
-          ...prevSlides,
-          [moduleId]: prevSlides[moduleId].map((slide) =>
-            slide.id === slideId ? { ...slide, updatingVision: false } : slide
-          ),
-        }));
-        alert('Failed to update vision info.');
-      }
-    } catch (error) {
-      console.error('Error updating vision:', error);
-      setSlidesByModule((prevSlides) => ({
-        ...prevSlides,
-        [moduleId]: prevSlides[moduleId].map((slide) =>
-          slide.id === slideId ? { ...slide, updatingVision: false } : slide
-        ),
-      }));
-      alert('Error updating vision info. Please try again.');
-    }
-  };
-
-  const handleUpdateVectors = async (slideId: string, moduleId: string) => {
-    const confirmUpdate = window.confirm('Are you sure you want to update the vectors for this slide? This will generate new embeddings based on the current image text.');
-    if (!confirmUpdate) return;
-
-    setSlidesByModule((prevSlides) => ({
-      ...prevSlides,
-      [moduleId]: prevSlides[moduleId].map((slide) =>
-        slide.id === slideId ? { ...slide, updatingVectors: true } : slide
-      ),
-    }));
-    try {
-      const response = await axios.post(`/api/slides/${slideId}/update-vectors`, { timeout: 100000});
-      
-      if (response.status === 200) {
-        setSlidesByModule((prevSlides) => ({
-          ...prevSlides,
-          [moduleId]: prevSlides[moduleId].map((slide) =>
-            slide.id === slideId ? { ...slide, hasVectors: true, updatingVectors: false } : slide
-          ),
-        }));
-        alert('Vectors updated successfully!');
-      } else {
-        setSlidesByModule((prevSlides) => ({
-          ...prevSlides,
-          [moduleId]: prevSlides[moduleId].map((slide) =>
-            slide.id === slideId ? { ...slide, updatingVectors: false } : slide
-          ),
-        }));
-        alert('Failed to update vectors.');
-      }
-    } catch (error) {
-      console.error('Error updating vectors:', error);
-      setSlidesByModule((prevSlides) => ({
-        ...prevSlides,
-        [moduleId]: prevSlides[moduleId].map((slide) =>
-          slide.id === slideId ? { ...slide, updatingVectors: false } : slide
-        ),
-      }));
-      alert('Error updating vectors. Please try again.');
-    }
-  };
-  
-
   // Check if slides have been loaded for the module
   const handleModuleClick = (moduleId: string) => {
     if (!slidesByModule[moduleId]) {
@@ -416,71 +752,13 @@ const CoursePage = () => {
   // Handle creating a new module
   const handleCreateModule = async () => {
     try {
-      const res = await axios.post(`/api/courses/by_id/${courseId}/modules`, {
-        title: newModuleTitle,
-      });
+      const moduleData = await createCourseModuleApi(courseId, newModuleTitle);
 
-      if (res.status === 201) {
-        setModules([...modules, res.data]); // Add the new module to the list
-        setNewModuleTitle(''); // Reset input field
-        setIsModalOpen(false); // Close modal after creation
-      }
+      setModules([...modules, moduleData]); // Add the new module to the list
+      setNewModuleTitle(''); // Reset input field
+      setIsModalOpen(false); // Close modal after creation
     } catch (error) {
       console.error('Error creating module:', error);
-    }
-  };
-
-  const handleAutoCreateModule = async (title: string): Promise<string | null> => {
-    try {
-      const res = await axios.post(`/api/courses/by_id/${courseId}/modules`, { title });
-      
-      if (res.status === 201) {
-        // 返回新模块的ID
-        const newModule = res.data;
-        setModules([...modules, newModule]);
-        return newModule.module_id; // 返回模块ID用于后续上传slides
-      }
-      return null;
-    } catch (error) {
-      console.error('Error creating module:', error);
-      return null;
-    }
-  };
-  
-
-  const handleAutoCreateSlides = async (module_id: string, slideInfoList: Slide[]) => {
-    try {
-      const res = await axios.post(`/api/modules/${module_id}/slides/batch`, {
-        slides: slideInfoList,
-      });
-  
-      if (res.status === 201) {
-        alert(`Slides uploaded for module ${module_id} successfully!`);
-      }
-    } catch (error) {
-      console.error(`Error uploading slides for module ${module_id}:`, error);
-      alert(`Failed to upload slides for module ${module_id}.`);
-    }
-  };
-  
-
-  const handleCreateModules = async () => {
-    try {
-      const createModulePromises = modulesUploadList.map(async (mod) => {
-        const moduleId = await handleAutoCreateModule(mod.module_title);
-        if (moduleId) {
-          await handleAutoCreateSlides(moduleId, mod.slides);
-        }
-      });
-  
-      // 等待所有模块和slides上传完成
-      await Promise.all(createModulePromises);
-      alert('Modules and slides uploaded successfully!');
-      setIsModulesUploadModalOpen(false);
-      setShowModulesUploadConfirmation(false);
-    } catch (error) {
-      console.error('Error uploading modules and slides:', error);
-      alert('Failed to upload modules or slides.');
     }
   };
 
@@ -493,324 +771,227 @@ const CoursePage = () => {
   }
 
   return (
-    <main className="p-6">
-      <h1 className="text-3xl font-bold mb-4">Course - {course.course_title}</h1>
-      <p className="text-lg mb-4">Description: {course.course_description ? course.course_description : 'N/A.'}</p>
-      <p className="text-sm text-gray-500">Created at: {course.created_at}</p>
-      <section className='mt-8'>
-        <button
-          onClick={() => {
-            setIsModulesUploadModalOpen(true);
-          }}
-          className="p-2 bg-green-600 text-white rounded hover:bg-green-700"
-        >
-          Add Slides from Course Folder
-        </button>
-        <button
-          onClick={async () => {
-            // await handlePublish()
-          }}
-          className="p-2 bg-blue-600 text-white rounded hover:bg-blue-700"
-        >
-          Publish Course
-        </button>
+    <main className="min-h-screen bg-[radial-gradient(circle_at_top_right,_rgba(59,130,246,0.08),_transparent_45%),radial-gradient(circle_at_top_left,_rgba(14,165,233,0.06),_transparent_40%),linear-gradient(to_bottom,_#f8fafc,_#ffffff)] p-8">
+      <ActionButton
+        onClick={() => dispatch(setJobPanelOpen(!isJobPanelOpen))}
+        className="fixed right-4 top-16 z-[70] rounded-full border-slate-800 bg-slate-800 text-white hover:bg-slate-900"
+        variant="neutral"
+        size="sm"
+      >
+        {isJobPanelOpen ? 'Hide Jobs' : `Jobs (${processJobs.length})`}
+      </ActionButton>
+      <JobSummaryPanel
+        isOpen={isJobPanelOpen}
+        jobs={processJobs}
+        jobClockMs={jobClockMs}
+        jobTimeoutWarningMs={JOB_TIMEOUT_WARNING_MS}
+        slideTitleById={slideTitleById}
+        formatJobDuration={formatJobDuration}
+        onClose={() => dispatch(setJobPanelOpen(false))}
+        onStopJob={handleStopJob}
+      />
+      {toastMessage && (
+        <div className="fixed top-20 right-4 z-[60] rounded-xl border border-slate-700 bg-slate-900/95 px-4 py-2 text-sm text-white shadow-xl backdrop-blur-sm">
+          {toastMessage}
+        </div>
+      )}
+      <div className="mx-auto flex w-full max-w-[1500px] flex-col gap-8 p-4 md:p-6">
+      <section className="rounded-3xl border border-slate-200 bg-white/90 p-5 shadow-sm ring-1 ring-white md:p-6">
+        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+          <div className="min-w-0">
+            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
+              Course
+            </p>
+            <h1 className="mt-3 break-words text-2xl font-bold text-slate-900 md:text-3xl">
+              {course.course_title}
+            </h1>
+            <p className="mt-3 max-w-3xl text-sm leading-relaxed text-slate-600 md:text-base">
+              {course.course_description ? course.course_description : 'No description provided.'}
+            </p>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <div className="inline-flex items-center gap-2 px-0 py-1 text-xs text-slate-600">
+                <span className="h-1.5 w-1.5 rounded-full bg-slate-400"></span>
+                Created at: {course.created_at}
+              </div>
+            </div>
+          </div>
+          <div className="shrink-0 md:pt-1">
+            <ActionButton
+              onClick={async () => {
+                // await handlePublish()
+              }}
+              variant="primary"
+              className="rounded-lg px-3.5 py-2"
+            >
+              Publish Course
+            </ActionButton>
+          </div>
+        </div>
       </section>
       {/* Module Management */}
-      <section className="mt-8">
-        <div className="flex justify-between items-center mb-4">
-          <h2 className="text-2xl font-semibold">Modules</h2>
-          <button
+      <section className="">
+        <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h2 className="text-2xl font-semibold text-slate-900">Modules</h2>
+            <p className="text-sm text-slate-500">Manage slides, batch processing jobs, and module-level imports with a consistent workflow.</p>
+          </div>
+          <ActionButton
             onClick={() => setIsModalOpen(true)}
-            className="p-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+            variant="primary"
+            className="rounded-lg px-3.5 py-2"
           >
             Create New Module
-          </button>
+          </ActionButton>
         </div>
         
         {modules.length === 0 ? (
-          <p>No modules available.</p>
-        ) : (
-          <div className="space-y-4">
-            {modules.map((module) => (
-              <div key={module.module_id} className="bg-white shadow rounded p-4">
-                <Disclosure>
-                  <DisclosureButton
-                    onClick={() => handleModuleClick(module.module_id)}
-                    className="py-2 text-xl font-semibold"
-                  >
-                    {module.module_title}
-                  </DisclosureButton>
-                  <DisclosurePanel className="mt-4">
-                    {slidesByModule[module.module_id]?.length === 0 ? (
-                      <p>No slides available for this module.</p>
-                    ) : (
-                      <div className="grid grid-cols-1 gap-8">
-                        {slidesByModule[module.module_id]?.map((slide) => (
-                          <div key={slide.slide_google_id} className="bg-gray-100 rounded p-4 shadow overflow-hidden">
-                            <h3> 
-                              <a href={slide.slide_url} target="_blank" rel="noopener noreferrer" className="text-blue-600 max-w-[90%] text-wrap">
-                                {slide.slide_title}
-                              </a>
-                            </h3>
-                            {slide.slide_cover && (
-                              <DynamicImage
-                                src={slide.slide_cover}
-                                alt={`${slide.slide_title} cover`}
-                                className="w-64 mt-2 rounded"
-                              />
-                            )}
-                            <button
-                              onClick={() => handlePublishSlide(slide.slide_google_id, slide.id, module.module_id)}
-                              disabled={slide.published || slide.publishing}
-                              className={`mt-2 mr-4 p-2 text-white rounded ${slide.published || slide.publishing ? "bg-gray-600" : "bg-green-600 hover:bg-green-700"}`}
-                            >
-                              {slide.published ? "Published" : slide.publishing ? "Publishing" : "Publish Slide"}
-                            </button>
-                            <button
-                              onClick={() => handleSetVision(slide.slide_google_id, slide.id, module.module_id)}
-                              disabled={!slide.published || slide.publishing || slide.gotVision || slide.gettingVision}
-                              className={`mt-2 mr-4 p-2 text-white rounded ${
-                                !slide.published || slide.publishing || slide.gotVision || slide.gettingVision ?
-                                "bg-gray-600" : "bg-green-600 hover:bg-green-700"}`}
-                            >
-                              {slide.gotVision ? "Vision Info Available" : slide.gettingVision ? "Getting Vision" : "Set Vision"}
-                            </button>
-
-                            {slide.gotVision && (
-                              <button
-                                onClick={() => handleUpdateVision(slide.slide_google_id, slide.id, module.module_id)}
-                                disabled={slide.updatingVision}
-                                className={`mt-2 mr-4 p-2 text-white rounded ${
-                                  slide.updatingVision ?
-                                  "bg-gray-600" : "bg-blue-600 hover:bg-blue-700"}`}
-                              >
-                                {slide.updatingVision ? "Updating Vision..." : "Update Vision"}
-                              </button>
-                            )}
-
-                            {slide.gotVision && (
-                              <button
-                                onClick={() => handleUpdateVectors(slide.id, module.module_id)}
-                                disabled={slide.updatingVectors}
-                                className={`mt-2 mr-4 p-2 text-white rounded ${
-                                  slide.updatingVectors ?
-                                  "bg-gray-600" : "bg-purple-600 hover:bg-purple-700"}`}
-                              >
-                                {slide.updatingVectors ? "Updating Vectors..." : "Update Vectors"}
-                              </button>
-                            )}
-
-                            <button
-                              onClick={() => handleDeleteSlide(module.module_id, slide.id)}
-                              className="mt-2 p-2 bg-red-600 text-white rounded hover:bg-red-700"
-                            >
-                              Delete Slide
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    <button
-                      onClick={() => {
-                        setSelectedModuleForSlide(module.module_id);
-                        setIsSlideModalOpen(true);
-                      }}
-                      className="mt-2 p-2 bg-green-600 text-white rounded hover:bg-green-700"
-                    >
-                      Add Slides (Google Drive Folder)
-                    </button>
-                    <button
-                      onClick={() => handleDeleteModule(module.module_id)}
-                      className="mt-2 p-2 bg-red-600 text-white rounded hover:bg-red-700"
-                    >
-                      Delete Module
-                    </button>
-                  </DisclosurePanel>
-                </Disclosure>
-              </div>
-            ))}
+          <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center text-slate-500 shadow-sm">
+            No modules available.
           </div>
+        ) : (
+          <>
+            <div className="mb-5 rounded-3xl border border-slate-200 bg-white/95 p-4 shadow-sm ring-1 ring-white">
+              <div className="mb-3 flex flex-wrap gap-2">
+                <button
+                  onClick={() => setSelectionScope('all')}
+                  className={`inline-flex items-center rounded-full px-3 py-1.5 text-sm font-medium border ${
+                    selectionScope === 'all'
+                      ? 'bg-slate-900 text-white border-slate-900 shadow-sm'
+                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                  }`}
+                >
+                  All Modules
+                </button>
+                {modules.map((module) => (
+                  <button
+                    key={`scope-${module.module_id}`}
+                    onClick={() => setSelectionScope(module.module_id)}
+                    className={`inline-flex max-w-full items-center rounded-full px-3 py-1.5 text-sm font-medium border ${
+                      selectionScope === module.module_id
+                        ? 'bg-slate-900 text-white border-slate-900 shadow-sm'
+                        : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                    }`}
+                  >
+                    <span className="truncate max-w-[220px]">{module.module_title}</span>
+                  </button>
+                ))}
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-gradient-to-r from-slate-50 via-white to-sky-50/70 p-3">
+                <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {getScopeSelectedSlideIds().length > 0 && (
+                      <>
+                        <ActionButton
+                          onClick={() => handleProcessBatch(false)}
+                          disabled={batchActionLoading || getScopeSelectedSlideIds().length === 0}
+                          variant="primary"
+                          size="sm"
+                          className="rounded-xl"
+                        >
+                          Process Missing Info ({getScopeSelectedSlideIds().length})
+                        </ActionButton>
+                        <ActionButton
+                          onClick={() => handleProcessBatch(true)}
+                          disabled={batchActionLoading || getScopeSelectedSlideIds().length === 0}
+                          variant="secondary"
+                          size="sm"
+                          className="rounded-xl"
+                        >
+                          Reprocess All ({getScopeSelectedSlideIds().length})
+                        </ActionButton>
+                        <ActionButton
+                          onClick={handleDeleteBatch}
+                          disabled={batchActionLoading || getScopeSelectedSlideIds().length === 0}
+                          variant="danger"
+                          size="sm"
+                          className="rounded-xl"
+                        >
+                          Delete
+                        </ActionButton>
+                        <div className="w-full text-xs text-slate-500 lg:w-auto">
+                          <span className="font-medium text-slate-700">Process Missing Info:</span> fill missing data only.{' '}
+                          <span className="font-medium text-slate-700">Reprocess All:</span> recompute vision, summary, and vectors.
+                        </div>
+                      </>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap items-center justify-end gap-2">
+                    <ActionButton
+                      onClick={handleSelectAllForScope}
+                      disabled={batchActionLoading}
+                      variant="neutral"
+                      size="sm"
+                      className="rounded-xl"
+                    >
+                      {selectionScope === 'all' ? 'Select All Slides (All Modules)' : 'Select All Slides (Selected Module)'}
+                    </ActionButton>
+                    <ActionButton
+                      onClick={clearSelectionForScope}
+                      disabled={batchActionLoading}
+                      variant="ghost"
+                      size="sm"
+                      className="rounded-xl"
+                    >
+                      Clear Selection
+                    </ActionButton>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+
+            <div className="space-y-4">
+              {modules.map((module) => {
+                const moduleSlides = slidesByModule[module.module_id] ?? [];
+                const selectedIds = getSelectedSlideIds(module.module_id);
+
+                return (
+                  <ModuleSlidesSection
+                    key={module.module_id}
+                    module={module}
+                    slides={moduleSlides}
+                    selectedIds={selectedIds}
+                    batchActionLoading={batchActionLoading}
+                    onModuleClick={handleModuleClick}
+                    onRequestAddSlides={(moduleId) => {
+                      setSelectedModuleForSlide(moduleId);
+                      setIsSlideModalOpen(true);
+                    }}
+                    onDeleteModule={handleDeleteModule}
+                    onToggleSlideSelection={toggleSlideSelection}
+                  />
+              )})}
+            </div>
+          </>
         )}
       </section>
 
-      {/* Modal for Google Drive Course Folder Link */}
-      {isModulesUploadModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900 bg-opacity-50">
-          <div className="bg-white p-6 rounded-lg shadow-lg w-96">
-            <h2 className="text-2xl font-semibold mb-4">Add Slides from Google Drive Course Folder</h2>
-            <input
-              type="text"
-              value={courseFolderLink}
-              onChange={(e) => setCourseFolderLink(e.target.value)}
-              placeholder="Paste Google Drive folder link"
-              className="p-2 border rounded w-full mb-4"
-            />
-            <div className="flex justify-end space-x-4">
-              <button
-                onClick={() => setIsModulesUploadModalOpen(false)}
-                className="p-2 bg-gray-400 text-white rounded hover:bg-gray-500"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleFetchModulesFromFolder}
-                className="p-2 bg-blue-600 text-white rounded hover:bg-blue-700"
-              >
-                Fetch Slides
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <AddSlidesModal
+        isOpen={isSlideModalOpen && !showConfirmation}
+        driveFolderLink={driveFolderLink}
+        onChangeDriveFolderLink={setDriveFolderLink}
+        onCancel={() => setIsSlideModalOpen(false)}
+        onFetch={handleFetchSlidesFromFolder}
+      />
 
-       {/* Modal for Google Drive Folder Link */}
-       {isSlideModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900 bg-opacity-50">
-          <div className="bg-white p-6 rounded-lg shadow-lg w-96">
-            <h2 className="text-2xl font-semibold mb-4">Add Slides from Google Drive Folder</h2>
-            <input
-              type="text"
-              value={driveFolderLink}
-              onChange={(e) => setDriveFolderLink(e.target.value)}
-              placeholder="Paste Google Drive folder link"
-              className="p-2 border rounded w-full mb-4"
-            />
-            <div className="flex justify-end space-x-4">
-              <button
-                onClick={() => setIsSlideModalOpen(false)}
-                className="p-2 bg-gray-400 text-white rounded hover:bg-gray-500"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleFetchSlidesFromFolder}
-                className="p-2 bg-blue-600 text-white rounded hover:bg-blue-700"
-              >
-                Fetch Slides
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <CreateModuleModal
+        isOpen={isModalOpen}
+        newModuleTitle={newModuleTitle}
+        onChangeTitle={setNewModuleTitle}
+        onCancel={() => setIsModalOpen(false)}
+        onCreate={handleCreateModule}
+      />
 
-      {/* Modal for creating a new module */}
-      {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900 bg-opacity-50">
-          <div className="bg-white p-6 rounded-lg shadow-lg w-96">
-            <h2 className="text-2xl font-semibold mb-4">Create New Module</h2>
-            <input
-              type="text"
-              value={newModuleTitle}
-              onChange={(e) => setNewModuleTitle(e.target.value)}
-              placeholder="Module Title"
-              className="p-2 border rounded w-full mb-4"
-            />
-            <div className="flex justify-end space-x-4">
-              <button
-                onClick={() => setIsModalOpen(false)}
-                className="p-2 bg-gray-400 text-white rounded hover:bg-gray-500"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleCreateModule}
-                className="p-2 bg-blue-600 text-white rounded hover:bg-blue-700"
-              >
-                Create
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Confirmation Pop-up */}
-      {isSlideModalOpen && showConfirmation && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900 bg-opacity-50">
-          {slideInfoList.length ? (<div className="bg-white p-6 rounded-lg shadow-lg w-[500px]">
-            <h2 className="text-2xl font-semibold mb-4">Confirm Upload</h2>
-            <p className="mb-4">The following {slideInfoList.length} files were fetched from the Google Drive folder. Do you want to upload them?</p>
-            <ul className="space-y-2 max-h-40 overflow-y-scroll list-disc">
-              {slideInfoList.map((slide) => (
-                <li key={slide.slide_google_id}>
-                  <p>{slide.slide_title}</p>
-                </li>
-              ))}
-            </ul>
-            <div className="flex justify-end space-x-4 mt-4">
-              <button
-                onClick={() => setShowConfirmation(false)}
-                className="p-2 bg-gray-400 text-white rounded hover:bg-gray-500"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleCreateSlides}
-                className="p-2 bg-green-600 text-white rounded hover:bg-green-700"
-              >
-                Upload
-              </button>
-            </div>
-          </div>) :
-          (
-            <div className="bg-white p-6 rounded-lg shadow-lg w-[500px]">
-              <h2 className="text-2xl font-semibold mb-4">Confirm Upload</h2>
-              <div className="flex justify-end space-x-4 mt-4">
-              <button
-                onClick={() => setShowConfirmation(false)}
-                className="p-2 bg-gray-400 text-white rounded hover:bg-gray-500"
-              >
-                Cancel
-              </button>
-            </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Confirmation Pop-up */}
-      {isModulesUploadModalOpen && showModulesUploadConfirmation && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900 bg-opacity-50">
-          {modulesUploadList.length ? (<div className="bg-white p-6 rounded-lg shadow-lg w-[500px]">
-            <h2 className="text-2xl font-semibold mb-4">Confirm Upload</h2>
-            <p className="mb-4">{modulesUploadList.length} modules were fetched from the Google Drive folder. Do you want to upload them?</p>
-            <ul className="space-y-2 max-h-40 overflow-y-scroll list-disc">
-              {modulesUploadList.map((mod) => (
-                <li key={mod.module_id}>
-                  <p>{mod.module_title}</p>
-                </li>
-              ))}
-            </ul>
-            <div className="flex justify-end space-x-4 mt-4">
-              <button
-                onClick={() => setShowConfirmation(false)}
-                className="p-2 bg-gray-400 text-white rounded hover:bg-gray-500"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleCreateModules}
-                className="p-2 bg-green-600 text-white rounded hover:bg-green-700"
-              >
-                Upload
-              </button>
-            </div>
-          </div>) :
-          (
-            <div className="bg-white p-6 rounded-lg shadow-lg w-[500px]">
-              <h2 className="text-2xl font-semibold mb-4">Confirm Upload</h2>
-              <p>No slides here.</p>
-              <div className="flex justify-end space-x-4 mt-4">
-                <button
-                  onClick={() => setShowConfirmation(false)}
-                  className="p-2 bg-gray-400 text-white rounded hover:bg-gray-500"
-                >
-                  Cancel
-                </button>
-            </div>
-            </div>
-          )}
-        </div>
-      )}
+      <ConfirmUploadModal
+        isOpen={isSlideModalOpen && showConfirmation}
+        slides={slideInfoList}
+        onCancel={() => {
+          setShowConfirmation(false);
+          setIsSlideModalOpen(false);
+        }}
+        onUpload={handleCreateSlides}
+      />
+      </div>
     </main>
   );
 };

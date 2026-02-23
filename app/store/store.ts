@@ -3,7 +3,7 @@ import { persistReducer } from 'redux-persist';
 import storage from 'redux-persist/lib/storage';
 import { combineReducers } from 'redux';
 import userReducer from '@/app/slices/userSlice';
-import counterReducer from '@/app/slices/couterSlice';
+import processJobsReducer from '@/app/slices/processJobsSlice';
 import { FLUSH, REHYDRATE, PAUSE, PERSIST, PURGE, REGISTER } from 'redux-persist';
 
 const persistConfig = {
@@ -13,7 +13,7 @@ const persistConfig = {
 
 const rootReducer = combineReducers({
   user: userReducer,
-  counter: counterReducer,
+  processJobs: processJobsReducer,
 });
 
 const persistedReducer = persistReducer(persistConfig, rootReducer);
