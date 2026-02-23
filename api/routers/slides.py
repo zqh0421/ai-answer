@@ -25,6 +25,16 @@ from ..tags import Tags
 router = APIRouter(prefix="/api", tags=[Tags.CONTENT_SLIDES])
 
 
+def _resolve_requested_by_user_id(request: Request, db: Session) -> str | None:
+    raw_value = (request.headers.get("X-User-Id") or "").strip()
+    if raw_value in {"", "undefined", "null"}:
+        return None
+    if "@" in raw_value:
+        user = db.query(schema.User).filter(schema.User.email == raw_value).first()
+        return str(user.id) if user and user.id else None
+    return raw_value
+
+
 @router.get("/modules/{module_id}/slides")
 def get_slides_by_module(module_id: str, db: Session = Depends(get_db)):
     module = db.query(schema.Module).filter(schema.Module.module_id == module_id).first()
@@ -132,6 +142,37 @@ def _serialize_batch_job(job: schema.SlideProcessJob):
     }
 
 
+def _serialize_process_job_summary(job: schema.SlideProcessJob) -> dict:
+    status_counts = {}
+    for item in job.items:
+        status_counts[item.status] = status_counts.get(item.status, 0) + 1
+    return {
+        "job_id": str(job.job_id),
+        "job_type": "process_batch",
+        "status": _job_status_from_counts(
+            queued=status_counts.get("queued", 0),
+            processing=status_counts.get("processing", 0),
+            processed=status_counts.get("processed", 0),
+            skipped=status_counts.get("skipped", 0),
+            failed=status_counts.get("failed", 0),
+            cancelled=status_counts.get("cancelled", 0),
+            cancel_requested=job.cancel_requested,
+        ),
+        "requested_by": job.requested_by,
+        "force_process_all": job.force_process_all,
+        "cancel_requested": job.cancel_requested,
+        "total_count": job.total_count,
+        "queued_count": status_counts.get("queued", 0),
+        "processing_count": status_counts.get("processing", 0),
+        "processed_count": job.processed_count,
+        "skipped_count": job.skipped_count,
+        "failed_count": job.failed_count,
+        "cancelled_count": status_counts.get("cancelled", 0),
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+        "updated_at": job.updated_at.isoformat() if job.updated_at else None,
+    }
+
+
 def _estimate_remaining_seconds_for_process_job(db: Session, job: schema.SlideProcessJob):
     remaining_steps = 0
     for item in job.items:
@@ -173,6 +214,88 @@ def _estimate_remaining_seconds_for_process_job(db: Session, job: schema.SlidePr
     return max(1, int((avg_seconds_per_step * remaining_steps) / worker_parallelism))
 
 
+@router.get("/slides/jobs/mine")
+def list_my_slide_jobs(
+    request: Request,
+    limit: int = 20,
+    db: Session = Depends(get_db),
+):
+    user_id = _resolve_requested_by_user_id(request, db) or ""
+    if user_id in {"", "undefined", "null"}:
+        raise HTTPException(status_code=400, detail="X-User-Id header is required")
+
+    safe_limit = max(1, min(limit, 100))
+
+    process_jobs = (
+        db.query(schema.SlideProcessJob)
+        .filter(schema.SlideProcessJob.requested_by == user_id)
+        .order_by(schema.SlideProcessJob.created_at.desc())
+        .limit(safe_limit)
+        .all()
+    )
+    page_import_jobs = (
+        db.query(schema.SlidePageImportJob)
+        .filter(schema.SlidePageImportJob.requested_by == user_id)
+        .order_by(schema.SlidePageImportJob.created_at.desc())
+        .limit(safe_limit)
+        .all()
+    )
+
+    page_import_summaries = []
+    for job in page_import_jobs:
+        payload = serialize_page_import_job(job)
+        payload["job_type"] = "page_import_batch"
+        page_import_summaries.append(payload)
+
+    process_summaries = [_serialize_process_job_summary(job) for job in process_jobs]
+    items = sorted(
+        process_summaries + page_import_summaries,
+        key=lambda item: item.get("created_at") or "",
+        reverse=True,
+    )[:safe_limit]
+
+    return {"user_id": user_id, "count": len(items), "jobs": items}
+
+
+@router.delete("/slides/jobs/{job_type}/{job_id}")
+def delete_my_slide_job(
+    job_type: str,
+    job_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    user_id = _resolve_requested_by_user_id(request, db) or ""
+    if user_id in {"", "undefined", "null"}:
+        raise HTTPException(status_code=400, detail="X-User-Id header is required")
+
+    normalized_job_type = (job_type or "").strip().lower()
+    if normalized_job_type not in {"process_batch", "page_import_batch"}:
+        raise HTTPException(status_code=400, detail="job_type must be 'process_batch' or 'page_import_batch'")
+
+    if normalized_job_type == "process_batch":
+        job = db.query(schema.SlideProcessJob).filter(schema.SlideProcessJob.job_id == job_id).first()
+        if not job:
+            raise HTTPException(status_code=404, detail="Process batch job not found")
+        if (job.requested_by or "") != user_id:
+            raise HTTPException(status_code=403, detail="Not allowed to delete this job")
+        if job.status in {"queued", "processing"}:
+            raise HTTPException(status_code=409, detail="Cannot delete an active job; cancel it first")
+        db.delete(job)
+        db.commit()
+        return {"deleted": True, "job_type": "process_batch", "job_id": str(job_id)}
+
+    job = db.query(schema.SlidePageImportJob).filter(schema.SlidePageImportJob.job_id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Page import batch job not found")
+    if (job.requested_by or "") != user_id:
+        raise HTTPException(status_code=403, detail="Not allowed to delete this job")
+    if job.status in {"queued", "processing"}:
+        raise HTTPException(status_code=409, detail="Cannot delete an active job")
+    db.delete(job)
+    db.commit()
+    return {"deleted": True, "job_type": "page_import_batch", "job_id": str(job_id)}
+
+
 @router.post("/slides/process-batch", status_code=status.HTTP_202_ACCEPTED)
 async def process_slides_batch(payload: models.SlideBatchProcessRequest, request: Request, db: Session = Depends(get_db)):
     ensure_slide_batch_job_schema(db)
@@ -199,7 +322,7 @@ async def process_slides_batch(payload: models.SlideBatchProcessRequest, request
             detail={"invalid_slide_ids": invalid_ids, "missing_slide_ids": missing_slide_ids},
         )
 
-    requested_by = request.headers.get("X-User-Id")
+    requested_by = _resolve_requested_by_user_id(request, db)
     job = schema.SlideProcessJob(
         status="queued",
         total_count=len(unique_ids),
@@ -346,4 +469,3 @@ def delete_slides_batch(payload: models.SlideBatchDeleteRequest, db: Session = D
         "not_found": not_found,
         "invalid_slide_ids": invalid_ids,
     }
-

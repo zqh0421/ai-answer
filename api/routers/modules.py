@@ -14,6 +14,16 @@ from ..services.slide_page_import_jobs import create_page_import_batch_job, proc
 from ..tags import Tags
 
 router = APIRouter(prefix="/api", tags=[Tags.CONTENT_MODULES])
+
+
+def _resolve_requested_by_user_id(request: Request, db: Session) -> str | None:
+    raw_value = (request.headers.get("X-User-Id") or "").strip()
+    if raw_value in {"", "undefined", "null"}:
+        return None
+    if "@" in raw_value:
+        user = db.query(schema.User).filter(schema.User.email == raw_value).first()
+        return str(user.id) if user and user.id else None
+    return raw_value
 logger = logging.getLogger(__name__)
 
 
@@ -93,7 +103,7 @@ def create_slides_batch(
             page_import_job = create_page_import_batch_job(
                 db,
                 slide_ids=[str(s.id) for s in uploaded_slides],
-                requested_by=request.headers.get("X-User-Id"),
+                requested_by=_resolve_requested_by_user_id(request, db),
             )
             page_import_job_id = str(page_import_job.job_id)
             for item in page_import_job.items:

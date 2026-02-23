@@ -13,6 +13,20 @@ class CourseResponse(BaseModel):
     creater_email: str | None = Field(default=None, alias="creator_email")
     email: str | None = None
 
+
+class CourseAuthorityUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    authority: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_authority(self) -> "CourseAuthorityUpdateRequest":
+        value = (self.authority or "").strip().lower()
+        if value not in {"private", "public"}:
+            raise ValueError("authority must be 'private' or 'public'")
+        self.authority = value
+        return self
+
 class ModuleCreate(BaseModel):
     title: str
 

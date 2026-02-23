@@ -80,6 +80,22 @@ def update_course(course_id: str, course: models.CourseResponse, db: Session = D
     return _serialize_course(db_course)
 
 
+@router.patch("/by_id/{course_id}/authority")
+def update_course_authority(
+    course_id: str,
+    payload: models.CourseAuthorityUpdateRequest,
+    db: Session = Depends(get_db),
+):
+    db_course = db.query(schema.Course).filter(schema.Course.course_id == course_id).first()
+    if db_course is None:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    db_course.authority = payload.authority
+    db.commit()
+    db.refresh(db_course)
+    return _serialize_course(db_course)
+
+
 @router.delete("/by_id/{course_id}")
 def delete_course(course_id: str, db: Session = Depends(get_db)):
     db_course = db.query(schema.Course).filter(schema.Course.course_id == course_id).first()
