@@ -17,7 +17,6 @@ export default function LtiDeepLinkBanner() {
   const [error, setError] = useState<string | null>(null);
 
   const queryMode = searchParams.get(LTI_MODE_KEY);
-  const launchId = searchParams.get(LAUNCH_ID_KEY);
   const isDeepLinkMode = useMemo(() => queryMode === DEEP_LINK_MODE, [queryMode]);
 
   useEffect(() => {
@@ -36,15 +35,11 @@ export default function LtiDeepLinkBanner() {
     setIsSubmitting(true);
 
     try {
-      if (!launchId) {
-        throw new Error("Missing launch_id in URL. Please relaunch from LMS.");
-      }
-
       const payload = {
-        launch_id: launchId,
         resource_url: (() => {
           const resourceUrl = new URL(window.location.href);
           resourceUrl.searchParams.set(LTI_MODE_KEY, LEARN_MODE);
+          resourceUrl.searchParams.delete(LAUNCH_ID_KEY);
           return resourceUrl.toString();
         })(),
         title: buildDeepLinkPayloadTitle({
