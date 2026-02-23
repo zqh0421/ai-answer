@@ -53,13 +53,17 @@ const Manage = async ({ searchParams }: ManageProps) => {
   // console.log(session.user)
 
   const handleAuth = async () => {
+    const backendUrl =
+      process.env.NODE_ENV === "production"
+        ? process.env.PRODUCTION_BACKEND_URL
+        : process.env.DEVELOPMENT_BACKEND_URL;
+
+    if (!backendUrl) {
+      throw new Error("Missing backend URL for admin permission check.");
+    }
+
     let res;
     try {
-      const backendUrl =
-        process.env.NODE_ENV === "production"
-          ? process.env.PRODUCTION_BACKEND_URL
-          : process.env.DEVELOPMENT_BACKEND_URL;
-
       res = await axios.post(`${backendUrl}/api/admin_auth`, {
         email: session?.user.email
       });
@@ -69,6 +73,8 @@ const Manage = async ({ searchParams }: ManageProps) => {
       } else {
         console.error("Unknown error during admin auth:", err);
       }
+      // Do not mislabel backend/network failures as "no permission".
+      throw err instanceof Error ? err : new Error("Admin permission check failed.");
     }
     console.log("Admin permission check:", {
       email: session?.user.email,
@@ -76,8 +82,11 @@ const Manage = async ({ searchParams }: ManageProps) => {
       permitted: res?.data?.permitted,
       response: res?.data,
     });
-    if (res?.data?.permitted !== true) {
+    if (res?.data?.permitted === false) {
       return redirect(withLtiMode('/manage/noPermission'));
+    }
+    if (res?.data?.permitted !== true) {
+      throw new Error("Unexpected admin permission response.");
     }
   };
 
