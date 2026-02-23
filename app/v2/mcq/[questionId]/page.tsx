@@ -17,6 +17,30 @@ import RightInputPanel from "@/app/components/v2/RightInputPanel";
 import { Reference, Course, Module, Slide, RecordResultInput, FeedbackResult } from "@/app/types";
 import { buildDocumentTitle, buildQuestionResourceTitle } from "@/app/utils/title";
 
+const parseJsonLikeFeedback = (value: unknown) => {
+  if (typeof value === "object" && value !== null) return value as Record<string, unknown>;
+  if (typeof value !== "string") return null;
+  try {
+    return JSON.parse(value.trim().replace(/^```json\s*/, "").replace(/\s*```$/, "")) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+};
+
+const extractExplicitScore = (value: unknown): Pick<RecordResultInput, "score_given" | "score_maximum"> => {
+  const parsed = parseJsonLikeFeedback(value);
+  const rawScore = parsed?.score;
+  const numericScore =
+    typeof rawScore === "number" ? rawScore : typeof rawScore === "string" ? Number(rawScore) : NaN;
+  if (!Number.isFinite(numericScore)) return {};
+  return { score_given: numericScore, score_maximum: 1 };
+};
+
+const scoreFromIsCorrect = (isCorrect: unknown): Pick<RecordResultInput, "score_given" | "score_maximum"> => {
+  if (typeof isCorrect !== "boolean") return {};
+  return { score_given: isCorrect ? 1 : 0, score_maximum: 1 };
+};
+
 function PageChildren({ 
   questionId, 
   searchParams 
@@ -249,6 +273,7 @@ function PageChildren({
         learner_id: effectiveParticipantId,
         study_id: studyId || "unidentifiable_study",
         session_id: sessionId || "unidentifiable_session",
+        ...scoreFromIsCorrect(feedbackData.isCorrect),
         question_id: questionPreset.question_id,
         answer: selectedText,
         feedback: typeof feedbackData.feedback === 'string' ? feedbackData.feedback : JSON.stringify(feedbackData.feedback),
@@ -703,6 +728,11 @@ function PageChildren({
         ...payload,
         lti_launch_id: ltiLaunchId,
         lti_user_id: ltiUserId,
+      }, {
+        headers: {
+          ...(ltiLaunchId ? { "x-lti-launch-id": ltiLaunchId } : {}),
+          ...(ltiUserId ? { "x-lti-user-id": ltiUserId } : {}),
+        },
       });
       if (response.data?.id) {
         setCurrentRecordId(response.data.id);
@@ -868,6 +898,7 @@ function PageChildren({
                 learner_id: prolificPid || participantId || "unidentifiable_learner",
                 study_id: studyId || "unidentifiable_study",
                 session_id: sessionId || "unidentifiable_session",
+                ...extractExplicitScore(accumulatedText),
                 question_id: questionPreset.question_id,
                 answer: answer,
                 feedback: feedbackForDB,
@@ -988,6 +1019,7 @@ function PageChildren({
             learner_id: prolificPid || participantId || "unidentifiable_learner",
             study_id: studyId || "unidentifiable_study",
             session_id: sessionId || "unidentifiable_session",
+            ...scoreFromIsCorrect(response.data.isCorrect),
             question_id: questionPreset.question_id,
             answer: answer,
             feedback: response.data.feedback,
@@ -1051,6 +1083,7 @@ function PageChildren({
             learner_id: prolificPid || participantId || "unidentifiable_learner",
             study_id: studyId || "unidentifiable_study",
             session_id: sessionId || "unidentifiable_session",
+            ...extractExplicitScore(response.data.feedback || response.data),
             question_id: questionPreset.question_id,
             answer: answer,
             feedback: response.data.feedback,

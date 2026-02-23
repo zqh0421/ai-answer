@@ -58,6 +58,8 @@ export type RecordResultInput = {
   session_id: string,
   lti_launch_id?: string,
   lti_user_id?: string,
+  score_given?: number,
+  score_maximum?: number,
   ip_address?: string,
   question_id: string,
   answer: string,
