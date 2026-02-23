@@ -5,6 +5,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 const LTI_MODE_KEY = "lti_mode";
 const DEEP_LINK_MODE = "deep_link";
+const LEARN_MODE = "learn";
 const LAUNCH_ID_KEY = "launch_id";
 
 export default function LtiDeepLinkBanner() {
@@ -40,7 +41,11 @@ export default function LtiDeepLinkBanner() {
 
       const payload = {
         launch_id: launchId,
-        resource_url: window.location.href,
+        resource_url: (() => {
+          const resourceUrl = new URL(window.location.href);
+          resourceUrl.searchParams.set(LTI_MODE_KEY, LEARN_MODE);
+          return resourceUrl.toString();
+        })(),
         title: document.title || "",
         text: "",
       };
