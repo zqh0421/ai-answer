@@ -8,6 +8,7 @@ class RecordResultModel(BaseModel):
     learner_id: str
     session_id: str
     lti_launch_id: Optional[str] = None
+    lti_user_id: Optional[str] = None
     study_id: str
     # ip_address: Optional[str] = None
     question_id: str

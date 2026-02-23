@@ -570,27 +570,7 @@ async def lti_launch(request: Request, settings: Settings = Depends(get_settings
                 default=str,
             )
         )
-    is_https_public = str(settings.public_base_url or "").startswith("https://")
-    cookie_samesite = "none" if is_https_public else "lax"
-    response = RedirectResponse(url=ui_url, status_code=302)
-    response.set_cookie(
-        key="ai_answer_lti_launch_id",
-        value=session_id,
-        max_age=60 * 60 * 6,
-        httponly=False,
-        secure=is_https_public,
-        samesite=cookie_samesite,
-    )
-    if sub:
-        response.set_cookie(
-            key="ai_answer_lti_user_id",
-            value=str(sub),
-            max_age=60 * 60 * 6,
-            httponly=False,
-            secure=is_https_public,
-            samesite=cookie_samesite,
-        )
-    return response
+    return RedirectResponse(url=ui_url, status_code=302)
 
 
 def _complete_deep_link(

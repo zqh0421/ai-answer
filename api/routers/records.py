@@ -1,6 +1,6 @@
 import json
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from .. import models, schema
@@ -8,18 +8,9 @@ from ..config import Settings, get_settings
 from ..dependencies import get_db
 from ..tags import Tags
 from ..schema.questionSchema import Question
-from ..lti.routes import try_submit_lti_grade_for_launch, find_latest_lti_launch_id_for_learner
+from ..lti.routes import try_submit_lti_grade_for_launch
 
 router = APIRouter(prefix="/api", tags=[Tags.CONTENT_RECORDS])
-
-_NON_LTI_SESSION_SENTINELS = {
-    "",
-    "unknown",
-    "none",
-    "null",
-    "undefined",
-    "unidentifiable_session",
-}
 
 _NON_LTI_LEARNER_SENTINELS = {
     "",
@@ -68,7 +59,6 @@ def _attempt_lti_grade_passback(
     result: models.RecordResultModel,
     db: Session,
     settings: Settings,
-    cookie_launch_id: str | None = None,
 ) -> dict | None:
     mcq_score = _resolve_mcq_score(db, result.question_id, result.answer)
     score_given = mcq_score[0] if mcq_score else None
@@ -79,31 +69,20 @@ def _attempt_lti_grade_passback(
     if explicit_lti_launch_id:
         candidate_launch_ids.append(("record_result.lti_launch_id", explicit_lti_launch_id))
 
-    raw_session_id = str(getattr(result, "session_id", "") or "").strip()
-    if raw_session_id and raw_session_id.lower() not in _NON_LTI_SESSION_SENTINELS:
-        candidate_launch_ids.append(("record_result.session_id", raw_session_id))
-
-    cookie_launch_id = (cookie_launch_id or "").strip()
-    if cookie_launch_id and cookie_launch_id not in [cid for _, cid in candidate_launch_ids]:
-        candidate_launch_ids.append(("lti_cookie", cookie_launch_id))
-
     normalized_learner_id = str(result.learner_id or "").strip()
-    if normalized_learner_id.lower() not in _NON_LTI_LEARNER_SENTINELS:
-        fallback_launch_id = find_latest_lti_launch_id_for_learner(normalized_learner_id)
-        if fallback_launch_id and fallback_launch_id not in [cid for _, cid in candidate_launch_ids]:
-            candidate_launch_ids.append(("learner_fallback", fallback_launch_id))
+    normalized_lti_user_id = str(getattr(result, "lti_user_id", "") or "").strip()
 
     if not candidate_launch_ids:
         print(
             "[LTI_AUTO_GRADE_FROM_RECORD_SKIP] "
             + json.dumps(
                 {
-                    "reason": "no_launch_id_and_no_learner_match",
+                    "reason": "missing_lti_launch_id",
                     "learner_id": result.learner_id,
                     "question_id": result.question_id,
                     "session_id": getattr(result, "session_id", None),
                     "lti_launch_id": getattr(result, "lti_launch_id", None),
-                    "cookie_launch_id": cookie_launch_id,
+                    "lti_user_id": getattr(result, "lti_user_id", None),
                     "candidate_launch_ids": candidate_launch_ids,
                 },
                 ensure_ascii=True,
@@ -113,6 +92,12 @@ def _attempt_lti_grade_passback(
         return None
 
     last_result = None
+    expected_sub = None
+    if normalized_lti_user_id and normalized_lti_user_id.lower() not in _NON_LTI_LEARNER_SENTINELS:
+        expected_sub = normalized_lti_user_id
+    elif normalized_learner_id and normalized_learner_id.lower() not in _NON_LTI_LEARNER_SENTINELS:
+        expected_sub = normalized_learner_id
+
     for source, launch_id in candidate_launch_ids:
         try:
             grade_result = try_submit_lti_grade_for_launch(
@@ -122,7 +107,7 @@ def _attempt_lti_grade_passback(
                 score_maximum=score_maximum,
                 ai_structure_feedback=result.feedback,
                 comment=result.feedback,
-                expected_sub=result.learner_id,
+                expected_sub=expected_sub,
             )
             print(
                 "[LTI_AUTO_GRADE_FROM_RECORD] "
@@ -131,8 +116,10 @@ def _attempt_lti_grade_passback(
                         "launch_id": str(launch_id),
                         "launch_id_source": source,
                         "learner_id": result.learner_id,
+                        "lti_user_id": getattr(result, "lti_user_id", None),
                         "question_id": result.question_id,
                         "score_inferred": mcq_score is not None,
+                        "expected_sub_used": expected_sub,
                         "candidate_launch_ids": candidate_launch_ids,
                         "result": grade_result,
                     },
@@ -162,7 +149,6 @@ def _attempt_lti_grade_passback(
 
 @router.post("/record_result")
 def record_result(
-    request: Request,
     result: models.RecordResultModel,
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
@@ -201,7 +187,6 @@ def record_result(
             result=result,
             db=db,
             settings=settings,
-            cookie_launch_id=request.cookies.get("ai_answer_lti_launch_id"),
         )
 
         response = {"id": db_result.id, "message": "Record created successfully"}
