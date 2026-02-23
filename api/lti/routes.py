@@ -170,7 +170,7 @@ async def lti_launch(request: Request, settings: Settings = Depends(get_settings
 
     _STORAGE.create_launch_session(launch_session)
 
-    ui_url = f"{settings.public_base_url}/manage"
+    ui_url = f"{settings.public_base_url}/lti/questions"
     if is_deep_linking_request(claims):
         ui_url = f"{ui_url}?lti_mode=deep_link&launch_id={session_id}"
     return RedirectResponse(url=ui_url, status_code=302)
