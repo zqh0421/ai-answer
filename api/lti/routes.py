@@ -206,6 +206,13 @@ def try_submit_lti_grade_for_launch(
         }
 
     parsed_given, parsed_max = _extract_score_from_feedback(ai_structure_feedback)
+    if score_given is None and parsed_given is None:
+        return {
+            "ok": False,
+            "skipped": True,
+            "reason": "missing_score_given",
+            "launch_id": launch_id,
+        }
     resolved_max = (
         score_maximum
         if score_maximum is not None
@@ -218,11 +225,13 @@ def try_submit_lti_grade_for_launch(
         if score_given is not None
         else parsed_given
         if parsed_given is not None
-        else resolved_max
+        else None
     )
 
     if resolved_max <= 0:
         return {"ok": False, "skipped": True, "reason": "invalid_score_maximum", "launch_id": launch_id}
+    if resolved_given is None:
+        return {"ok": False, "skipped": True, "reason": "missing_score_given", "launch_id": launch_id}
     resolved_given = max(0.0, min(float(resolved_given), float(resolved_max)))
 
     result = _post_lti_ags_score(
