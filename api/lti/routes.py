@@ -388,6 +388,7 @@ def _complete_deep_link(
             default=str,
         )
     )
+    print("[LTI_DEEP_LINK_COMPLETE_RESPONSE_HTML] " + html)
     return HTMLResponse(content=html, status_code=200)
 
 
