@@ -3,6 +3,7 @@ from typing_extensions import Annotated
 from sqlalchemy.orm import Session
 
 from ..config import Settings, get_settings
+from ..concurrency import run_openai_blocking
 from ..controllers import convertBatchController
 from ..controllers.vision import setVision
 from ..dependencies import get_db
@@ -36,8 +37,8 @@ async def convert(convertModel: ConvertModel, db: Session = Depends(get_db)):
 
 
 @router.post("/openai-vision", tags=[Tags.MEDIA_VISION_V1])
-def vision(visionModel: VisionModel, settings: Annotated[Settings, Depends(get_settings)]):
-    return setVision(visionModel.base64_image_arr, settings)
+async def vision(visionModel: VisionModel, settings: Annotated[Settings, Depends(get_settings)]):
+    return await run_openai_blocking(setVision, visionModel.base64_image_arr, settings)
 
 
 @router.post("/pdf-to-img-rephrase", tags=[Tags.MEDIA_CONVERSION])

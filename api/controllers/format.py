@@ -1,11 +1,13 @@
-from typing import List
+import json
+
 from fastapi import Depends
-from openai import OpenAI
-from ..config import Settings, get_settings
+from typing import List
 from typing_extensions import Annotated
+
+from ..config import Settings, get_settings
 from .feedback.call_gpt import call_gpt
 from ..services.question_formatter import format_question
-import json
+
 
 def process_feedback_to_json(
       question: List[dict],

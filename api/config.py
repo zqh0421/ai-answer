@@ -44,6 +44,21 @@ class Settings(BaseSettings):
     lti_clock_skew_seconds: int = 300
     lti_platforms_json: str = "{}"
     lti_platforms_path: str
+    slide_batch_redis_url: str
+    slide_batch_rq_result_ttl: int = 3600
+    openai_max_concurrency: int = 16
+    slide_batch_max_retries: int = 4
+    slide_batch_retry_base_seconds: float = 1.0
+    slide_batch_queue_name: str = "slide_batch_processing"
+    slide_batch_job_timeout: int = 1800
+    slide_batch_worker_mode: str = ""
+    slide_batch_estimated_worker_parallelism: int = 1
+    vision_task_max_workers: int = 2
+    vision_page_max_workers: int = 4
+    openai_vision_global_max_inflight: int = 8
+    openai_vision_budget_acquire_timeout_seconds: float = 600.0
+    openai_vision_budget_poll_seconds: float = 0.2
+    openai_vision_budget_redis_key: str = "openai_vision_global_inflight"
 
 
 

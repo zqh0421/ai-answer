@@ -1,9 +1,10 @@
 from fastapi import Depends
-from openai import OpenAI
-from ...config import Settings, get_settings
 from typing_extensions import Annotated, List
+
+from ...config import Settings, get_settings
 from .call_gpt import call_gpt
 from ...services.question_formatter import format_question
+
 
 def generate_feedback_using_few(question: List[dict], answer: str, feedbackFramework: str, settings: Annotated[Settings, Depends(get_settings)]) -> str:
     prompt_none = (
@@ -43,23 +44,16 @@ def generate_feedback_using_few(question: List[dict], answer: str, feedbackFrame
         "text": f"Answer: {answer}"
     })
 
-    if feedbackFramework=="none":
-        result = call_gpt(
-            prompt_none,
-            user_prompt,
-            settings
+    prompts = {
+        "none": prompt_none,
+        "component": prompt_component,
+        "feature": prompt_feature,
+    }
+    selected_prompt = prompts.get(feedbackFramework)
+    if selected_prompt is None:
+        raise ValueError(
+            f"Unsupported feedbackFramework '{feedbackFramework}'. Expected one of: {', '.join(prompts)}"
         )
-    if feedbackFramework=="component":
-        result = call_gpt(
-            prompt_component,
-            user_prompt,
-            settings
-        )
-    if feedbackFramework=="feature":
-        result = call_gpt(
-            prompt_feature,
-            user_prompt,
-            settings
-        )
-    
+    result = call_gpt(selected_prompt, user_prompt, settings)
+
     return f"{result}"

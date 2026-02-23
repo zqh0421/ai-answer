@@ -1,6 +1,9 @@
-from pydantic import BaseModel
-from typing import Optional, List, Literal
 from datetime import datetime
+from typing import List, Literal, Optional
+
+from pydantic import BaseModel
+
+
 class RecordResultModel(BaseModel):
     learner_id: str
     session_id: str
@@ -20,6 +23,7 @@ class RecordResultModel(BaseModel):
     system_total_response_time: int
 
     submission_time: datetime
+
 
 class UpdateRatingModel(BaseModel):
     rating: bool

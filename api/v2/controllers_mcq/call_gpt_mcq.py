@@ -2,6 +2,7 @@ from typing import List, Dict, Any
 import openai
 import json
 from ...config import Settings
+from ...concurrency import run_openai_blocking
 from openai.types.responses import ResponseInputImageParam, ResponseInputParam
 from fastapi import Depends
 from openai import OpenAI
@@ -99,14 +100,9 @@ async def call_gpt_mcq_async(system_prompt: str, user_content: List[Dict[str, An
     Returns:
         str: The generated feedback response
     """
-    import asyncio
-
-    # Run the synchronous function in a thread pool
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(
-        None,
+    return await run_openai_blocking(
         call_gpt_mcq,
         system_prompt,
         user_content,
-        settings
+        settings,
     )

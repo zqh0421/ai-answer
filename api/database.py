@@ -1,13 +1,11 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sshtunnel import SSHTunnelForwarder
-from .config import Settings, get_settings
-from fastapi import FastAPI, Depends, HTTPException
-from typing_extensions import Annotated
-settings: Annotated[Settings, Depends(get_settings)] = get_settings()
-# engine = create_engine(settings.database_url)
-# SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-# postgresql://postgres:mysecretpassword@localhost:5432/mydb
+
+from .config import get_settings
+
+settings = get_settings()
+
 tunnel = None
 database_url = None
 if settings.env == "development":
@@ -18,14 +16,18 @@ if settings.env == "development":
             ssh_private_key=settings.database_tunnel_private_key_path,
             remote_bind_address=(settings.database_host,
                                  settings.database_port),
-            local_bind_address=('localhost', settings.database_port)
+            # Use an ephemeral local port to avoid collisions with stale/local DB listeners.
+            local_bind_address=("127.0.0.1", 0),
         )
         tunnel.start()
-        print("SSH Tunnel started successfully")
+        print(f"SSH Tunnel started successfully on 127.0.0.1:{tunnel.local_bind_port}")
     except Exception as e:
         print(f"Failed to start SSH Tunnel: {e}")
         raise
-    database_url = f"postgresql://{settings.database_username}:{settings.database_password}@localhost:{tunnel.local_bind_port}/{settings.database_name}"
+    database_url = (
+        f"postgresql://{settings.database_username}:{settings.database_password}"
+        f"@127.0.0.1:{tunnel.local_bind_port}/{settings.database_name}"
+    )
 else:
     database_url = f"postgresql://{settings.database_username}:{settings.database_password}@{settings.database_host}:{settings.database_port}/{settings.database_name}"
 

@@ -1,8 +1,10 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
 
 class TTSRequestModel(BaseModel):
     text: str
-    voice: str = "alloy"  # Default voice, can be "echo", "fable", "onyx", "nova", "shimmer"
+    voice: str = "alloy"
+
 
 class InteractiveNarrationModel(BaseModel):
     student_answer: str
@@ -12,4 +14,4 @@ class InteractiveNarrationModel(BaseModel):
     page_number: int
     has_images: bool = True
     voice: str = "alloy"
-    slide_images: list[str] = []  # Base64 encoded slide images for visual analysis 
+    slide_images: list[str] = Field(default_factory=list)

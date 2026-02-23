@@ -7,6 +7,7 @@ from typing_extensions import Annotated
 
 from .. import schema
 from ..config import Settings, get_settings
+from ..concurrency import run_openai_blocking
 from ..controllers import (
     generate_feedback_using_zero,
     generate_feedback_using_few,
@@ -25,9 +26,21 @@ router = APIRouter(prefix="/api", tags=[Tags.FEEDBACK_CORE_V1])
 @router.post("/generate_feedback")
 async def generate_feedback(request: FeedbackRequestModel, settings: Annotated[Settings, Depends(get_settings)]):
     if request.promptEngineering == "zero":
-        feedback = generate_feedback_using_zero(request.question, request.answer, request.feedbackFramework, settings)
+        feedback = await run_openai_blocking(
+            generate_feedback_using_zero,
+            request.question,
+            request.answer,
+            request.feedbackFramework,
+            settings,
+        )
     elif request.promptEngineering == "few":
-        feedback = generate_feedback_using_few(request.question, request.answer, request.feedbackFramework, settings)
+        feedback = await run_openai_blocking(
+            generate_feedback_using_few,
+            request.question,
+            request.answer,
+            request.feedbackFramework,
+            settings,
+        )
     else:
         feedback = "Generate Feedback Error: Invalid Request."
     return {"feedback": feedback}
@@ -41,7 +54,14 @@ async def generate_feedback_rag(
 ):
     feedback = ""
     if request.promptEngineering == "rag_zero":
-        feedback = generate_feedback_using_rag_zero(request.question, request.answer, request.slide_text_arr, request.feedbackFramework, settings)
+        feedback = await run_openai_blocking(
+            generate_feedback_using_rag_zero,
+            request.question,
+            request.answer,
+            request.slide_text_arr,
+            request.feedbackFramework,
+            settings,
+        )
     elif request.promptEngineering == "rag_few":
         feedback = await generate_feedback_using_rag_few(request.question, request.answer, request.slide_text_arr, request.feedbackFramework, settings)
     elif request.promptEngineering == "rag_cot":

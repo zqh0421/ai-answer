@@ -64,6 +64,13 @@ def run(ctx):
 
 
 @task
+def worker_slide_batch(ctx):
+    """Start Redis+RQ worker for slide batch jobs."""
+    _ensure_venv(ctx)
+    _run_in_venv(ctx, "python -m api.workers.slide_batch_worker")
+
+
+@task
 def shell(ctx):
     """Open an interactive shell inside the virtual environment."""
     _ensure_venv(ctx)

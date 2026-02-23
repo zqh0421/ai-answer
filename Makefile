@@ -6,13 +6,15 @@ APP ?= api.index:app
 HOST ?= 0.0.0.0
 PORT ?= 8000
 
-.PHONY: help install reinstall dev run shell clean clean-venv deps
+.PHONY: help install reinstall dev run worker-slide-batch worker-slide-batch-4 shell clean clean-venv deps
 
 help:
 	@echo "Common targets:"
 	@echo "  make install    # create venv and install Python deps"
 	@echo "  make dev        # run uvicorn with --reload"
 	@echo "  make run        # run uvicorn once without reload"
+	@echo "  make worker-slide-batch  # run Redis+RQ worker for slide batch processing"
+	@echo "  make worker-slide-batch-4  # run 4 slide batch workers in parallel"
 	@echo "  make deps       # update dependencies after editing requirements.txt"
 	@echo "  make shell      # start an interactive shell inside the venv"
 	@echo "  make clean      # remove temporary artifacts"
@@ -33,6 +35,16 @@ dev: $(VENV)/bin/activate
 
 run: $(VENV)/bin/activate
 	$(ACTIVATE); uvicorn $(APP) --host $(HOST) --port $(PORT)
+
+worker-slide-batch: $(VENV)/bin/activate
+	$(ACTIVATE); python -m api.workers.slide_batch_worker
+
+worker-slide-batch-4: $(VENV)/bin/activate
+	$(ACTIVATE); \
+	for i in 1 2 3 4; do \
+		python -m api.workers.slide_batch_worker & \
+	done; \
+	wait
 
 deps: $(VENV)/bin/activate
 	$(ACTIVATE); $(PIP) install -r requirements.txt

@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends
 from typing_extensions import Annotated
 
 from ..config import Settings, get_settings
+from ..concurrency import run_openai_blocking
 from ..models import TTSRequestModel, InteractiveNarrationModel, VisionModel
 
 from .controllers_shared import (
@@ -28,9 +29,9 @@ async def interactive_narration(request: InteractiveNarrationModel, settings: An
     return await interactive_narration_shared(request, settings)
 
 @router.post("/vision")
-def vision(visionModel: VisionModel, settings: Annotated[Settings, Depends(get_settings)]):
+async def vision(visionModel: VisionModel, settings: Annotated[Settings, Depends(get_settings)]):
     """
     Shared endpoint: Process images with OpenAI Vision
     """
-    result = set_vision_shared(visionModel.base64_image_arr, settings)
+    result = await run_openai_blocking(set_vision_shared, visionModel.base64_image_arr, settings)
     return {"slide_content": result}

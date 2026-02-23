@@ -1,19 +1,18 @@
 from sqlalchemy import (
     Column,
     String,
-    ForeignKey,
     DateTime,
     JSON,
     ARRAY,
-    Integer
 )
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
-from sqlalchemy.orm import relationship
 from datetime import datetime
+import uuid
+
 from sqlalchemy.ext.declarative import declarative_base
-from .userSchema import *
 
 Base = declarative_base()
+
 
 class Question(Base):
     __tablename__ = "question"
@@ -30,6 +29,6 @@ class Question(Base):
     mcq_human_feedback = Column(JSON, nullable=True)  # JSON array of human feedback for each MCQ option
     mcq_ai_feedback = Column(JSON, nullable=True)  # JSON array of AI feedback for each MCQ option
     embed_result = Column(JSON)
-    
+
     def as_dict(self):
         return {col.name: getattr(self, col.name) for col in self.__table__.columns}

@@ -4,6 +4,7 @@ from openai import OpenAI
 from ...config import Settings, get_settings
 from typing_extensions import Annotated
 from .call_gpt import call_gpt
+from ...concurrency import run_openai_blocking
 from ...services.question_formatter import format_question
 import time
 
@@ -79,19 +80,22 @@ async def generate_feedback_using_rag_few(question: List[dict], answer: str, sli
     })
 
     if feedbackFramework=="none":
-        result = call_gpt(
+        result = await run_openai_blocking(
+            call_gpt,
             prompt_none,
             user_prompt,
             settings
         )
     if feedbackFramework=="component":
-        result = call_gpt(
+        result = await run_openai_blocking(
+            call_gpt,
             prompt_component,
             user_prompt,
             settings
         )
     if feedbackFramework=="feature":
-        result = call_gpt(
+        result = await run_openai_blocking(
+            call_gpt,
             prompt_feature,
             user_prompt,
             settings
