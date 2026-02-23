@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import secrets
 import time
 import re
@@ -30,6 +31,7 @@ from .settings import get_platform_config
 from .storage import InMemoryLtiStorage
 
 router = APIRouter(prefix="/api/lti", tags=["Identity / LTI"])
+logger = logging.getLogger(__name__)
 
 # For now, in-memory storage. Swap to DB later.
 _STORAGE = InMemoryLtiStorage()
