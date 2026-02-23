@@ -156,9 +156,14 @@ def retrieve_reference(text_vector, content_vectors, contents, top_n=3):
     similarities = [
         _cosine_similarity(text_vector, vector) for vector in content_vectors
     ]
- 
-    # Get the indices of the top N highest similarities
-    top_indices = similarities.argsort()[-top_n:][::-1]  # Sort and get top N indices
+
+    # `similarities` is a Python list, so sort indices directly instead of using NumPy's argsort.
+    top_count = min(top_n, len(similarities))
+    top_indices = sorted(
+        range(len(similarities)),
+        key=lambda idx: similarities[idx],
+        reverse=True,
+    )[:top_count]
 
     # Retrieve the top N match contents and their indices
     top_matches = [
