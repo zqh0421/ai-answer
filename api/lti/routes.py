@@ -176,6 +176,18 @@ async def lti_login(request: Request, settings: Settings = Depends(get_settings)
     if request.method == "POST":
         form = await request.form()
         params.update({k: v for k, v in form.items()})
+    print(
+        "[LTI_LOGIN_INPUT] "
+        + json.dumps(
+            {
+                "method": request.method,
+                "query_params": dict(request.query_params),
+                "merged_params": params,
+            },
+            ensure_ascii=True,
+            default=str,
+        )
+    )
 
     # REQUIRED by Simon example test
     iss = params.get("iss")
@@ -184,6 +196,18 @@ async def lti_login(request: Request, settings: Settings = Depends(get_settings)
     target_link_uri = params.get("target_link_uri")
 
     if not iss or not client_id or not login_hint or not target_link_uri:
+        print(
+            "[LTI_LOGIN_ERROR] "
+            + json.dumps(
+                {
+                    "reason": "missing_required_parameters",
+                    "method": request.method,
+                    "params": params,
+                },
+                ensure_ascii=True,
+                default=str,
+            )
+        )
         return PlainTextResponse(
             "Missing required parameters: iss, client_id, login_hint, target_link_uri",
             status_code=400,
@@ -193,6 +217,19 @@ async def lti_login(request: Request, settings: Settings = Depends(get_settings)
     try:
         _ = get_platform_config(settings, str(iss), str(client_id))
     except Exception as e:
+        print(
+            "[LTI_LOGIN_ERROR] "
+            + json.dumps(
+                {
+                    "reason": "unknown_platform_registration",
+                    "iss": iss,
+                    "client_id": client_id,
+                    "error": str(e),
+                },
+                ensure_ascii=True,
+                default=str,
+            )
+        )
         return PlainTextResponse(f"Unknown platform registration: {e}", status_code=400)
 
     # Generate state/nonce
@@ -211,6 +248,24 @@ async def lti_login(request: Request, settings: Settings = Depends(get_settings)
         state=state,
         nonce=nonce,
     )
+    print(
+        "[LTI_LOGIN_REDIRECT] "
+        + json.dumps(
+            {
+                "iss": iss,
+                "client_id": client_id,
+                "login_hint": login_hint,
+                "target_link_uri": target_link_uri,
+                "lti_message_hint": params.get("lti_message_hint"),
+                "state": state,
+                "nonce": nonce,
+                "redirect_url": redirect_url,
+                "status_code": 303,
+            },
+            ensure_ascii=True,
+            default=str,
+        )
+    )
 
     # 303 like the Simon test (302 also acceptable, but match the test)
     return RedirectResponse(url=redirect_url, status_code=303)
@@ -224,13 +279,69 @@ async def lti_launch(request: Request, settings: Settings = Depends(get_settings
     form = await request.form()
     state = form.get("state")
     id_token = form.get("id_token")
+    form_dict = {k: v for k, v in form.items()}
+    launch_input_debug = dict(form_dict)
+    if "id_token" in launch_input_debug and launch_input_debug["id_token"] is not None:
+        token_str = str(launch_input_debug["id_token"])
+        launch_input_debug["id_token"] = f"<jwt length={len(token_str)}>"
+    print(
+        "[LTI_LAUNCH_INPUT] "
+        + json.dumps(
+            {
+                "method": request.method,
+                "form": launch_input_debug,
+                "state": state,
+                "id_token_length": len(str(id_token)) if id_token else 0,
+                "form_keys": list(form_dict.keys()),
+            },
+            ensure_ascii=True,
+            default=str,
+        )
+    )
 
     if not state or not id_token:
+        print(
+            "[LTI_LAUNCH_ERROR] "
+            + json.dumps(
+                {
+                    "reason": "missing_state_or_id_token",
+                    "state_present": bool(state),
+                    "id_token_present": bool(id_token),
+                },
+                ensure_ascii=True,
+                default=str,
+            )
+        )
         return PlainTextResponse("Missing state or id_token", status_code=400)
 
     state_rec = _STORAGE.get_state(str(state))
     if not state_rec:
+        print(
+            "[LTI_LAUNCH_ERROR] "
+            + json.dumps(
+                {"reason": "invalid_or_expired_state", "state": str(state)},
+                ensure_ascii=True,
+                default=str,
+            )
+        )
         return PlainTextResponse("Invalid or expired state", status_code=400)
+    print(
+        "[LTI_LAUNCH_STATE_RESOLVED] "
+        + json.dumps(
+            {
+                "state": state_rec.state,
+                "iss": state_rec.iss,
+                "client_id": state_rec.client_id,
+                "login_hint": state_rec.login_hint,
+                "lti_message_hint": state_rec.lti_message_hint,
+                "target_link_uri": state_rec.target_link_uri,
+                "created_at": state_rec.created_at.isoformat(),
+                "expires_at": state_rec.expires_at.isoformat(),
+            },
+            ensure_ascii=True,
+            default=str,
+        )
+    )
 
     platform = get_platform_config(settings, state_rec.iss, state_rec.client_id)
 
@@ -266,6 +377,7 @@ async def lti_launch(request: Request, settings: Settings = Depends(get_settings
             "claims": json.dumps(claims, ensure_ascii=True, default=str),
         },
     )
+    print("[LTI_LAUNCH_CLAIMS_FULL] " + json.dumps(claims, ensure_ascii=True, default=str))
 
     if msg_type == "LtiResourceLinkRequest":
         learner_debug = {
@@ -296,6 +408,24 @@ async def lti_launch(request: Request, settings: Settings = Depends(get_settings
         resource_link_id=resource_link_id,
         roles=roles,
         raw_claims=claims,
+    )
+    print(
+        "[LTI_LAUNCH_SESSION_CREATED] "
+        + json.dumps(
+            {
+                "session_id": session_id,
+                "iss": launch_session.iss,
+                "client_id": launch_session.client_id,
+                "deployment_id": launch_session.deployment_id,
+                "sub": launch_session.sub,
+                "message_type": launch_session.message_type,
+                "context_id": launch_session.context_id,
+                "resource_link_id": launch_session.resource_link_id,
+                "roles": launch_session.roles,
+            },
+            ensure_ascii=True,
+            default=str,
+        )
     )
 
     if is_deep_linking_request(claims):
@@ -330,6 +460,19 @@ async def lti_launch(request: Request, settings: Settings = Depends(get_settings
         print(
             "[LTI_DEEP_LINK_LAUNCH_REDIRECT] "
             + json.dumps({"session_id": session_id, "ui_url": ui_url}, ensure_ascii=True, default=str)
+        )
+    else:
+        print(
+            "[LTI_RESOURCE_LINK_LAUNCH_REDIRECT] "
+            + json.dumps(
+                {
+                    "session_id": session_id,
+                    "message_type": msg_type,
+                    "ui_url": ui_url,
+                },
+                ensure_ascii=True,
+                default=str,
+            )
         )
     return RedirectResponse(url=ui_url, status_code=302)
 
