@@ -18,14 +18,20 @@ export default async function NoPermission({ searchParams }: NoPermissionProps) 
   const resolvedSearchParams = searchParams ? await searchParams : undefined;
   const ltiMode = resolvedSearchParams?.lti_mode;
   const launchId = resolvedSearchParams?.launch_id;
+  const ltiLaunchId = resolvedSearchParams?.lti_launch_id;
+  const ltiUserId = resolvedSearchParams?.lti_user_id;
   const isDeepLinkMode = ltiMode === "deep_link" || (
     Array.isArray(ltiMode) && ltiMode.includes("deep_link")
   );
   const normalizedLaunchId = Array.isArray(launchId) ? launchId[0] : launchId;
+  const normalizedLtiLaunchId = Array.isArray(ltiLaunchId) ? ltiLaunchId[0] : ltiLaunchId;
+  const normalizedLtiUserId = Array.isArray(ltiUserId) ? ltiUserId[0] : ltiUserId;
   const withLtiMode = (path: string) => {
     if (!isDeepLinkMode) return path;
     const params = new URLSearchParams({ lti_mode: "deep_link" });
     if (normalizedLaunchId) params.set("launch_id", normalizedLaunchId);
+    if (normalizedLtiLaunchId) params.set("lti_launch_id", normalizedLtiLaunchId);
+    if (normalizedLtiUserId) params.set("lti_user_id", normalizedLtiUserId);
     return `${path}?${params.toString()}`;
   };
 

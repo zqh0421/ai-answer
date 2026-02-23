@@ -78,6 +78,8 @@ export default function LtiQuestionsPage() {
   const [slideModeByQuestion, setSlideModeByQuestion] = useState<Record<string, SlideModeKey>>({});
   const isDeepLinkMode = searchParams.get('lti_mode') === 'deep_link';
   const launchId = searchParams.get('launch_id');
+  const ltiLaunchId = searchParams.get('lti_launch_id');
+  const ltiUserId = searchParams.get('lti_user_id');
 
   useEffect(() => {
     document.title = buildStaticPageTitle('LTI Question Library');
@@ -175,6 +177,8 @@ export default function LtiQuestionsPage() {
     if (isDeepLinkMode) {
       params.set('lti_mode', 'deep_link');
       if (launchId) params.set('launch_id', launchId);
+      if (ltiLaunchId) params.set('lti_launch_id', ltiLaunchId);
+      if (ltiUserId) params.set('lti_user_id', ltiUserId);
     }
     return `/v2/${route}/${question.question_id}?${params.toString()}`;
   };

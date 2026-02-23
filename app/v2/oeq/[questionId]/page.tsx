@@ -37,6 +37,8 @@ function PageChildren({
     studyId: (searchParams?.STUDY_ID as string) || undefined,
     sessionId: (searchParams?.SESSION_ID as string) || undefined,
   }), [searchParams]);
+  const ltiLaunchId = (searchParams?.lti_launch_id as string) || undefined;
+  const ltiUserId = (searchParams?.lti_user_id as string) || undefined;
 
   const dispatch = useDispatch<AppDispatch>();
 
@@ -304,7 +306,11 @@ function PageChildren({
 
   const recordResultToDatabase = async (payload: RecordResultInput) => {
     try {
-      const response = await axios.post("/api/record_result", payload);
+      const response = await axios.post("/api/record_result", {
+        ...payload,
+        lti_launch_id: ltiLaunchId,
+        lti_user_id: ltiUserId,
+      });
       if (response.data?.id) {
         setCurrentRecordId(response.data.id);
         console.log("Record created with ID:", response.data.id);

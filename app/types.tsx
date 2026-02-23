@@ -56,6 +56,8 @@ export type RecordResultInput = {
   learner_id: string,
   study_id: string,
   session_id: string,
+  lti_launch_id?: string,
+  lti_user_id?: string,
   ip_address?: string,
   question_id: string,
   answer: string,

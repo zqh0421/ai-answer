@@ -8,6 +8,7 @@ const LTI_MODE_KEY = "lti_mode";
 const DEEP_LINK_MODE = "deep_link";
 const LEARN_MODE = "learn";
 const LAUNCH_ID_KEY = "launch_id";
+const DEEP_LINK_LAUNCH_ID_STORAGE_KEY = "lti_deep_link_launch_id";
 
 export default function LtiDeepLinkBanner() {
   const pathname = usePathname();
@@ -31,17 +32,35 @@ export default function LtiDeepLinkBanner() {
     }
   }, [pathname, queryMode, router, searchParams]);
 
+  useEffect(() => {
+    if (queryMode !== DEEP_LINK_MODE) return;
+    if (!launchId) return;
+    try {
+      window.sessionStorage.setItem(DEEP_LINK_LAUNCH_ID_STORAGE_KEY, launchId);
+    } catch (storageError) {
+      console.warn("[LTI deep-link] failed to persist launch_id in sessionStorage", storageError);
+    }
+  }, [launchId, queryMode]);
+
   const handleSelectForLms = async () => {
     setError(null);
     setIsSubmitting(true);
 
     try {
-      if (!launchId) {
+      const deepLinkLaunchId = launchId || (() => {
+        try {
+          return window.sessionStorage.getItem(DEEP_LINK_LAUNCH_ID_STORAGE_KEY) || "";
+        } catch {
+          return "";
+        }
+      })();
+
+      if (!deepLinkLaunchId) {
         throw new Error("Missing deep-link launch context (launch_id). Please relaunch from LMS.");
       }
 
       const payload = {
-        launch_id: launchId,
+        launch_id: deepLinkLaunchId,
         resource_url: (() => {
           const resourceUrl = new URL(window.location.href);
           resourceUrl.searchParams.set(LTI_MODE_KEY, LEARN_MODE);

@@ -75,6 +75,8 @@ const QuestionOverview = () => {
   const searchParams = useSearchParams();
   const isDeepLinkMode = searchParams.get("lti_mode") === "deep_link";
   const launchId = searchParams.get("launch_id");
+  const ltiLaunchId = searchParams.get("lti_launch_id");
+  const ltiUserId = searchParams.get("lti_user_id");
   useEffect(() => {
     document.title = buildStaticPageTitle("Question Management");
   }, []);
@@ -82,6 +84,8 @@ const QuestionOverview = () => {
   if (isDeepLinkMode) {
     ltiParams.set("lti_mode", "deep_link");
     if (launchId) ltiParams.set("launch_id", launchId);
+    if (ltiLaunchId) ltiParams.set("lti_launch_id", ltiLaunchId);
+    if (ltiUserId) ltiParams.set("lti_user_id", ltiUserId);
   }
   const ltiQuery = ltiParams.toString() ? `?${ltiParams.toString()}` : "";
 

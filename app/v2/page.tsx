@@ -27,6 +27,8 @@ function HomeChildren() {
   const course_version = searchParams.get("version");
   const studyId = searchParams.get("STUDY_ID") || "unidentifiable_study";
   const sessionId = searchParams.get("SESSION_ID") || "unidentifiable_session";
+  const ltiLaunchId = searchParams.get("lti_launch_id") || undefined;
+  const ltiUserId = searchParams.get("lti_user_id") || undefined;
 
   const dispatch = useDispatch<AppDispatch>();
 
@@ -270,7 +272,11 @@ function HomeChildren() {
 
   const recordResultToDatabase = async (result: RecordResultInput) => {
     try {
-      const response = await axios.post("/api/record_result", result);
+      const response = await axios.post("/api/record_result", {
+        ...result,
+        lti_launch_id: ltiLaunchId,
+        lti_user_id: ltiUserId,
+      });
       if (response.data?.id) {
         setCurrentRecordId(response.data.id);
         console.log("Record created with ID:", response.data.id);
