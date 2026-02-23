@@ -8,10 +8,18 @@ class CourseResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="ignore", str_strip_whitespace=True)
 
     title: str = Field(min_length=1)
-    description: str = Field(min_length=1)
+    description: str | None = "N/A"
     creater_id: str | None = Field(default=None, alias="creator_id")
     creater_email: str | None = Field(default=None, alias="creator_email")
     email: str | None = None
+
+    @model_validator(mode="after")
+    def validate_course_fields(self) -> "CourseResponse":
+        if not (self.title or "").strip():
+            raise ValueError("title is required")
+        if not (self.description or "").strip():
+            self.description = "N/A"
+        return self
 
 
 class CourseAuthorityUpdateRequest(BaseModel):
