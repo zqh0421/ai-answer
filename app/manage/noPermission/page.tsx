@@ -1,7 +1,13 @@
+import type { Metadata } from "next";
 import { auth, signOut } from "@/auth";
 import Link from "next/link";
 import ActionButton from "@/app/components/ActionButton";
 import { redirect } from 'next/navigation'
+import { buildStaticPageTitle } from "@/app/utils/title";
+
+export const metadata: Metadata = {
+  title: buildStaticPageTitle("No Permission"),
+};
 
 interface NoPermissionProps {
   searchParams?: Promise<Record<string, string | string[] | undefined>>;

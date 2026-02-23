@@ -15,6 +15,7 @@ import ImageModal from "@/app/components/v2/ImageModal";
 import LeftFeedbackPanel from "@/app/components/v2/LeftFeedbackPanel";
 import RightInputPanel from "@/app/components/v2/RightInputPanel";
 import { Reference, Course, Module, Slide, RecordResultInput, FeedbackResult } from "@/app/types";
+import { buildDocumentTitle, buildQuestionResourceTitle } from "@/app/utils/title";
 
 function PageChildren({ 
   questionId, 
@@ -101,6 +102,15 @@ function PageChildren({
     draftQuestion ? [{ type: "text", content: draftQuestion }] : [{ type: "text", content: base_question }]
   );
   const [saveStatus, setSaveStatus] = useState("Saved");
+
+  useEffect(() => {
+    const resourceTitle = buildQuestionResourceTitle({
+      questionId: questionPreset?.question_id || question_id,
+      type: questionPreset?.type,
+      content: questionPreset?.content,
+    });
+    document.title = buildDocumentTitle(resourceTitle);
+  }, [questionPreset, question_id]);
 
   const debouncedSaveAnswer = useCallback(
     debounce((temp_answer: string) => {

@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import ActionButton from '@/app/components/ActionButton';
 import DynamicImage from '@/app/components/DynamicImage';
 import ManageListPanel from '@/app/manage/components/ManageListPanel';
+import { buildStaticPageTitle } from '@/app/utils/title';
 
 type PaginationToken = number | 'ellipsis';
 
@@ -77,6 +78,10 @@ export default function LtiQuestionsPage() {
   const [slideModeByQuestion, setSlideModeByQuestion] = useState<Record<string, SlideModeKey>>({});
   const isDeepLinkMode = searchParams.get('lti_mode') === 'deep_link';
   const launchId = searchParams.get('launch_id');
+
+  useEffect(() => {
+    document.title = buildStaticPageTitle('LTI Question Library');
+  }, []);
 
   const fetchQuestions = useCallback(async () => {
     setLoading(true);

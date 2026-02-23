@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { buildDeepLinkPayloadTitle } from "@/app/utils/title";
 
 const LTI_MODE_KEY = "lti_mode";
 const DEEP_LINK_MODE = "deep_link";
@@ -46,7 +47,10 @@ export default function LtiDeepLinkBanner() {
           resourceUrl.searchParams.set(LTI_MODE_KEY, LEARN_MODE);
           return resourceUrl.toString();
         })(),
-        title: document.title || "",
+        title: buildDeepLinkPayloadTitle({
+          documentTitle: document.title || "Resource - SlideItRight Feedback System",
+          pathname: window.location.pathname,
+        }),
         text: "",
       };
 

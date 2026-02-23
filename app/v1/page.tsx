@@ -18,8 +18,12 @@ import ParticipantModal from '@/app/components/v1/ParticipantModal';
 import ContentEditor from "@/app/components/v1/ContentEditor";
 import FeedbackArea from "@/app/components/v1/FeedbackArea";
 import ReferenceArea from "@/app/components/v1/ReferenceArea";
+import { buildStaticPageTitle } from "@/app/utils/title";
 
 function HomeChildren() {
+  useEffect(() => {
+    document.title = buildStaticPageTitle("AI Answer v1");
+  }, []);
   const base_question = ""
   // const base_question = "What are pitfalls of E-Learning Design Principles & Methods about?"
   // const base_wrong_answer = ""

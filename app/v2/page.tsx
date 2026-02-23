@@ -16,8 +16,12 @@ import ImageModal from "@/app/components/v2/ImageModal";
 import LeftFeedbackPanel from "@/app/components/v2/LeftFeedbackPanel";
 import RightInputPanel from "@/app/components/v2/RightInputPanel";
 import { Reference, Course, Module, Slide, RecordResultInput, FeedbackResult } from "@/app/types";
+import { buildStaticPageTitle } from "@/app/utils/title";
 
 function HomeChildren() {
+  useEffect(() => {
+    document.title = buildStaticPageTitle("AI Answer v2");
+  }, []);
   const searchParams = useSearchParams();
   const question_id = searchParams.get("question_id") || "";
   const course_version = searchParams.get("version");

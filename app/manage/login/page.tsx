@@ -1,6 +1,12 @@
+import type { Metadata } from "next";
 import SignIn from "@/app/components/SignIn";
 import { auth } from "@/auth";
 import { redirect } from 'next/navigation'
+import { buildStaticPageTitle } from "@/app/utils/title";
+
+export const metadata: Metadata = {
+    title: buildStaticPageTitle("Manage Login"),
+};
 
 interface ManageLoginProps {
     searchParams?: Promise<Record<string, string | string[] | undefined>>;

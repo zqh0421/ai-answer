@@ -7,6 +7,7 @@ import { useSession } from "next-auth/react";
 import { Slide } from "@/app/types";
 import ContentEditor from "@/app/components/ContentEditor";
 import DynamicImage from "@/app/components/DynamicImage";
+import { buildStaticPageTitle } from "@/app/utils/title";
 
 export interface QuestionContent {
   type: string; // text, image, etc.
@@ -74,6 +75,9 @@ const QuestionOverview = () => {
   const searchParams = useSearchParams();
   const isDeepLinkMode = searchParams.get("lti_mode") === "deep_link";
   const launchId = searchParams.get("launch_id");
+  useEffect(() => {
+    document.title = buildStaticPageTitle("Question Management");
+  }, []);
   const ltiParams = new URLSearchParams();
   if (isDeepLinkMode) {
     ltiParams.set("lti_mode", "deep_link");

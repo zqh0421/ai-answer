@@ -8,6 +8,7 @@ import { FormEvent, useCallback, useEffect, useState } from 'react';
 import ActionButton from '@/app/components/ActionButton';
 import ManageListPanel from '@/app/manage/components/ManageListPanel';
 import { Course } from '@/app/types';
+import { buildStaticPageTitle } from '@/app/utils/title';
 
 type SortKey = 'course_title' | 'course_description' | 'created_at';
 type SortDirection = 'asc' | 'desc';
@@ -131,6 +132,10 @@ const CourseOverview = () => {
   const isDeepLinkMode = searchParams.get('lti_mode') === 'deep_link';
   const launchId = searchParams.get('launch_id');
   const normalizedSearch = searchQuery.trim().toLowerCase();
+
+  useEffect(() => {
+    document.title = buildStaticPageTitle('Course Management');
+  }, []);
 
   const ltiParams = new URLSearchParams();
   if (isDeepLinkMode) {

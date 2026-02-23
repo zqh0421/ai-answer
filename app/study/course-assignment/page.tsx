@@ -1,9 +1,11 @@
 'use client';
 
 import { useEffect } from "react";
+import { buildStaticPageTitle } from "@/app/utils/title";
 
 const CourseAssignment: React.FC = () => {
   useEffect(() => {
+    document.title = buildStaticPageTitle("Course Assignment Redirect");
     const urls: string[] = [
       // "https://proton.oli.cmu.edu/sections/join/r5jc6", // Version A
       // "https://proton.oli.cmu.edu/sections/join/e5zdv", // Version B

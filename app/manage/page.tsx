@@ -1,8 +1,14 @@
+import type { Metadata } from "next";
 import { auth, signOut } from "@/auth";
 import { redirect } from 'next/navigation';
 import axios from "axios";
 import Link from "next/link";
 import ActionButton from '@/app/components/ActionButton';
+import { buildStaticPageTitle } from "@/app/utils/title";
+
+export const metadata: Metadata = {
+  title: buildStaticPageTitle("Management Dashboard"),
+};
 
 interface AuthResponse {
   user: {

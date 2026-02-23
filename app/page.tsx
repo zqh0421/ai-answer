@@ -18,6 +18,7 @@ import ParticipantModal from '@/app/components/ParticipantModal';
 import ContentEditor from "@/app/components/ContentEditor";
 import FeedbackArea from "@/app/components/FeedbackArea";
 import ReferenceArea from "@/app/components/ReferenceArea";
+import { buildDocumentTitle, buildQuestionResourceTitle, buildStaticPageTitle } from "@/app/utils/title";
 
 function HomeChildren() {
   const base_question = ""
@@ -88,6 +89,21 @@ function HomeChildren() {
   );
   const [saveStatus, setSaveStatus] = useState("Saved"); // Save status indicator
   const dispatch = useDispatch<AppDispatch>();
+
+  useEffect(() => {
+    const hasQuestionContent = (questionPreset?.content?.length ?? 0) > 0 || (question?.length ?? 0) > 0;
+    if (!hasQuestionContent && !question_id) {
+      document.title = buildStaticPageTitle("AI Answer");
+      return;
+    }
+
+    const resourceTitle = buildQuestionResourceTitle({
+      questionId: questionPreset?.question_id || question_id || undefined,
+      type: questionPreset?.type,
+      content: (questionPreset?.content?.length ? questionPreset.content : question) as QuestionContent[],
+    });
+    document.title = buildDocumentTitle(resourceTitle);
+  }, [questionPreset, question, question_id]);
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const debouncedSaveAnswer = useCallback(
