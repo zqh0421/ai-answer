@@ -50,6 +50,8 @@ export default function LtiDeepLinkBanner() {
         text: "",
       };
 
+      console.log("[LTI deep-link] complete payload", payload);
+
       const response = await fetch("/api/lti/deep-link/complete", {
         method: "POST",
         credentials: "include",
