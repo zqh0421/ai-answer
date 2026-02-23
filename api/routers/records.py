@@ -97,8 +97,10 @@ def _attempt_lti_grade_passback(
     settings: Settings,
 ) -> dict | None:
     mcq_score = _resolve_mcq_score(db, result.question_id, result.answer)
-    score_given = mcq_score[0] if mcq_score else None
-    score_maximum = mcq_score[1] if mcq_score else None
+    inferred_score_given = mcq_score[0] if mcq_score else None
+    inferred_score_maximum = mcq_score[1] if mcq_score else None
+    score_given = result.score_given if result.score_given is not None else inferred_score_given
+    score_maximum = result.score_maximum if result.score_maximum is not None else inferred_score_maximum
 
     candidate_launch_ids = []
     explicit_lti_launch_id = (getattr(result, "lti_launch_id", None) or "").strip()
@@ -155,6 +157,10 @@ def _attempt_lti_grade_passback(
                         "lti_user_id": getattr(result, "lti_user_id", None),
                         "question_id": result.question_id,
                         "score_inferred": mcq_score is not None,
+                        "score_explicit": result.score_given is not None,
+                        "score_maximum_explicit": result.score_maximum is not None,
+                        "score_given_used": score_given,
+                        "score_maximum_used": score_maximum,
                         "expected_sub_used": expected_sub,
                         "candidate_launch_ids": candidate_launch_ids,
                         "result": grade_result,

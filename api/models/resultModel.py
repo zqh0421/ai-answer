@@ -17,6 +17,8 @@ class RecordResultModel(BaseModel):
     prompt_engineering_method: str
     feedback_framework: str
     feedback: str
+    score_given: Optional[float] = None
+    score_maximum: Optional[float] = None
     reference_slide_id: Optional[str] = None
     reference_slide_content: Optional[str] = None
     reference_slide_page_number: Optional[int] = None
