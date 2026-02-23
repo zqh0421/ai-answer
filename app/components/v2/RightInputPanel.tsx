@@ -37,6 +37,7 @@ interface RightInputPanelProps {
   stopStreaming?: () => void;
   isMCQ?: boolean;
   promptVersion?: string | null;
+  showQuestion?: boolean;
 }
 
 export default function RightInputPanel({
@@ -69,6 +70,7 @@ export default function RightInputPanel({
   stopStreaming,
   isMCQ = false,
   promptVersion = null,
+  showQuestion = false,
 }: RightInputPanelProps) {
   const handleContinue = () => setActiveTab("input");
 
@@ -131,6 +133,7 @@ export default function RightInputPanel({
               stopStreaming={stopStreaming}
               isMCQ={isMCQ}
               promptVersion={promptVersion}
+              showQuestion={showQuestion}
             />
           )}
         </motion.div>

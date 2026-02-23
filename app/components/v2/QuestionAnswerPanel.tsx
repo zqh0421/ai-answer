@@ -30,6 +30,7 @@ interface QuestionAnswerPanelProps {
   questionId?: string;
   participantId?: string;
   courseVersion?: string | null;
+  showQuestion?: boolean;
 }
 
 export default function QuestionAnswerPanel({
@@ -56,6 +57,7 @@ export default function QuestionAnswerPanel({
   questionId,
   participantId,
   courseVersion = null,
+  showQuestion = false,
 }: QuestionAnswerPanelProps) {
   const [isFullScreen, setIsFullScreen] = useState(false);
   const [selectedOption, setSelectedOption] = useState<string>("");
@@ -71,6 +73,43 @@ export default function QuestionAnswerPanel({
 
   return (
     <div className="space-y-4">
+      {showQuestion && (
+        <div>
+          <div className="mb-2 flex items-center justify-between">
+            <h3 className="text-base font-semibold text-slate-800">Question</h3>
+            {questionLoading ? (
+              <span className="text-xs text-slate-400">Loading...</span>
+            ) : null}
+          </div>
+
+          {questionPreset?.content?.length > 0 ? (
+            <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/60 p-4">
+              {questionPreset.content.map((item: any, index: number) => (
+                <div key={index} className="rounded-lg border border-slate-200 bg-white p-3">
+                  {item.type === "text" ? (
+                    <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-slate-700">
+                      {item.content}
+                    </p>
+                  ) : item.type === "image" ? (
+                    <DynamicImage
+                      src={item.content}
+                      alt={`Question content ${index + 1}`}
+                      className="max-h-64 w-auto rounded-md object-contain"
+                    />
+                  ) : (
+                    <p className="text-sm text-slate-500">Unsupported content type: {item.type}</p>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">
+              {questionLoading ? "Loading question..." : "No question content available."}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Question Section */}
       {/* <div>
         <div className="flex items-center justify-between mb-2">

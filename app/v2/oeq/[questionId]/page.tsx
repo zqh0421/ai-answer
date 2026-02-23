@@ -28,6 +28,7 @@ function PageChildren({
 
   // Optional query params (still supported)
   const course_version = searchParams?.version as string | undefined;
+  const isDeepLinkMode = searchParams?.lti_mode === "deep_link";
 
   // 🔎 Collect Prolific params from the URL if present
   const { prolificPid, studyId, sessionId } = useMemo(() => ({
@@ -740,6 +741,7 @@ function PageChildren({
           setUseStreaming={setUseStreaming}
           isStreaming={isStreaming}
           stopStreaming={stopStreaming}
+          showQuestion={isDeepLinkMode}
         />
       </div>
 
