@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import json
 import secrets
+import time
+import re
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from pydantic import BaseModel
+import requests
+from jose import jwt
 
 from api.config import Settings, get_settings
 
@@ -35,6 +40,131 @@ class DeepLinkSelectionRequest(BaseModel):
     resource_url: str
     title: Optional[str] = None
     text: Optional[str] = None
+
+
+class LtiGradeSubmitRequest(BaseModel):
+    launch_id: str
+    ai_structure_feedback: Optional[str] = None
+    score_given: Optional[float] = None
+    score_maximum: Optional[float] = None
+    max_score: Optional[float] = None
+    comment: Optional[str] = None
+
+
+def _extract_score_from_feedback(text: Optional[str]) -> tuple[Optional[float], Optional[float]]:
+    if not text:
+        return None, None
+
+    # Try JSON-ish payloads first.
+    try:
+        obj = json.loads(text)
+        if isinstance(obj, dict):
+            for score_key in ("score_given", "score", "points", "earned"):
+                if score_key in obj and obj[score_key] is not None:
+                    given = float(obj[score_key])
+                    max_val = None
+                    for max_key in ("score_maximum", "max_score", "max", "total_points", "possible"):
+                        if max_key in obj and obj[max_key] is not None:
+                            max_val = float(obj[max_key])
+                            break
+                    return given, max_val
+    except Exception:
+        pass
+
+    ratio = re.search(r"(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)", text)
+    if ratio:
+        return float(ratio.group(1)), float(ratio.group(2))
+
+    pct = re.search(r"(\d+(?:\.\d+)?)\s*%", text)
+    if pct:
+        return float(pct.group(1)), 100.0
+
+    return None, None
+
+
+def _build_lti_client_assertion(settings: Settings, *, client_id: str, token_url: str) -> str:
+    now = int(time.time())
+    private_key = Path(settings.lti_private_key_path).read_text(encoding="utf-8")
+    claims = {
+        "iss": client_id,
+        "sub": client_id,
+        "aud": token_url,
+        "iat": now,
+        "exp": now + 300,
+        "jti": secrets.token_urlsafe(16),
+    }
+    return jwt.encode(
+        claims,
+        private_key,
+        algorithm="RS256",
+        headers={"kid": settings.lti_jwk_kid},
+    )
+
+
+def _post_lti_ags_score(*, session: LaunchSession, settings: Settings, score_given: float, score_maximum: float, comment: Optional[str]) -> dict:
+    ags_claim = (session.raw_claims or {}).get("https://purl.imsglobal.org/spec/lti-ags/claim/endpoint") or {}
+    lineitem_url = ags_claim.get("lineitem")
+    scopes = ags_claim.get("scope") or []
+    if not isinstance(scopes, list):
+        scopes = [str(scopes)]
+    if not lineitem_url:
+        raise RuntimeError("Missing AGS lineitem endpoint in launch claims")
+
+    platform = get_platform_config(settings, session.iss, session.client_id)
+    token_url = platform.auth_token_url
+    if not token_url:
+        raise RuntimeError("Missing platform auth_token_url/token_url in LTI platform config")
+
+    requested_scope = "https://purl.imsglobal.org/spec/lti-ags/scope/score"
+    if scopes and requested_scope not in scopes:
+        # Use granted scopes if LMS omitted explicit score scope in response claim.
+        requested_scope = " ".join(scopes)
+
+    client_assertion = _build_lti_client_assertion(settings, client_id=session.client_id, token_url=token_url)
+    token_resp = requests.post(
+        token_url,
+        data={
+            "grant_type": "client_credentials",
+            "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+            "client_assertion": client_assertion,
+            "scope": requested_scope,
+        },
+        timeout=15,
+    )
+    token_resp.raise_for_status()
+    access_token = token_resp.json().get("access_token")
+    if not access_token:
+        raise RuntimeError("LTI token response missing access_token")
+
+    score_url = lineitem_url.rstrip("/") + "/scores"
+    payload = {
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "scoreGiven": float(score_given),
+        "scoreMaximum": float(score_maximum),
+        "userId": session.sub,
+        "activityProgress": "Completed",
+        "gradingProgress": "FullyGraded",
+    }
+    if comment:
+        payload["comment"] = comment
+
+    score_resp = requests.post(
+        score_url,
+        json=payload,
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/vnd.ims.lis.v1.score+json",
+        },
+        timeout=15,
+    )
+    score_resp.raise_for_status()
+    return {
+        "score_url": score_url,
+        "lineitem": lineitem_url,
+        "scoreGiven": payload["scoreGiven"],
+        "scoreMaximum": payload["scoreMaximum"],
+        "status_code": score_resp.status_code,
+    }
 
 
 @router.api_route("/login", methods=["GET", "POST"])
@@ -233,6 +363,71 @@ async def complete_deep_link_get(
         text=text,
         settings=settings,
     )
+
+
+@router.post("/grade")
+async def submit_lti_grade(
+    payload: LtiGradeSubmitRequest,
+    settings: Settings = Depends(get_settings),
+):
+    session = _STORAGE.get_launch_session(payload.launch_id)
+    if not session:
+        return PlainTextResponse("Unknown session", status_code=404)
+    if session.message_type != "LtiResourceLinkRequest":
+        return PlainTextResponse("Session is not a resource-link launch", status_code=400)
+
+    parsed_given, parsed_max = _extract_score_from_feedback(payload.ai_structure_feedback)
+    score_maximum = (
+        payload.score_maximum
+        if payload.score_maximum is not None
+        else parsed_max
+        if parsed_max is not None
+        else payload.max_score
+        if payload.max_score is not None
+        else 1.0
+    )
+    score_given = (
+        payload.score_given
+        if payload.score_given is not None
+        else parsed_given
+        if parsed_given is not None
+        else score_maximum
+    )
+
+    if score_maximum <= 0:
+        return PlainTextResponse("score_maximum/max_score must be > 0", status_code=400)
+    score_given = max(0.0, min(float(score_given), float(score_maximum)))
+
+    try:
+        result = _post_lti_ags_score(
+            session=session,
+            settings=settings,
+            score_given=score_given,
+            score_maximum=score_maximum,
+            comment=payload.comment or payload.ai_structure_feedback,
+        )
+        return JSONResponse(
+            {
+                "ok": True,
+                "launch_id": payload.launch_id,
+                "score_given": score_given,
+                "score_maximum": score_maximum,
+                "score_source": "ai_feedback" if parsed_given is not None else "full_score_fallback",
+                **result,
+            }
+        )
+    except requests.HTTPError as e:
+        body = None
+        try:
+            body = e.response.text
+        except Exception:
+            body = str(e)
+        return JSONResponse(
+            {"ok": False, "error": "LTI grade post failed", "detail": body},
+            status_code=502,
+        )
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
 
 @router.get("/.well-known/jwks.json")
