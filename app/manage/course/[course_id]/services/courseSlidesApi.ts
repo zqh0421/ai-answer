@@ -2,6 +2,8 @@ import axios, { AxiosError } from 'axios';
 import { Course, Module, Slide } from '@/app/types';
 import type {
   DeleteBatchRequest,
+  MySlideJobSummary,
+  MySlideJobsResponse,
   ProcessBatchRequest,
   UploadSlidesBatchResponse,
 } from '../types';
@@ -17,6 +19,19 @@ export const fetchCourseByIdApi = async (courseId: string): Promise<Course> => {
 export const fetchCourseModulesApi = async (courseId: string): Promise<Module[]> => {
   const res = await axios.get(`/api/courses/by_id/${courseId}/modules`);
   return res.data?.modules ?? [];
+};
+
+export const updateCourseAuthorityApi = async (
+  courseId: string,
+  authority: 'public' | 'private',
+): Promise<Course | null> => {
+  const res = await axios.patch(`/api/courses/by_id/${courseId}/authority`, { authority });
+  const data = res.data;
+  if (data && typeof data === 'object') {
+    if ('course' in data && data.course && typeof data.course === 'object') return data.course as Course;
+    if ('authority' in data || 'course_id' in data || 'course_title' in data) return data as Course;
+  }
+  return null;
 };
 
 export const createCourseModuleApi = async (courseId: string, title: string): Promise<Module> => {
@@ -112,6 +127,26 @@ export const uploadModuleSlidesBatchApi = async (
 
 export const getPageImportBatchJobApi = async (jobId: string) => {
   const res = await axios.get(`/api/slides/page-import-batch/${jobId}`);
+  return res.data;
+};
+
+export const getMySlideJobsApi = async (userId: string, limit = 20): Promise<MySlideJobsResponse> => {
+  const res = await axios.get('/api/slides/jobs/mine', {
+    params: { limit },
+    headers: { 'X-User-Id': userId },
+  });
+  return res.data;
+};
+
+export const deleteMySlideJobApi = async (
+  jobType: MySlideJobSummary['job_type'],
+  jobId: string,
+  userId: string,
+) => {
+  const normalizedType = jobType === 'page_import_batch' ? 'page_import_batch' : 'process_batch';
+  const res = await axios.delete(`/api/slides/jobs/${normalizedType}/${jobId}`, {
+    headers: { 'X-User-Id': userId },
+  });
   return res.data;
 };
 

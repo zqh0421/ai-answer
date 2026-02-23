@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { AxiosError } from 'axios';
 import { usePathname } from 'next/navigation';
+import { useSession } from 'next-auth/react';
 import { useDispatch, useSelector } from 'react-redux';
 import ActionButton from '@/app/components/ActionButton';
 import AddSlidesModal from './components/AddSlidesModal';
@@ -16,6 +17,7 @@ import {
   ProcessJobStatus,
   ProcessJobSummary,
   setJobPanelOpen,
+  setProcessJobs as setProcessJobsAction,
   upsertProcessJob as upsertProcessJobAction,
 } from '@/app/slices/processJobsSlice';
 import {
@@ -35,6 +37,7 @@ import {
 import type {
   BatchJobResponse,
   DeleteBatchRequest,
+  MySlideJobSummary,
   ProcessBatchRequest,
   UiProcessStatus,
   UploadSlidesBatchResponse,
@@ -43,20 +46,24 @@ import {
   cancelProcessBatchJobApi,
   createCourseModuleApi,
   deleteModuleApi,
+  deleteMySlideJobApi,
   deleteSlidesBatchApi,
   fetchCourseByIdApi,
   fetchCourseModulesApi,
   fetchDriveFolderFilesApi,
   fetchModuleSlidesApi,
+  getMySlideJobsApi,
   getPageImportBatchJobApi,
   getProcessBatchJobApi,
   startProcessBatchApi,
+  updateCourseAuthorityApi,
   uploadModuleSlidesBatchApi,
 } from './services/courseSlidesApi';
 
 const CoursePage = () => {
   const JOB_POLL_INTERVAL_MS = 2000;
   const JOB_TIMEOUT_WARNING_MS = 2 * 60 * 1000;
+  const { data: session, status: sessionStatus } = useSession();
   const pathname = usePathname();
   const dispatch = useDispatch<AppDispatch>();
   const pathnames = pathname.split('/');
@@ -79,8 +86,7 @@ const CoursePage = () => {
   const [selectionScope, setSelectionScope] = useState<'all' | string>('all');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [slideProcessStatusById, setSlideProcessStatusById] = useState<Record<string, UiProcessStatus>>({});
-  const [activePageImportJobId, setActivePageImportJobId] = useState<string | null>(null);
-  const [activePageImportModuleId, setActivePageImportModuleId] = useState<string | null>(null);
+  const [activePageImportJobIds, setActivePageImportJobIds] = useState<string[]>([]);
   const [pageImportJobState, setPageImportJobState] = useState<BatchJobResponse | null>(null);
   const [activeProcessJobId, setActiveProcessJobId] = useState<string | null>(null);
   const [isPageImportPollingReconnecting, setIsPageImportPollingReconnecting] = useState(false);
@@ -92,8 +98,67 @@ const CoursePage = () => {
   const processJobs = useSelector((state: RootState) => state.processJobs.jobs);
   const isJobPanelOpen = useSelector((state: RootState) => state.processJobs.isJobPanelOpen);
   const [jobClockMs, setJobClockMs] = useState<number>(Date.now());
+  const [jobsRestoredFromServer, setJobsRestoredFromServer] = useState(false);
+  const [myJobs, setMyJobs] = useState<MySlideJobSummary[]>([]);
+  const [deletingJobIds, setDeletingJobIds] = useState<Record<string, boolean>>({});
+  const [isUpdatingCourseAuthority, setIsUpdatingCourseAuthority] = useState(false);
+  const jobsBadgeCount = (myJobs.length > 0 ? myJobs.length : processJobs.length);
   const isSyncingJobsRef = useRef(false);
-  const pageImportListRefreshCounterRef = useRef(0);
+  const pageImportListRefreshCounterRef = useRef<Record<string, number>>({});
+  const toastTimerRef = useRef<number | null>(null);
+  const sessionUser = session?.user as { id?: string; email?: string } | undefined;
+  const backendUserId = sessionUser?.id;
+
+  const refreshMyJobsFromBackend = useCallback(async (opts?: { limit?: number; markRestored?: boolean }) => {
+    if (!backendUserId) {
+      if (opts?.markRestored) setJobsRestoredFromServer(true);
+      return;
+    }
+
+    const res = await getMySlideJobsApi(backendUserId, opts?.limit ?? 20);
+    const jobs = Array.isArray(res.jobs) ? res.jobs : [];
+    setMyJobs(jobs);
+
+    const processJobsFromDb = jobs
+      .filter((job): job is MySlideJobSummary => job.job_type === 'process_batch')
+      .map((job) => {
+        const createdAtMs = job.created_at ? new Date(job.created_at).getTime() : Date.now();
+        return {
+          jobId: String(job.job_id),
+          status: toProcessJobStatus(String(job.status ?? 'queued')),
+          createdAtMs: Number.isFinite(createdAtMs) ? createdAtMs : Date.now(),
+          queuedCount: Number(job.queued_count ?? 0),
+          processingCount: Number(job.processing_count ?? 0),
+          processedCount: Number(job.processed_count ?? 0),
+          skippedCount: Number(job.skipped_count ?? 0),
+          failedCount: Number(job.failed_count ?? 0),
+          cancelledCount: Number(job.cancelled_count ?? 0),
+          totalCount: Number(job.total_count ?? 0),
+          cancelRequested: Boolean(job.cancel_requested ?? false),
+          scopeLabel: 'restored',
+          forceProcessAll: Boolean(job.force_process_all ?? false),
+          failedDetails: [],
+          processingSlideIds: [],
+          items: [],
+        } as ProcessJobSummary;
+      });
+
+    dispatch(setProcessJobsAction(processJobsFromDb));
+
+    const activeProcessJob = jobs.find(
+      (job) => job.job_type === 'process_batch' && ['queued', 'processing'].includes(String(job.status))
+    );
+    const activePageImportJobs = jobs.filter(
+      (job) => job.job_type === 'page_import_batch' && ['queued', 'processing'].includes(String(job.status))
+    );
+
+    setActiveProcessJobId(activeProcessJob ? String(activeProcessJob.job_id) : null);
+    setActivePageImportJobIds(activePageImportJobs.map((job) => String(job.job_id)));
+    setPageImportJobState(null);
+
+    if (opts?.markRestored) setJobsRestoredFromServer(true);
+  }, [backendUserId, dispatch]);
+
   // Fetch the course details and modules when the component mounts
   useEffect(() => {
     if (courseId) {
@@ -116,6 +181,31 @@ const CoursePage = () => {
       fetchCourseData();
     }
   }, [courseId]);
+
+  useEffect(() => {
+    if (sessionStatus === 'loading') return;
+    if (!backendUserId) {
+      setJobsRestoredFromServer(true);
+      return;
+    }
+
+    let cancelled = false;
+    const restoreJobs = async () => {
+      try {
+        await refreshMyJobsFromBackend({ limit: 20, markRestored: false });
+        if (cancelled) return;
+      } catch (error) {
+        console.error('Failed to restore jobs from server:', error);
+      } finally {
+        if (!cancelled) setJobsRestoredFromServer(true);
+      }
+    };
+
+    restoreJobs();
+    return () => {
+      cancelled = true;
+    };
+  }, [backendUserId, refreshMyJobsFromBackend, sessionStatus]);
 
   useEffect(() => {
     const hasRunningJobs = processJobs.some((job) => ['queued', 'processing', 'stopping'].includes(job.status));
@@ -177,11 +267,24 @@ const CoursePage = () => {
   const getSelectedSlideIds = (moduleId: string) => selectedSlidesByModule[moduleId] ?? [];
 
   const showToast = (message: string) => {
+    if (toastTimerRef.current) {
+      window.clearTimeout(toastTimerRef.current);
+      toastTimerRef.current = null;
+    }
     setToastMessage(message);
-    setTimeout(() => {
+    toastTimerRef.current = window.setTimeout(() => {
       setToastMessage(null);
+      toastTimerRef.current = null;
     }, 3000);
   };
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) {
+        window.clearTimeout(toastTimerRef.current);
+      }
+    };
+  }, []);
 
   const upsertProcessJob = (jobId: string, patch: Partial<ProcessJobSummary>) => {
     const current = processJobs.find((job) => job.jobId === jobId);
@@ -287,10 +390,33 @@ const CoursePage = () => {
   const syncPageImportJob = async (jobId: string, moduleId?: string) => {
     const job = normalizeBatchJobResponse(await getPageImportBatchJobApi(jobId));
     setPageImportJobState(job);
-    setActivePageImportJobId(job.job_id || jobId);
+    setActivePageImportJobIds((prev) => Array.from(new Set([...prev, String(job.job_id || jobId)])));
+    setMyJobs((prev) => {
+      const nextJob: MySlideJobSummary = {
+        job_id: String(job.job_id || jobId),
+        job_type: 'page_import_batch',
+        status: job.status,
+        total_count: job.total_count,
+        queued_count: job.queued_count,
+        processing_count: job.processing_count,
+        processed_count: job.processed_count,
+        skipped_count: job.skipped_count,
+        failed_count: job.failed_count,
+        cancelled_count: job.cancelled_count,
+        cancel_requested: job.cancel_requested,
+        created_at: job.created_at,
+        updated_at: job.updated_at,
+      };
+      const idx = prev.findIndex((j) => String(j.job_id) === nextJob.job_id && j.job_type === 'page_import_batch');
+      if (idx === -1) return [nextJob, ...prev];
+      const copy = [...prev];
+      copy[idx] = { ...copy[idx], ...nextJob };
+      return copy;
+    });
 
-    pageImportListRefreshCounterRef.current += 1;
-    if (moduleId && (isTerminalBatchJobStatus(job.status) || pageImportListRefreshCounterRef.current % 3 === 0)) {
+    const refreshCounter = (pageImportListRefreshCounterRef.current[jobId] ?? 0) + 1;
+    pageImportListRefreshCounterRef.current[jobId] = refreshCounter;
+    if (moduleId && (isTerminalBatchJobStatus(job.status) || refreshCounter % 3 === 0)) {
       await fetchSlides(moduleId);
     }
 
@@ -298,14 +424,16 @@ const CoursePage = () => {
       if (moduleId) {
         await fetchSlides(moduleId);
       }
-      setActivePageImportJobId(null);
-      setActivePageImportModuleId(null);
+      setActivePageImportJobIds((prev) => prev.filter((id) => id !== (job.job_id || jobId)));
       if (job.status === 'completed') {
         showToast(`Page import completed: ${job.processed_count} processed, ${job.skipped_count} skipped, ${job.failed_count} failed.`);
       } else if (job.status === 'failed') {
         showToast(`Page import failed: ${job.failed_count} item(s) failed.`);
       } else if (job.status === 'cancelled') {
         showToast('Page import job cancelled.');
+      }
+      if (backendUserId) {
+        void refreshMyJobsFromBackend({ limit: 20 });
       }
     }
 
@@ -365,6 +493,28 @@ const CoursePage = () => {
       lastItemsUpdatedSignature: itemsUpdatedSignature,
       finishedAtMs: ['completed', 'failed', 'cancelled'].includes(jobStatus) ? Date.now() : undefined,
     });
+    setMyJobs((prev) => {
+      const nextJob: MySlideJobSummary = {
+        job_id: jobId,
+        job_type: 'process_batch',
+        status: jobStatus,
+        force_process_all: processJobs.find((j) => j.jobId === jobId)?.forceProcessAll ?? undefined,
+        cancel_requested: Boolean(data.cancel_requested ?? false),
+        total_count: total,
+        queued_count: queued,
+        processing_count: processing,
+        processed_count: processed,
+        skipped_count: skipped,
+        failed_count: failed,
+        cancelled_count: cancelled,
+        updated_at: new Date().toISOString(),
+      };
+      const idx = prev.findIndex((j) => String(j.job_id) === jobId && j.job_type === 'process_batch');
+      if (idx === -1) return [nextJob, ...prev];
+      const copy = [...prev];
+      copy[idx] = { ...copy[idx], ...nextJob };
+      return copy;
+    });
 
     if (['completed', 'failed', 'cancelled'].includes(jobStatus)) {
       if (activeProcessJobId === jobId) {
@@ -377,6 +527,9 @@ const CoursePage = () => {
           : `Processed ${processed}, Skipped ${skipped}, Failed ${failed}, Cancelled ${cancelled}`
       );
       await Promise.all(moduleIds.map((moduleId) => fetchSlides(moduleId)));
+      if (backendUserId) {
+        void refreshMyJobsFromBackend({ limit: 20 });
+      }
     }
     return jobStatus;
   };
@@ -390,6 +543,47 @@ const CoursePage = () => {
       console.error('Error stopping job:', error);
       upsertProcessJob(jobId, { status: 'processing', cancelRequested: false });
       showToast(`Failed to stop job ${jobId}.`);
+    }
+  };
+
+  const handleDeleteEndedJob = async (job: MySlideJobSummary) => {
+    const jobId = String(job.job_id);
+    if (!backendUserId) {
+      showToast('Missing user context. Please sign in again.');
+      return;
+    }
+
+    setDeletingJobIds((prev) => ({ ...prev, [jobId]: true }));
+    try {
+      await deleteMySlideJobApi(job.job_type, jobId, backendUserId);
+      setMyJobs((prev) => prev.filter((j) => String(j.job_id) !== jobId));
+      if (job.job_type === 'process_batch') {
+        dispatch(setProcessJobsAction(processJobs.filter((j) => j.jobId !== jobId)));
+      }
+      showToast('Job removed from history.');
+      void refreshMyJobsFromBackend({ limit: 20 });
+    } catch (error) {
+      if (error instanceof AxiosError) {
+        if (error.response?.status === 409) {
+          showToast('Cannot delete an active job. Cancel it first.');
+        } else if (error.response?.status === 404) {
+          setMyJobs((prev) => prev.filter((j) => String(j.job_id) !== jobId));
+          showToast('Job not found. Removed from list.');
+          void refreshMyJobsFromBackend({ limit: 20 });
+        } else if (error.response?.status === 403) {
+          showToast('User mismatch. Please refresh and check your login session.');
+        } else {
+          showToast('Failed to remove job from list.');
+        }
+      } else {
+        showToast('Failed to remove job from list.');
+      }
+    } finally {
+      setDeletingJobIds((prev) => {
+        const next = { ...prev };
+        delete next[jobId];
+        return next;
+      });
     }
   };
 
@@ -486,6 +680,29 @@ const CoursePage = () => {
         const processJobId = String(jobId);
         const initialJobStatus = toProcessJobStatus(String(data?.status ?? 'queued'));
         setActiveProcessJobId(processJobId);
+        setMyJobs((prev) => {
+          const optimistic: MySlideJobSummary = {
+            job_id: processJobId,
+            job_type: 'process_batch',
+            status: String(data?.status ?? 'queued'),
+            force_process_all: forceProcessAll,
+            cancel_requested: false,
+            total_count: Number(data?.total_count ?? slideIds.length),
+            queued_count: Number(data?.total_count ?? slideIds.length),
+            processing_count: 0,
+            processed_count: 0,
+            skipped_count: 0,
+            failed_count: 0,
+            cancelled_count: 0,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          };
+          const idx = prev.findIndex((j) => String(j.job_id) === processJobId && j.job_type === 'process_batch');
+          if (idx === -1) return [optimistic, ...prev];
+          const copy = [...prev];
+          copy[idx] = { ...copy[idx], ...optimistic };
+          return copy;
+        });
         upsertProcessJob(processJobId, {
           status: initialJobStatus,
           createdAtMs: Date.now(),
@@ -514,6 +731,9 @@ const CoursePage = () => {
         }
         if (!['completed', 'failed', 'cancelled'].includes(syncedStatus)) {
           showToast(`Job created: ${jobId}`);
+        }
+        if (backendUserId) {
+          void refreshMyJobsFromBackend({ limit: 20 });
         }
       } else {
         const processed = Number(data?.processed_count ?? 0);
@@ -544,19 +764,23 @@ const CoursePage = () => {
   };
 
   useEffect(() => {
-    if (!activePageImportJobId) return;
+    if (activePageImportJobIds.length === 0) return;
     let cancelled = false;
     let timeoutId: number | undefined;
     let consecutiveFailures = 0;
 
     const tick = async () => {
-      if (cancelled || !activePageImportJobId) return;
+      if (cancelled || activePageImportJobIds.length === 0) return;
       try {
-        const status = await syncPageImportJob(activePageImportJobId, activePageImportModuleId ?? undefined);
+        let hasActive = false;
+        for (const jobId of activePageImportJobIds) {
+          const status = await syncPageImportJob(jobId, undefined);
+          if (!isTerminalBatchJobStatus(status)) hasActive = true;
+        }
         consecutiveFailures = 0;
         setPageImportPollFailureCount(0);
         setIsPageImportPollingReconnecting(false);
-        if (!cancelled && !isTerminalBatchJobStatus(status)) {
+        if (!cancelled && hasActive) {
           timeoutId = window.setTimeout(tick, JOB_POLL_INTERVAL_MS);
         }
       } catch (error) {
@@ -568,6 +792,7 @@ const CoursePage = () => {
           timeoutId = window.setTimeout(tick, JOB_POLL_INTERVAL_MS);
         } else if (!cancelled) {
           showToast(`Page import polling paused after ${consecutiveFailures} failed attempts.`);
+          if (backendUserId) void refreshMyJobsFromBackend({ limit: 20 });
         }
       }
     };
@@ -577,9 +802,10 @@ const CoursePage = () => {
       cancelled = true;
       if (timeoutId) window.clearTimeout(timeoutId);
     };
-  }, [activePageImportJobId, activePageImportModuleId, pageImportPollRestartNonce]);
+  }, [activePageImportJobIds, pageImportPollRestartNonce]);
 
   useEffect(() => {
+    if (!jobsRestoredFromServer) return;
     const runningJobs = processJobs.filter((job) => ['queued', 'processing', 'stopping'].includes(job.status));
     if (runningJobs.length === 0) {
       setIsProcessPollingReconnecting(false);
@@ -615,6 +841,7 @@ const CoursePage = () => {
             timeoutId = window.setTimeout(tick, JOB_POLL_INTERVAL_MS);
           } else {
             showToast(`Process polling paused after ${consecutiveFailures} failed attempts.`);
+            if (backendUserId) void refreshMyJobsFromBackend({ limit: 20 });
           }
         }
       }
@@ -625,7 +852,7 @@ const CoursePage = () => {
       cancelled = true;
       if (timeoutId) window.clearTimeout(timeoutId);
     };
-  }, [processJobs, modules, processPollRestartNonce]);
+  }, [backendUserId, jobsRestoredFromServer, modules, processJobs, processPollRestartNonce, refreshMyJobsFromBackend]);
 
   const handleDeleteBatch = async () => {
     const slideIds = getScopeSelectedSlideIds();
@@ -678,9 +905,8 @@ const CoursePage = () => {
       if (res.status === 201) {
         const pageImportJobId = res.data?.page_import_job_id ? String(res.data.page_import_job_id) : null;
         if (pageImportJobId) {
-          setActivePageImportJobId(pageImportJobId);
-          setActivePageImportModuleId(selectedModuleForSlide);
-          pageImportListRefreshCounterRef.current = 0;
+          setActivePageImportJobIds((prev) => Array.from(new Set([...prev, pageImportJobId])));
+          pageImportListRefreshCounterRef.current[pageImportJobId] = 0;
           setPageImportJobState(null);
         }
         await fetchSlides(selectedModuleForSlide);
@@ -708,9 +934,8 @@ const CoursePage = () => {
             if (retryRes.status === 201) {
               const retryPageImportJobId = retryRes.data?.page_import_job_id ? String(retryRes.data.page_import_job_id) : null;
               if (retryPageImportJobId) {
-                setActivePageImportJobId(retryPageImportJobId);
-                setActivePageImportModuleId(selectedModuleForSlide);
-                pageImportListRefreshCounterRef.current = 0;
+                setActivePageImportJobIds((prev) => Array.from(new Set([...prev, retryPageImportJobId])));
+                pageImportListRefreshCounterRef.current[retryPageImportJobId] = 0;
                 setPageImportJobState(null);
               }
               await fetchSlides(selectedModuleForSlide);
@@ -762,6 +987,28 @@ const CoursePage = () => {
     }
   };
 
+  const handleToggleCourseAuthority = async () => {
+    if (!course?.course_id || isUpdatingCourseAuthority) return;
+
+    const nextAuthority = course.authority === 'public' ? 'private' : 'public';
+    setIsUpdatingCourseAuthority(true);
+    try {
+      const patched = await updateCourseAuthorityApi(course.course_id, nextAuthority);
+      if (patched) {
+        setCourse((prev) => (prev ? { ...prev, ...patched } : patched));
+      } else {
+        const refreshed = await fetchCourseByIdApi(course.course_id);
+        setCourse(refreshed);
+      }
+      showToast(nextAuthority === 'public' ? 'Course published.' : 'Course is now private.');
+    } catch (error) {
+      console.error('Error updating course authority:', error);
+      showToast('Failed to update course visibility.');
+    } finally {
+      setIsUpdatingCourseAuthority(false);
+    }
+  };
+
   if (loading) {
     return <p>Loading...</p>;
   }
@@ -778,21 +1025,26 @@ const CoursePage = () => {
         variant="neutral"
         size="sm"
       >
-        {isJobPanelOpen ? 'Hide Jobs' : `Jobs (${processJobs.length})`}
+        {isJobPanelOpen ? 'Hide Jobs' : `Jobs (${jobsBadgeCount})`}
       </ActionButton>
       <JobSummaryPanel
         isOpen={isJobPanelOpen}
         jobs={processJobs}
+        backendJobs={myJobs}
+        deletingJobIds={deletingJobIds}
         jobClockMs={jobClockMs}
         jobTimeoutWarningMs={JOB_TIMEOUT_WARNING_MS}
         slideTitleById={slideTitleById}
         formatJobDuration={formatJobDuration}
         onClose={() => dispatch(setJobPanelOpen(false))}
         onStopJob={handleStopJob}
+        onDeleteEndedJob={handleDeleteEndedJob}
       />
       {toastMessage && (
-        <div className="fixed top-20 right-4 z-[60] rounded-xl border border-slate-700 bg-slate-900/95 px-4 py-2 text-sm text-white shadow-xl backdrop-blur-sm">
-          {toastMessage}
+        <div className="fixed left-1/2 top-16 z-[60] -translate-x-1/2">
+          <div className="rounded-xl border border-slate-700 bg-slate-900/95 px-4 py-2 text-sm text-white shadow-xl backdrop-blur-sm motion-safe:animate-[toast-slide-in_180ms_ease-out]">
+            {toastMessage}
+          </div>
         </div>
       )}
       <div className="mx-auto flex w-full max-w-[1500px] flex-col gap-8 p-4 md:p-6">
@@ -817,13 +1069,16 @@ const CoursePage = () => {
           </div>
           <div className="shrink-0 md:pt-1">
             <ActionButton
-              onClick={async () => {
-                // await handlePublish()
-              }}
+              onClick={handleToggleCourseAuthority}
+              disabled={isUpdatingCourseAuthority}
               variant="primary"
               className="rounded-lg px-3.5 py-2"
             >
-              Publish Course
+              {isUpdatingCourseAuthority
+                ? 'Updating...'
+                : course.authority === 'public'
+                  ? 'Unpublish Course'
+                  : 'Publish Course'}
             </ActionButton>
           </div>
         </div>
@@ -991,6 +1246,18 @@ const CoursePage = () => {
         }}
         onUpload={handleCreateSlides}
       />
+      <style jsx>{`
+        @keyframes toast-slide-in {
+          from {
+            opacity: 0;
+            transform: translateY(-10px);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0);
+          }
+        }
+      `}</style>
       </div>
     </main>
   );

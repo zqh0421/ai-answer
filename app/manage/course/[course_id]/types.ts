@@ -48,3 +48,27 @@ export type UploadSlidesBatchResponse = {
   page_import_jobs_queued?: number;
   page_import_job_id?: string;
 };
+
+export type MySlideJobSummary = {
+  job_id: string;
+  job_type: 'process_batch' | 'page_import_batch' | string;
+  status: 'queued' | 'processing' | 'completed' | 'failed' | 'cancelled' | string;
+  requested_by?: string | null;
+  force_process_all?: boolean | null;
+  cancel_requested?: boolean | null;
+  total_count?: number | null;
+  queued_count?: number | null;
+  processing_count?: number | null;
+  processed_count?: number | null;
+  skipped_count?: number | null;
+  failed_count?: number | null;
+  cancelled_count?: number | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type MySlideJobsResponse = {
+  user_id: string;
+  count: number;
+  jobs: MySlideJobSummary[];
+};

@@ -55,6 +55,9 @@ const processJobsSlice = createSlice({
     setJobPanelOpen: (state, action: PayloadAction<boolean>) => {
       state.isJobPanelOpen = action.payload;
     },
+    setProcessJobs: (state, action: PayloadAction<ProcessJobSummary[]>) => {
+      state.jobs = action.payload;
+    },
     upsertProcessJob: (state, action: PayloadAction<ProcessJobSummary>) => {
       const idx = state.jobs.findIndex((job) => job.jobId === action.payload.jobId);
       if (idx === -1) {
@@ -69,5 +72,5 @@ const processJobsSlice = createSlice({
   },
 });
 
-export const { setJobPanelOpen, upsertProcessJob, clearProcessJobs } = processJobsSlice.actions;
+export const { setJobPanelOpen, setProcessJobs, upsertProcessJob, clearProcessJobs } = processJobsSlice.actions;
 export default processJobsSlice.reducer;
