@@ -539,7 +539,7 @@ async def lti_launch(request: Request, settings: Settings = Depends(get_settings
 
     ui_url = f"{settings.public_base_url}/lti/questions"
     if is_deep_linking_request(claims):
-        ui_url = f"{ui_url}?lti_mode=deep_link"
+        ui_url = f"{ui_url}?lti_mode=deep_link&launch_id={launch_session.session_id}"
         print(
             "[LTI_DEEP_LINK_LAUNCH_REDIRECT] "
             + json.dumps({"session_id": session_id, "ui_url": ui_url}, ensure_ascii=True, default=str)
