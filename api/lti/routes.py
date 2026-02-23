@@ -257,6 +257,14 @@ async def lti_launch(request: Request, settings: Settings = Depends(get_settings
 
     roles = claims.get("https://purl.imsglobal.org/spec/lti/claim/roles") or []
 
+    logger.info(
+        "lti_launch_claims_full",
+        extra={
+            "message_type": msg_type,
+            "claims": json.dumps(claims, ensure_ascii=True, default=str),
+        },
+    )
+
     if msg_type == "LtiResourceLinkRequest":
         learner_debug = {
             "iss": platform.iss,
