@@ -1,6 +1,7 @@
 import json
+from urllib.parse import parse_qsl, urlsplit
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from .. import models, schema
@@ -52,6 +53,41 @@ def _resolve_mcq_score(db: Session, question_id: str, answer: str) -> tuple[floa
     selected_option = options[selected_index]
     is_correct = bool(selected_option.get("isCorrect")) if isinstance(selected_option, dict) else False
     return (1.0 if is_correct else 0.0, 1.0)
+
+
+def _extract_lti_context_from_request(request: Request) -> dict[str, str]:
+    values: dict[str, str] = {}
+
+    for key in ("lti_launch_id", "lti_user_id"):
+        query_val = (request.query_params.get(key) or "").strip()
+        if query_val:
+            values[key] = query_val
+
+    header_map = {
+        "lti_launch_id": "x-lti-launch-id",
+        "lti_user_id": "x-lti-user-id",
+    }
+    for field, header in header_map.items():
+        if field in values:
+            continue
+        header_val = (request.headers.get(header) or "").strip()
+        if header_val:
+            values[field] = header_val
+
+    referer = (request.headers.get("referer") or "").strip()
+    if referer:
+        try:
+            referer_query = dict(parse_qsl(urlsplit(referer).query, keep_blank_values=True))
+            for key in ("lti_launch_id", "lti_user_id"):
+                if key in values:
+                    continue
+                ref_val = str(referer_query.get(key) or "").strip()
+                if ref_val:
+                    values[key] = ref_val
+        except Exception:
+            pass
+
+    return values
 
 
 def _attempt_lti_grade_passback(
@@ -149,11 +185,33 @@ def _attempt_lti_grade_passback(
 
 @router.post("/record_result")
 def record_result(
+    request: Request,
     result: models.RecordResultModel,
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ):
     try:
+        req_lti = _extract_lti_context_from_request(request)
+        if req_lti:
+            print(
+                "[LTI_RECORD_REQUEST_CONTEXT] "
+                + json.dumps(
+                    {
+                        "lti_launch_id": req_lti.get("lti_launch_id"),
+                        "lti_user_id": req_lti.get("lti_user_id"),
+                        "referer_present": bool((request.headers.get("referer") or "").strip()),
+                    },
+                    ensure_ascii=True,
+                    default=str,
+                )
+            )
+            result = result.model_copy(
+                update={
+                    "lti_launch_id": result.lti_launch_id or req_lti.get("lti_launch_id"),
+                    "lti_user_id": result.lti_user_id or req_lti.get("lti_user_id"),
+                }
+            )
+
         record_data = {
             "learner_id": result.learner_id,
             "study_id": result.study_id,
