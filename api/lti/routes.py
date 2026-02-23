@@ -364,6 +364,7 @@ async def lti_launch(request: Request, settings: Settings = Depends(get_settings
     # Extract some useful claims
     context = claims.get("https://purl.imsglobal.org/spec/lti/claim/context") or {}
     context_id = context.get("id")
+    claim_target_link_uri = claims.get("https://purl.imsglobal.org/spec/lti/claim/target_link_uri")
 
     resource_link = claims.get("https://purl.imsglobal.org/spec/lti/claim/resource_link") or {}
     resource_link_id = resource_link.get("id")
@@ -456,18 +457,24 @@ async def lti_launch(request: Request, settings: Settings = Depends(get_settings
 
     ui_url = f"{settings.public_base_url}/lti/questions"
     if is_deep_linking_request(claims):
-        ui_url = f"{ui_url}?lti_mode=deep_link&launch_id={session_id}"
+        ui_url = f"{ui_url}?lti_mode=deep_link"
         print(
             "[LTI_DEEP_LINK_LAUNCH_REDIRECT] "
             + json.dumps({"session_id": session_id, "ui_url": ui_url}, ensure_ascii=True, default=str)
         )
     else:
+        redirect_source = "default_questions"
+        if isinstance(claim_target_link_uri, str) and claim_target_link_uri.strip():
+            ui_url = claim_target_link_uri.strip()
+            redirect_source = "claim_target_link_uri"
         print(
             "[LTI_RESOURCE_LINK_LAUNCH_REDIRECT] "
             + json.dumps(
                 {
                     "session_id": session_id,
                     "message_type": msg_type,
+                    "claim_target_link_uri": claim_target_link_uri,
+                    "redirect_source": redirect_source,
                     "ui_url": ui_url,
                 },
                 ensure_ascii=True,
