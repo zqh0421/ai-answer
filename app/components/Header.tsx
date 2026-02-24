@@ -1,5 +1,3 @@
-// import { BookOpen, Sparkles } from 'lucide-react';
-
 export default function Header() {
   return (
     <header className="bg-white/80 backdrop-blur-md border-b border-slate-200 sticky top-0 z-10">

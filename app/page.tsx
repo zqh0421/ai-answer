@@ -12,7 +12,6 @@ import { saveAnswer, saveDraftAnswer, saveDraftQuestion } from '@/app/slices/use
 import { Question, QuestionContent } from "@/app/manage/question/page";
 import { Reference, Course, Module, Slide, RecordResultInput, StructuredFeedback } from "@/app/types";
 
-import TestDrawer from '@/app/components/TestDrawer';
 import DynamicImage from "@/app/components/DynamicImage";
 import ParticipantModal from '@/app/components/ParticipantModal';
 import ContentEditor from "@/app/components/ContentEditor";
@@ -24,8 +23,7 @@ function HomeChildren() {
   const base_question = ""
   // const base_question = "What are pitfalls of E-Learning Design Principles & Methods about?"
   // const base_wrong_answer = ""
-  const [message, setMessage] = useState("Loading...");
-  const [isDrawerOpen, setIsDrawerOpen] = useState(true); // Drawer state
+  const [, setMessage] = useState("Loading...");
   // const [question, setQuestion] = useState<QuestionContent[]>([
   //   { type: "text", content: base_question },
   // ]);
@@ -223,19 +221,6 @@ function HomeChildren() {
       return null;
     }
   };
-
-  useEffect(() => {
-    axios
-      .get("/api/test")
-      .then((response) => {
-        setMessage(response.data.message); // Assuming FastAPI returns { "message": "Backend Connected" }
-        setIsDrawerOpen(false);
-      })
-      .catch((error) => {
-        console.error("Error fetching the API:", error);
-        setMessage("Failed to load message.");
-      });
-  }, []);
 
   useEffect(() => {
     if (!isImageLoading) {
@@ -499,14 +484,9 @@ function HomeChildren() {
   //   }
   // };
 
-  const closeDrawer = () => setIsDrawerOpen(false);
-
   return (
     <div className="">
       <ParticipantModal isOpen={!participantId && !!course_version} />
-
-      {/* Drawer for Testing Area */}
-      <TestDrawer isOpen={isDrawerOpen} closeDrawer={closeDrawer} message={message} />
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 h-full">
         {/* Left Feedback Area */}

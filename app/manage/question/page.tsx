@@ -471,9 +471,9 @@ const QuestionOverview = () => {
                   <button
                     onClick={() => {
                       if (question.type === "multiple choice") {
-                        window.location.href = `/v2/mcq/${question.question_id}${ltiQuery}`;
+                        window.location.href = `/mcq/${question.question_id}${ltiQuery}`;
                       } else if (question.type === "open ended") {
-                        window.location.href = `/v2/oeq/${question.question_id}${ltiQuery}`;
+                        window.location.href = `/oeq/${question.question_id}${ltiQuery}`;
                       }
                     }}
                     className="py-2 px-4 text-white bg-green-600 hover:bg-green-700 rounded-md"

@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import SignIn from "@/app/components/SignIn";
+import SignIn from "@/app/components/manage/SignIn";
 import { auth } from "@/auth";
 import { redirect } from 'next/navigation'
 import { buildStaticPageTitle } from "@/app/utils/title";

@@ -6,7 +6,7 @@ import { useSearchParams } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import ActionButton from '@/app/components/ActionButton';
 import DynamicImage from '@/app/components/DynamicImage';
-import ManageListPanel from '@/app/manage/components/ManageListPanel';
+import ManageListPanel from '@/app/components/manage/ManageListPanel';
 import { buildStaticPageTitle } from '@/app/utils/title';
 
 type PaginationToken = number | 'ellipsis';
@@ -180,7 +180,7 @@ export default function LtiQuestionsPage() {
       if (ltiLaunchId) params.set('lti_launch_id', ltiLaunchId);
       if (ltiUserId) params.set('lti_user_id', ltiUserId);
     }
-    return `/v2/${route}/${question.question_id}?${params.toString()}`;
+    return `/${route}/${question.question_id}?${params.toString()}`;
   };
 
   return (

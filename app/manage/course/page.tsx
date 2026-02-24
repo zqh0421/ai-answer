@@ -6,7 +6,7 @@ import { useSearchParams } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import { FormEvent, useCallback, useEffect, useState } from 'react';
 import ActionButton from '@/app/components/ActionButton';
-import ManageListPanel from '@/app/manage/components/ManageListPanel';
+import ManageListPanel from '@/app/components/manage/ManageListPanel';
 import { Course } from '@/app/types';
 import { buildStaticPageTitle } from '@/app/utils/title';
 

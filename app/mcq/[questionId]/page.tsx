@@ -9,11 +9,10 @@ import { RootState, AppDispatch } from "@/app/store/store";
 import { saveAnswer, saveDraftAnswer, saveDraftQuestion } from "@/app/slices/userSlice";
 import { Question, QuestionContent } from "@/app/manage/question/page";
 
-import TestDrawer from "@/app/components/TestDrawer";
 import ParticipantModal from "@/app/components/ParticipantModal";
-import ImageModal from "@/app/components/v2/ImageModal";
-import LeftFeedbackPanel from "@/app/components/v2/LeftFeedbackPanel";
-import RightInputPanel from "@/app/components/v2/RightInputPanel";
+import ImageModal from "@/app/components/ImageModal";
+import LeftFeedbackPanel from "@/app/components/LeftFeedbackPanel";
+import RightInputPanel from "@/app/components/RightInputPanel";
 import { Reference, Course, Module, Slide, RecordResultInput, FeedbackResult } from "@/app/types";
 import { buildDocumentTitle, buildQuestionResourceTitle } from "@/app/utils/title";
 
@@ -48,7 +47,7 @@ function PageChildren({
   questionId?: string;
   searchParams: { [key: string]: string | string[] | undefined };
 }) {
-  // Dynamic route param: /v2/oeq/[questionId]
+  // Dynamic route param: /mcq/[questionId]
   const question_id = questionId || "";
 
   // Optional query params (still supported)
@@ -73,8 +72,7 @@ function PageChildren({
 
   const base_question = "";
 
-  const [message, setMessage] = useState("Loading...");
-  const [isDrawerOpen, setIsDrawerOpen] = useState(true);
+  const [, setMessage] = useState("Loading...");
 
   const [result, setResult] = useState<FeedbackResult | string>("");
   const [reference, setReference] = useState<Reference>();
@@ -554,20 +552,6 @@ function PageChildren({
     
     fetchLatestFeedbackAndReferences();
   }, [question_id, participantId, prolificPid, questionPreset]);
-
-  // Connectivity ping (unchanged)
-  useEffect(() => {
-    axios
-      .get("/api/test")
-      .then((response) => {
-        setMessage(response.data.message);
-        setIsDrawerOpen(false);
-      })
-      .catch((error) => {
-        console.error("Error fetching the API:", error);
-        setMessage("Failed to load message.");
-      });
-  }, []);
 
   const handlePdfImage = async (pageNumber: number, slideId: string) => {
     try {
@@ -1129,8 +1113,6 @@ function PageChildren({
     }
   };
 
-  const closeDrawer = () => setIsDrawerOpen(false);
-
   const handleImageClick = (image: string, index: number) => {
     setEnlargedImage(image);
     setCurrentImageIndex(index);
@@ -1154,8 +1136,6 @@ function PageChildren({
     <div className="">
       {/* If you only want to show the participant modal for Prolific flows, you can also gate this by prolificPid */}
       <ParticipantModal isOpen={!prolificPid && !participantId && !!course_version} />
-
-      <TestDrawer isOpen={isDrawerOpen} closeDrawer={closeDrawer} message={message} />
 
       <div className="grid grid-cols-11 gap-2 h-full">
         <LeftFeedbackPanel
