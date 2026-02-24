@@ -59,9 +59,9 @@ export default async function NoPermission({ searchParams }: NoPermissionProps) 
             </div>
 
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-              <Link href={withLtiMode("/")}>
+              <Link href={withLtiMode("/manage")}>
                 <ActionButton type="button" variant="neutral" className="w-full sm:w-auto rounded-lg px-4 py-2">
-                  Go to Home page
+                  Go to Management Home
                 </ActionButton>
               </Link>
 

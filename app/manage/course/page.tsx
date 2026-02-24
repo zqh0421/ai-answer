@@ -6,7 +6,9 @@ import { useSearchParams } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import { FormEvent, useCallback, useEffect, useState } from 'react';
 import ActionButton from '@/app/components/ActionButton';
+import ManageDataTable, { ManageTableColumn } from '@/app/components/manage/ManageDataTable';
 import ManageListPanel from '@/app/components/manage/ManageListPanel';
+import { useManagePermissionGuard } from '@/app/manage/hooks/useManagePermissionGuard';
 import { Course } from '@/app/types';
 import { buildStaticPageTitle } from '@/app/utils/title';
 
@@ -125,8 +127,8 @@ const CourseOverview = () => {
   const [currentPage, setCurrentPage] = useState(1);
   const [totalCourses, setTotalCourses] = useState(0);
   const [totalPages, setTotalPages] = useState(1);
-  const [expandedDescriptions, setExpandedDescriptions] = useState<Record<string, boolean>>({});
   const { data: session, status: sessionStatus } = useSession();
+  const { hasManagePermission, isPermissionChecking } = useManagePermissionGuard();
   const creatorEmail = session?.user?.email;
   const searchParams = useSearchParams();
   const isDeepLinkMode = searchParams.get('lti_mode') === 'deep_link';
@@ -181,9 +183,13 @@ const CourseOverview = () => {
   }, [creatorEmail, currentPage, normalizedSearch, sortDirection, sortKey]);
 
   useEffect(() => {
-    if (sessionStatus === 'loading') return;
+    if (sessionStatus === 'loading' || isPermissionChecking || !hasManagePermission) return;
     fetchCourses(currentPage);
-  }, [currentPage, fetchCourses, sessionStatus]);
+  }, [currentPage, fetchCourses, hasManagePermission, isPermissionChecking, sessionStatus]);
+
+  if (isPermissionChecking || !hasManagePermission) {
+    return null;
+  }
 
   const handleCreateCourse = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -259,15 +265,94 @@ const CourseOverview = () => {
     return sortDirection === 'asc' ? '↑' : '↓';
   };
 
-  const toggleDescriptionExpanded = (courseId: string) => {
-    setExpandedDescriptions((prev) => ({
-      ...prev,
-      [courseId]: !prev[courseId],
-    }));
-  };
-
   const paginationTokens = getPaginationTokens(currentPage, totalPages);
   const displayedCount = sortedCourses.length;
+  const courseColumns: ManageTableColumn<Course>[] = [
+    {
+      id: 'course_title',
+      headerClassName: 'w-[28%] px-4 py-3 text-left font-semibold text-slate-700',
+      header: (
+        <button
+          type="button"
+          onClick={() => handleSort('course_title')}
+          className="inline-flex items-center gap-1 hover:text-slate-900"
+        >
+          Title
+          <span className="text-slate-400">{sortIndicator('course_title')}</span>
+        </button>
+      ),
+      cellClassName: 'px-4 py-3 align-middle',
+      renderCell: (course) => (
+        <Link
+          href={`/manage/course/${course.course_id}${ltiQuery}`}
+          className="font-medium text-slate-900 underline-offset-4 hover:text-blue-700 hover:underline"
+        >
+          {course.course_title || '(Untitled course)'}
+        </Link>
+      ),
+    },
+    {
+      id: 'course_description',
+      headerClassName: 'px-4 py-3 text-left font-semibold text-slate-700',
+      header: (
+        <button
+          type="button"
+          onClick={() => handleSort('course_description')}
+          className="inline-flex items-center gap-1 hover:text-slate-900"
+        >
+          Description
+          <span className="text-slate-400">{sortIndicator('course_description')}</span>
+        </button>
+      ),
+      cellClassName: 'w-full px-4 py-3 align-middle text-slate-600',
+      renderCell: (course) => {
+        const description = course.course_description?.trim() || '';
+        if (!description) return <span>No description</span>;
+        if (description.length <= DESCRIPTION_PREVIEW_LENGTH) return <span>{description}</span>;
+        return <span>{`${description.slice(0, DESCRIPTION_PREVIEW_LENGTH)}...`}</span>;
+      },
+    },
+    {
+      id: 'created_at',
+      headerClassName: 'w-[1%] whitespace-nowrap px-4 py-3 text-left font-semibold text-slate-700',
+      header: (
+        <button
+          type="button"
+          onClick={() => handleSort('created_at')}
+          className="inline-flex items-center gap-1 hover:text-slate-900"
+        >
+          Created
+          <span className="text-slate-400">{sortIndicator('created_at')}</span>
+        </button>
+      ),
+      cellClassName: 'w-[1%] whitespace-nowrap px-4 py-3 align-middle text-slate-600',
+      renderCell: (course) => formatCreatedAt(course.created_at),
+    },
+    {
+      id: 'actions',
+      headerClassName: 'w-[1%] whitespace-nowrap px-4 py-3 text-right font-semibold text-slate-700',
+      header: 'Actions',
+      cellClassName: 'w-[1%] whitespace-nowrap px-4 py-3 align-middle',
+      renderCell: (course) => (
+        <div className="flex justify-end gap-2">
+          <Link href={`/manage/course/${course.course_id}${ltiQuery}`}>
+            <ActionButton variant="ghost" size="sm" className="rounded-lg">
+              Open
+            </ActionButton>
+          </Link>
+          <ActionButton
+            onClick={() => handleDeleteCourse(course.course_id)}
+            variant="danger"
+            size="sm"
+            className="rounded-lg"
+            disabled={deleting === course.course_id}
+          >
+            {deleting === course.course_id ? 'Deleting...' : 'Delete'}
+          </ActionButton>
+        </div>
+      ),
+    },
+  ];
 
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top_right,_rgba(59,130,246,0.08),_transparent_45%),radial-gradient(circle_at_top_left,_rgba(14,165,233,0.06),_transparent_40%),linear-gradient(to_bottom,_#f8fafc,_#ffffff)] p-8">
@@ -326,123 +411,32 @@ const CourseOverview = () => {
             </>
           )}
           table={(
-            <div className="overflow-hidden rounded-2xl border border-slate-200">
-              <div className="overflow-x-auto">
-                <table className="min-w-full divide-y divide-slate-200 text-sm">
-                  <thead className="bg-slate-50">
-                    <tr>
-                      <th className="w-[28%] px-4 py-3 text-left font-semibold text-slate-700">
-                        <button
-                          type="button"
-                          onClick={() => handleSort('course_title')}
-                          className="inline-flex items-center gap-1 hover:text-slate-900"
-                        >
-                          Title
-                          <span className="text-slate-400">{sortIndicator('course_title')}</span>
-                        </button>
-                      </th>
-                      <th className="px-4 py-3 text-left font-semibold text-slate-700">
-                        <button
-                          type="button"
-                          onClick={() => handleSort('course_description')}
-                          className="inline-flex items-center gap-1 hover:text-slate-900"
-                        >
-                          Description
-                          <span className="text-slate-400">{sortIndicator('course_description')}</span>
-                        </button>
-                      </th>
-                      <th className="w-[1%] whitespace-nowrap px-4 py-3 text-left font-semibold text-slate-700">
-                        <button
-                          type="button"
-                          onClick={() => handleSort('created_at')}
-                          className="inline-flex items-center gap-1 hover:text-slate-900"
-                        >
-                          Created
-                          <span className="text-slate-400">{sortIndicator('created_at')}</span>
-                        </button>
-                      </th>
-                      <th className="w-[1%] whitespace-nowrap px-4 py-3 text-right font-semibold text-slate-700">
-                        Actions
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 bg-white">
-                    {sortedCourses.length === 0 ? (
-                      <tr>
-                        <td colSpan={4} className="px-4 py-10 text-center text-slate-500">
-                          {normalizedSearch ? 'No matching courses found.' : 'No courses available.'}
-                        </td>
-                      </tr>
-                    ) : (
-                      sortedCourses.map((course, index) => (
-                        <tr
-                          key={course.course_id || `course-${index}-${course.course_title}`}
-                          className="transition-colors hover:bg-slate-50/70"
-                        >
-                          <td className="px-4 py-3 align-middle">
-                            <Link
-                              href={`/manage/course/${course.course_id}${ltiQuery}`}
-                              className="font-medium text-slate-900 underline-offset-4 hover:text-blue-700 hover:underline"
-                            >
-                              {course.course_title || '(Untitled course)'}
-                            </Link>
-                          </td>
-                          <td className="w-full px-4 py-3 align-middle text-slate-600">
-                            {(() => {
-                              const description = course.course_description?.trim() || '';
-                              if (!description) return <span>No description</span>;
-
-                              const isExpanded = Boolean(expandedDescriptions[course.course_id]);
-                              const shouldTruncate = description.length > DESCRIPTION_PREVIEW_LENGTH;
-                              const preview = `${description.slice(0, DESCRIPTION_PREVIEW_LENGTH)}...`;
-
-                              return (
-                                <div>
-                                  <span>{isExpanded || !shouldTruncate ? description : preview}</span>
-                                  {shouldTruncate ? (
-                                    <>
-                                      {'\u00A0\u00A0\u00A0'}
-                                      <button
-                                        type="button"
-                                        onClick={() => toggleDescriptionExpanded(course.course_id)}
-                                        className="inline text-xs text-blue-600 hover:text-blue-700"
-                                      >
-                                        {isExpanded ? 'Show less' : 'Show More'}
-                                      </button>
-                                    </>
-                                  ) : null}
-                                </div>
-                              );
-                            })()}
-                          </td>
-                          <td className="w-[1%] whitespace-nowrap px-4 py-3 align-middle text-slate-600">
-                            {formatCreatedAt(course.created_at)}
-                          </td>
-                          <td className="w-[1%] whitespace-nowrap px-4 py-3 align-middle">
-                            <div className="flex justify-end gap-2">
-                              <Link href={`/manage/course/${course.course_id}${ltiQuery}`}>
-                                <ActionButton variant="ghost" size="sm" className="rounded-lg">
-                                  Open
-                                </ActionButton>
-                              </Link>
-                              <ActionButton
-                                onClick={() => handleDeleteCourse(course.course_id)}
-                                variant="danger"
-                                size="sm"
-                                className="rounded-lg"
-                                disabled={deleting === course.course_id}
-                              >
-                                {deleting === course.course_id ? 'Deleting...' : 'Delete'}
-                              </ActionButton>
-                            </div>
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
+            <ManageDataTable
+              rows={sortedCourses}
+              rowKey={(course, index) => course.course_id || `course-${index}-${course.course_title}`}
+              columns={courseColumns}
+              rowClassName="transition-colors hover:bg-slate-50/70"
+              emptyContent={normalizedSearch ? 'No matching courses found.' : 'No courses available.'}
+              expandableRows={{
+                getRowId: (course) => course.course_id,
+                isRowExpandable: (course) =>
+                  Boolean(course.course_id || course.course_description?.trim() || course.created_at),
+                toggleAriaLabel: (course, _rowIndex, isExpanded) =>
+                  `${isExpanded ? 'Collapse' : 'Expand'} details for ${course.course_title || 'course'}`,
+                renderExpandedContent: (course) => (
+                  <div className="grid gap-3 sm:grid-cols-[auto,1fr] sm:gap-x-4">
+                    <div className="font-medium text-slate-700">Course ID</div>
+                    <div className="break-all font-mono text-xs text-slate-600">{course.course_id}</div>
+                    <div className="font-medium text-slate-700">Description</div>
+                    <div className="whitespace-pre-wrap text-slate-600">
+                      {course.course_description?.trim() || 'No description'}
+                    </div>
+                    <div className="font-medium text-slate-700">Created</div>
+                    <div className="text-slate-600">{formatCreatedAt(course.created_at)}</div>
+                  </div>
+                ),
+              }}
+            />
           )}
           pagination={{
             currentPage,

@@ -1,12 +1,16 @@
 "use client";
 import axios from "axios";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useSession } from "next-auth/react";
+import ActionButton from "@/app/components/ActionButton";
 import { Slide } from "@/app/types";
 import ContentEditor from "@/app/components/ContentEditor";
 import DynamicImage from "@/app/components/DynamicImage";
+import ManageDataTable, { ManageTableColumn } from "@/app/components/manage/ManageDataTable";
+import ManageListPanel from "@/app/components/manage/ManageListPanel";
+import { useManagePermissionGuard } from "@/app/manage/hooks/useManagePermissionGuard";
 import { buildStaticPageTitle } from "@/app/utils/title";
 
 export interface QuestionContent {
@@ -34,10 +38,52 @@ export interface Question {
   type: string; // "multiple choice" | "open ended"
   objective?: string[];
   slide_ids?: string[];
+  created_at?: string;
   content: QuestionContent[];
   options?: Array<{ text: string; isCorrect: boolean }>;
   mcq_human_feedback?: string[];
 }
+
+type PaginationToken = number | "ellipsis";
+type SortKey = "type" | "preview" | "created_at";
+type SortDirection = "asc" | "desc";
+
+const PAGE_SIZE = 20;
+const QUESTION_PREVIEW_LENGTH = 140;
+
+const getPaginationTokens = (currentPage: number, totalPages: number): PaginationToken[] => {
+  if (totalPages <= 7) return Array.from({ length: totalPages }, (_, index) => index + 1);
+
+  const tokens: PaginationToken[] = [1];
+  const start = Math.max(2, currentPage - 1);
+  const end = Math.min(totalPages - 1, currentPage + 1);
+  if (start > 2) tokens.push("ellipsis");
+  for (let page = start; page <= end; page += 1) tokens.push(page);
+  if (end < totalPages - 1) tokens.push("ellipsis");
+  tokens.push(totalPages);
+  return tokens;
+};
+
+const getQuestionTextPreview = (question: Question) => {
+  const text = question.content?.find((item) => item.type === "text")?.content?.trim() ?? "";
+  if (!text) return "-";
+  return text.length > QUESTION_PREVIEW_LENGTH
+    ? `${text.slice(0, QUESTION_PREVIEW_LENGTH)}...`
+    : text;
+};
+
+const getQuestionImagePreview = (question: Question) =>
+  question.content?.find((item) => item.type === "image")?.content ?? "";
+
+const formatCreatedAt = (value?: string) => {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(date);
+};
 
 const QuestionOverview = () => {
   const [questions, setQuestions] = useState<Question[]>([]);
@@ -69,8 +115,15 @@ const QuestionOverview = () => {
   const [loading, setLoading] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [updatingFeedback, setUpdatingFeedback] = useState<string | null>(null);
+  const [isFetchingQuestions, setIsFetchingQuestions] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [typeFilter, setTypeFilter] = useState<"all" | string>("all");
+  const [sortKey, setSortKey] = useState<SortKey>("created_at");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
+  const [currentPage, setCurrentPage] = useState(1);
 
   const { data } = useSession();
+  const { hasManagePermission, isPermissionChecking } = useManagePermissionGuard();
   const userEmail = data?.user?.email ?? "";
   const searchParams = useSearchParams();
   const isDeepLinkMode = searchParams.get("lti_mode") === "deep_link";
@@ -109,6 +162,7 @@ const QuestionOverview = () => {
 
   // 1) Fetch public courses on mount
   useEffect(() => {
+    if (isPermissionChecking || !hasManagePermission) return;
     let cancelled = false;
     (async () => {
       setCoursesLoading(true);
@@ -135,11 +189,12 @@ const QuestionOverview = () => {
       cancelled = true;
     };
     // include `course` so we don't overwrite user-chosen course later
-  }, [course]);
+  }, [course, hasManagePermission, isPermissionChecking]);
 
 
   // 2) When a course is picked, fetch its modules
   useEffect(() => {
+    if (isPermissionChecking || !hasManagePermission) return;
     if (!course) {
       setAvailableModules([]);
       setModule([]);
@@ -177,11 +232,12 @@ const QuestionOverview = () => {
       cancelled = true;
     };
     // include `module` so we can check if it's empty
-  }, [course, module.length]);
+  }, [course, hasManagePermission, isPermissionChecking, module.length]);
 
 
   // 3) When module selection changes, fetch slides for those modules
   useEffect(() => {
+    if (isPermissionChecking || !hasManagePermission) return;
     let cancelled = false;
 
     if (!module.length) {
@@ -220,21 +276,27 @@ const QuestionOverview = () => {
     return () => {
       cancelled = true;
     };
-  }, [module]);
+  }, [hasManagePermission, isPermissionChecking, module]);
 
   // Fetch questions
   const fetchQuestions = useCallback(async () => {
+    if (!hasManagePermission) return;
+    setIsFetchingQuestions(true);
     try {
       const res = await axios.get(`/api/questions/all`);
       setQuestions(res.data || []);
     } catch (err) {
       console.error("Error fetching questions:", err);
+      setQuestions([]);
+    } finally {
+      setIsFetchingQuestions(false);
     }
-  }, []);
+  }, [hasManagePermission]);
 
   useEffect(() => {
+    if (isPermissionChecking || !hasManagePermission) return;
     fetchQuestions();
-  }, [fetchQuestions]);
+  }, [fetchQuestions, hasManagePermission, isPermissionChecking]);
 
   // Multiple-choice option editor helpers
   const addOption = () => {
@@ -414,118 +476,417 @@ const QuestionOverview = () => {
     }
   };
 
-  return (
-    <main className="p-6">
-      <h1 className="text-3xl font-bold mb-6">Question Overview</h1>
+  const normalizedSearch = searchQuery.trim().toLowerCase();
 
-      {/* Modal Trigger */}
-      <section className="bg-white p-6 rounded-lg shadow-lg mb-8">
-        <div className="flex items-center justify-between">
-          <h2 className="text-2xl font-semibold">Your Questions</h2>
-          <button
-            onClick={() => setIsModalOpen(true)}
-            className="py-2 px-4 text-white bg-blue-600 hover:bg-blue-700 rounded-md"
-          >
-            Create Question
-          </button>
-        </div>
-        <ul className="space-y-4 mt-4">
-          {questions.length === 0 ? (
-            <li className="text-gray-500">No questions available</li>
-          ) : (
-            questions.map((question) => (
-              <li
-                key={question.question_id}
-                className="flex justify-between items-center bg-gray-100 p-4 rounded-lg"
+  const filteredQuestions = useMemo(() => {
+    return questions.filter((question) => {
+      if (typeFilter !== "all" && (question.type ?? "") !== typeFilter) return false;
+      if (!normalizedSearch) return true;
+
+      const id = String(question.question_id ?? "").toLowerCase();
+      const type = String(question.type ?? "").toLowerCase();
+      const preview = getQuestionTextPreview(question).toLowerCase();
+      return id.includes(normalizedSearch) || type.includes(normalizedSearch) || preview.includes(normalizedSearch);
+    });
+  }, [normalizedSearch, questions, typeFilter]);
+
+  const sortedQuestions = useMemo(() => {
+    const list = [...filteredQuestions];
+    list.sort((a, b) => {
+      let aValue = "";
+      let bValue = "";
+
+      if (sortKey === "created_at") {
+        aValue = String(a.created_at ?? "");
+        bValue = String(b.created_at ?? "");
+      } else if (sortKey === "type") {
+        aValue = String(a.type ?? "");
+        bValue = String(b.type ?? "");
+      } else {
+        aValue = getQuestionTextPreview(a);
+        bValue = getQuestionTextPreview(b);
+      }
+
+      const base = aValue.localeCompare(bValue, undefined, { numeric: true, sensitivity: "base" });
+      return sortDirection === "asc" ? base : -base;
+    });
+    return list;
+  }, [filteredQuestions, sortDirection, sortKey]);
+
+  const totalPages = Math.max(1, Math.ceil(sortedQuestions.length / PAGE_SIZE));
+
+  useEffect(() => {
+    if (currentPage > totalPages) setCurrentPage(totalPages);
+  }, [currentPage, totalPages]);
+
+  const pageStart = (currentPage - 1) * PAGE_SIZE;
+  const pagedQuestions = sortedQuestions.slice(pageStart, pageStart + PAGE_SIZE);
+  const displayedCount = pagedQuestions.length;
+  const paginationTokens = getPaginationTokens(currentPage, totalPages);
+  const sortIndicator = (key: SortKey) => (sortKey !== key ? "↕" : sortDirection === "asc" ? "↑" : "↓");
+  const typeOptions = useMemo(() => {
+    const uniqueTypes = Array.from(new Set(questions.map((q) => q.type).filter(Boolean) as string[])).sort();
+    return ["all", ...uniqueTypes];
+  }, [questions]);
+
+  const handleSort = (key: SortKey) => {
+    if (sortKey === key) {
+      setSortDirection((prev) => (prev === "asc" ? "desc" : "asc"));
+      return;
+    }
+    setSortKey(key);
+    setSortDirection(key === "created_at" ? "desc" : "asc");
+  };
+
+  const getPlayerHref = (question: Question) => {
+    if (question.type === "multiple choice") return `/mcq/${question.question_id}${ltiQuery}`;
+    return `/oeq/${question.question_id}${ltiQuery}`;
+  };
+
+  const questionColumns: ManageTableColumn<Question>[] = [
+    {
+      id: "preview",
+      headerClassName: "w-[45%] px-4 py-3 text-left font-semibold text-slate-700",
+      header: (
+        <button
+          type="button"
+          onClick={() => handleSort("preview")}
+          className="inline-flex items-center gap-1 hover:text-slate-900"
+        >
+          Question
+          <span className="text-slate-400">{sortIndicator("preview")}</span>
+        </button>
+      ),
+      cellClassName: "px-4 py-3 align-top",
+      renderCell: (question) => {
+        const imagePreview = getQuestionImagePreview(question);
+        return (
+          <div className="flex min-w-0 items-start gap-3">
+            {imagePreview ? (
+              <div className="hidden w-24 overflow-hidden rounded-lg border border-slate-200 bg-slate-50 sm:block">
+                <DynamicImage
+                  src={imagePreview}
+                  alt="Question preview"
+                  maxWidth={160}
+                  className="h-16 w-full object-cover"
+                />
+              </div>
+            ) : null}
+            <div className="min-w-0">
+              <Link
+                href={`/manage/question/${question.question_id}${ltiQuery}`}
+                className="block break-words font-medium text-slate-900 underline-offset-4 hover:text-blue-700 hover:underline"
               >
-                <Link href={`/manage/question/${question.question_id}${ltiQuery}`}>
-                  <span className="text-lg font-medium text-indigo-600 hover:text-indigo-800">
-                    {question.type === "multiple choice" && (
-                      <span className={`inline-block mr-2 px-2 py-1 text-xs rounded ${
-                        (question as any).mcq_ai_feedback 
-                          ? "bg-green-100 text-green-700" 
-                          : "bg-yellow-100 text-yellow-700"
-                      }`}>
-                        {(question as any).mcq_ai_feedback ? "AI ✓" : "No AI"}
-                      </span>
-                    )}
-                    {question.content.map((item, index) => {
-                      if (item.type === "text") {
-                        return <p key={index}>{item.content}</p>;
-                      } else if (item.type === "image") {
-                        return (
-                          <DynamicImage
-                            key={index}
-                            src={item.content}
-                            maxWidth={500}
-                            alt="Question content"
-                            className="max-w-xs mt-2"
-                          />
-                        );
-                      }
-                      return null;
-                    })}
-                  </span>
-                </Link>
-                <div className="flex space-x-4">
-                  <button
-                    onClick={() => {
-                      if (question.type === "multiple choice") {
-                        window.location.href = `/mcq/${question.question_id}${ltiQuery}`;
-                      } else if (question.type === "open ended") {
-                        window.location.href = `/oeq/${question.question_id}${ltiQuery}`;
-                      }
-                    }}
-                    className="py-2 px-4 text-white bg-green-600 hover:bg-green-700 rounded-md"
-                  >
-                    Go to SlideItRight
-                  </button>
-                  {question.type === "multiple choice" && (
-                    <button
-                      onClick={() => handleUpdateMCQFeedback(question)}
-                      className={`py-2 px-4 text-white bg-blue-600 hover:bg-blue-700 rounded-md ${
-                        updatingFeedback === question.question_id ? "opacity-50 cursor-not-allowed" : ""
-                      }`}
-                      disabled={updatingFeedback === question.question_id}
-                    >
-                      {updatingFeedback === question.question_id ? "Updating..." : "Update AI Feedback"}
-                    </button>
-                  )}
-                  <button
-                    onClick={() => handleDeleteQuestion(question.question_id)}
-                    className={`py-2 px-4 text-white bg-red-600 hover:bg-red-700 rounded-md ${
-                      deleting === question.question_id ? "opacity-50 cursor-not-allowed" : ""
-                    }`}
-                    disabled={deleting === question.question_id}
-                  >
-                    {deleting === question.question_id ? "Deleting..." : "Delete"}
-                  </button>
-                </div>
-              </li>
-            ))
-          )}
-        </ul>
-      </section>
+                {getQuestionTextPreview(question)}
+              </Link>
+              <p className="mt-1 break-all font-mono text-xs text-slate-500">{question.question_id}</p>
+            </div>
+          </div>
+        );
+      },
+    },
+    {
+      id: "type",
+      headerClassName: "w-[1%] whitespace-nowrap px-4 py-3 text-left font-semibold text-slate-700",
+      header: (
+        <button
+          type="button"
+          onClick={() => handleSort("type")}
+          className="inline-flex items-center gap-1 hover:text-slate-900"
+        >
+          Type
+          <span className="text-slate-400">{sortIndicator("type")}</span>
+        </button>
+      ),
+      cellClassName: "w-[1%] whitespace-nowrap px-4 py-3 align-top",
+      renderCell: (question) => (
+        <div className="flex flex-col gap-2">
+          <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-700">
+            {question.type || "Unknown"}
+          </span>
+          {question.type === "multiple choice" ? (
+            <span
+              className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${
+                (question as any).mcq_ai_feedback
+                  ? "border border-emerald-200 bg-emerald-50 text-emerald-700"
+                  : "border border-amber-200 bg-amber-50 text-amber-700"
+              }`}
+            >
+              {(question as any).mcq_ai_feedback ? "AI feedback ready" : "AI feedback missing"}
+            </span>
+          ) : null}
+        </div>
+      ),
+    },
+    {
+      id: "created_at",
+      headerClassName: "w-[1%] whitespace-nowrap px-4 py-3 text-left font-semibold text-slate-700",
+      header: (
+        <button
+          type="button"
+          onClick={() => handleSort("created_at")}
+          className="inline-flex items-center gap-1 hover:text-slate-900"
+        >
+          Created
+          <span className="text-slate-400">{sortIndicator("created_at")}</span>
+        </button>
+      ),
+      cellClassName: "w-[1%] whitespace-nowrap px-4 py-3 align-top text-slate-600",
+      renderCell: (question) => formatCreatedAt(question.created_at),
+    },
+    {
+      id: "actions",
+      headerClassName: "w-[1%] whitespace-nowrap px-4 py-3 text-right font-semibold text-slate-700",
+      header: "Actions",
+      cellClassName: "w-[1%] whitespace-nowrap px-4 py-3 align-top",
+      renderCell: (question) => (
+        <div className="flex justify-end gap-2">
+          <Link href={getPlayerHref(question)}>
+            <ActionButton variant="success" size="sm" className="rounded-lg">
+              Open Player
+            </ActionButton>
+          </Link>
+          {question.type === "multiple choice" ? (
+            <ActionButton
+              onClick={() => handleUpdateMCQFeedback(question)}
+              variant="secondary"
+              size="sm"
+              className="rounded-lg"
+              disabled={updatingFeedback === question.question_id}
+            >
+              {updatingFeedback === question.question_id ? "Updating..." : "Update AI"}
+            </ActionButton>
+          ) : null}
+          <ActionButton
+            onClick={() => handleDeleteQuestion(question.question_id)}
+            variant="danger"
+            size="sm"
+            className="rounded-lg"
+            disabled={deleting === question.question_id}
+          >
+            {deleting === question.question_id ? "Deleting..." : "Delete"}
+          </ActionButton>
+        </div>
+      ),
+    },
+  ];
 
-      {/* Modal */}
-      {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900 bg-opacity-75">
-          <div className="bg-white rounded-lg p-8 shadow-lg w-full max-w-xl max-h-[70vh] overflow-y-auto">
-            <h2 className="text-2xl font-semibold mb-4">Create New Question</h2>
-            <form onSubmit={(e) => {
-              e.preventDefault();
-              handleCreateQuestion();
-            }} className="space-y-5">
+  if (isPermissionChecking || !hasManagePermission) {
+    return null;
+  }
+
+  return (
+    <main className="min-h-screen bg-[radial-gradient(circle_at_top_right,_rgba(59,130,246,0.08),_transparent_45%),radial-gradient(circle_at_top_left,_rgba(14,165,233,0.06),_transparent_40%),linear-gradient(to_bottom,_#f8fafc,_#ffffff)] p-8">
+      <div className="mx-auto flex w-full max-w-[1500px] flex-col gap-8 p-4 md:p-6">
+        <section className="rounded-3xl border border-slate-200 bg-white/90 p-5 shadow-sm ring-1 ring-white md:p-6">
+          <div className="flex flex-col gap-4">
+            <div className="min-w-0">
+              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
+                Question Management
+              </p>
+              <h1 className="mt-3 break-words text-2xl font-bold text-slate-900 md:text-3xl">
+                Your Questions
+              </h1>
+              <p className="mt-3 max-w-3xl text-sm leading-relaxed text-slate-600 md:text-base">
+                Browse, search, and manage questions used in your content workflows.
+              </p>
+              {message ? (
+                <p className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                  {message}
+                </p>
+              ) : null}
+            </div>
+          </div>
+        </section>
+
+        <ManageListPanel
+          toolbarLeft={(
+            <ActionButton
+              onClick={() => setIsModalOpen(true)}
+              variant="primary"
+              className="rounded-lg px-3.5 py-2"
+            >
+              Create Question
+            </ActionButton>
+          )}
+          toolbarRight={(
+            <>
+              <div className="relative w-full md:w-96">
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => {
+                    setSearchQuery(e.target.value);
+                    setCurrentPage(1);
+                  }}
+                  placeholder="Search ID, type, or question text..."
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 pr-9 text-sm text-slate-900 shadow-sm outline-none ring-0 placeholder:text-slate-400 focus:border-slate-300"
+                />
+                <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400">
+                  ⌕
+                </span>
+              </div>
+              <select
+                value={typeFilter}
+                onChange={(e) => {
+                  setTypeFilter(e.target.value);
+                  setCurrentPage(1);
+                }}
+                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-slate-300"
+              >
+                {typeOptions.map((option) => (
+                  <option key={option} value={option}>
+                    {option === "all" ? "All types" : option}
+                  </option>
+                ))}
+              </select>
+              <ActionButton
+                onClick={() => fetchQuestions()}
+                variant="neutral"
+                size="sm"
+                className="rounded-xl"
+              >
+                {isFetchingQuestions ? "Refreshing..." : "Refresh"}
+              </ActionButton>
+            </>
+          )}
+          table={(
+            <ManageDataTable
+              rows={pagedQuestions}
+              rowKey={(question, index) => question.question_id || `question-${index}`}
+              columns={questionColumns}
+              rowClassName="transition-colors hover:bg-slate-50/70"
+              emptyContent={normalizedSearch ? "No matching questions found." : "No questions available."}
+              expandableRows={{
+                getRowId: (question) => question.question_id,
+                isRowExpandable: (question) =>
+                  Boolean(
+                    question.question_id ||
+                    question.objective?.length ||
+                    question.slide_ids?.length ||
+                    question.content?.length ||
+                    question.options?.length
+                  ),
+                toggleAriaLabel: (question, _rowIndex, isExpanded) =>
+                  `${isExpanded ? "Collapse" : "Expand"} details for question ${question.question_id}`,
+                renderExpandedContent: (question) => {
+                  const imagePreview = getQuestionImagePreview(question);
+                  return (
+                    <div className="grid gap-4 lg:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
+                      <div className="space-y-3">
+                        <div>
+                          <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                            Question ID
+                          </div>
+                          <div className="break-all font-mono text-xs text-slate-700">
+                            {question.question_id}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                            Text Preview
+                          </div>
+                          <p className="whitespace-pre-wrap text-sm text-slate-700">
+                            {getQuestionTextPreview(question)}
+                          </p>
+                        </div>
+                        <div>
+                          <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                            Objectives
+                          </div>
+                          <p className="text-sm text-slate-700">
+                            {question.objective?.filter(Boolean).join("; ") || "None"}
+                          </p>
+                        </div>
+                        <div>
+                          <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                            Slides
+                          </div>
+                          <p className="break-all text-sm text-slate-700">
+                            {question.slide_ids?.length ? question.slide_ids.join(", ") : "None"}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="space-y-3">
+                        {imagePreview ? (
+                          <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+                            <DynamicImage
+                              src={imagePreview}
+                              alt="Question image"
+                              maxWidth={360}
+                              className="w-full object-contain"
+                            />
+                          </div>
+                        ) : null}
+                        {question.type === "multiple choice" && question.options?.length ? (
+                          <div className="rounded-xl border border-slate-200 bg-white p-3">
+                            <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                              Options
+                            </div>
+                            <ul className="space-y-2">
+                              {question.options.map((option, idx) => (
+                                <li key={`${question.question_id}-opt-${idx}`} className="text-sm text-slate-700">
+                                  <span className="mr-2 inline-flex min-w-5 justify-center rounded bg-slate-100 px-1.5 py-0.5 text-xs font-medium text-slate-600">
+                                    {idx + 1}
+                                  </span>
+                                  {option.text || "(Empty option)"}
+                                  {option.isCorrect ? (
+                                    <span className="ml-2 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700">
+                                      Correct
+                                    </span>
+                                  ) : null}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  );
+                },
+              }}
+            />
+          )}
+          pagination={{
+            currentPage,
+            totalPages,
+            tokens: paginationTokens,
+            isLoading: isFetchingQuestions,
+            onPrev: () => setCurrentPage((prev) => Math.max(1, prev - 1)),
+            onNext: () => setCurrentPage((prev) => Math.min(totalPages, prev + 1)),
+            onPageSelect: (page) => setCurrentPage(page),
+          }}
+          summary={(
+            <p className="text-center text-sm text-slate-500">
+              Showing {displayedCount} question{displayedCount === 1 ? "" : "s"} of {sortedQuestions.length}
+              {normalizedSearch || typeFilter !== "all" ? " filtered" : ""} (page {currentPage} of {totalPages})
+            </p>
+          )}
+        />
+
+        {isModalOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
+            <div className="w-full max-w-3xl max-h-[85vh] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl md:p-6">
+              <div className="mb-4">
+                <h2 className="text-xl font-semibold text-slate-900 md:text-2xl">Create New Question</h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  Configure the question content, answer settings, and related course context.
+                </p>
+              </div>
+              <form onSubmit={(e) => {
+                e.preventDefault();
+                handleCreateQuestion();
+              }} className="space-y-5">
               {/* Question Type */}
               <div>
-                <label htmlFor="questionType" className="block text-sm font-medium text-gray-700">
+                <label htmlFor="questionType" className="mb-1 block text-sm font-medium text-slate-700">
                   Question Type
                 </label>
                 <select
                   id="questionType"
                   value={newQuestionType}
                   onChange={(e) => setNewQuestionType(e.target.value)}
-                  className="mt-1 block w-full p-2 border border-gray-300 rounded-md"
+                  className="block w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-slate-300"
                   required
                 >
                   <option value="">Select Question Type</option>
@@ -543,23 +904,25 @@ const QuestionOverview = () => {
               {newQuestionType === "multiple choice" && (
                 <div className="space-y-4">
                   <div className="flex items-center justify-between">
-                    <label className="block text-sm font-medium text-gray-700">Options</label>
-                    <button
+                    <label className="block text-sm font-medium text-slate-700">Options</label>
+                    <ActionButton
                       type="button"
                       onClick={addOption}
-                      className="text-sm px-3 py-1 rounded-md bg-indigo-600 text-white hover:bg-indigo-700"
+                      variant="secondary"
+                      size="sm"
+                      className="rounded-lg"
                     >
                       Add option
-                    </button>
+                    </ActionButton>
                   </div>
 
                   {newMcqOptions.length === 0 && (
-                    <p className="text-xs text-gray-500 mt-1">Add at least two options.</p>
+                    <p className="mt-1 text-xs text-slate-500">Add at least two options.</p>
                   )}
 
                   <div className="space-y-4">
                     {newMcqOptions.map((opt, idx) => (
-                      <div key={idx} className="border border-gray-200 rounded-lg p-4 space-y-3">
+                      <div key={idx} className="space-y-3 rounded-xl border border-slate-200 bg-slate-50/60 p-4">
                         <div className="flex items-start gap-3">
                           {/* Radio button for correct answer */}
                           <div className="pt-1">
@@ -569,7 +932,7 @@ const QuestionOverview = () => {
                               name="correctAnswer"
                               checked={correctAnswerIndex === idx}
                               onChange={() => setCorrectAnswerIndex(idx)}
-                              className="w-4 h-4 text-green-600 border-gray-300 focus:ring-green-500"
+                              className="h-4 w-4 border-slate-300 text-emerald-600 focus:ring-emerald-500"
                             />
                             <label htmlFor={`correct-${idx}`} className="sr-only">
                               Mark as correct answer
@@ -577,7 +940,7 @@ const QuestionOverview = () => {
                           </div>
                           
                           {/* Option number */}
-                          <span className="text-sm font-medium text-gray-600 pt-1">{idx + 1}.</span>
+                          <span className="pt-1 text-sm font-medium text-slate-600">{idx + 1}.</span>
                           
                           {/* Option text input */}
                           <div className="flex-1 space-y-2">
@@ -591,20 +954,20 @@ const QuestionOverview = () => {
                                 }
                               }}
                               placeholder={`Option ${idx + 1}`}
-                              className="w-full p-2 border border-gray-300 rounded-md"
+                              className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-slate-300"
                             />
                             
                             {/* Feedback for this option */}
                             <div>
-                              <label htmlFor={`feedback-${idx}`} className="block text-xs font-medium text-gray-600 mb-1">
+                              <label htmlFor={`feedback-${idx}`} className="mb-1 block text-xs font-medium text-slate-600">
                                 Feedback for this option
                               </label>
                               <textarea
                                 id={`feedback-${idx}`}
-                                value={opt.feedback || ''}
+                                value={opt.feedback || ""}
                                 onChange={(e) => updateOptionFeedback(idx, e.target.value)}
                                 placeholder="Enter feedback that will be shown when this option is selected"
-                                className="w-full p-2 border border-gray-300 rounded-md text-sm"
+                                className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-slate-300"
                                 rows={2}
                               />
                             </div>
@@ -615,7 +978,7 @@ const QuestionOverview = () => {
                             type="button"
                             onClick={() => removeOption(idx)}
                             aria-label={`Remove option ${idx + 1}`}
-                            className="px-3 py-1 text-sm rounded-md bg-red-50 text-red-600 hover:bg-red-100"
+                            className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-1 text-sm text-rose-700 hover:bg-rose-100"
                           >
                             Remove
                           </button>
@@ -623,7 +986,7 @@ const QuestionOverview = () => {
                         
                         {/* Visual indicator for correct answer */}
                         {correctAnswerIndex === idx && (
-                          <div className="flex items-center gap-2 text-green-600 text-sm">
+                          <div className="flex items-center gap-2 text-sm text-emerald-700">
                             <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
                               <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
                             </svg>
@@ -635,7 +998,7 @@ const QuestionOverview = () => {
                   </div>
                   
                   {newMcqOptions.length > 0 && correctAnswerIndex === null && (
-                    <p className="text-sm text-amber-600 bg-amber-50 p-2 rounded-md">
+                    <p className="rounded-lg border border-amber-200 bg-amber-50 p-2 text-sm text-amber-700">
                       ⚠️ Please select which option is the correct answer
                     </p>
                   )}
@@ -645,7 +1008,7 @@ const QuestionOverview = () => {
               {/* Human Feedback for Open Ended Questions */}
               {newQuestionType === "open ended" && (
                 <div>
-                  <label htmlFor="humanFeedback" className="block text-sm font-medium text-gray-700">
+                  <label htmlFor="humanFeedback" className="mb-1 block text-sm font-medium text-slate-700">
                     Reference Answer / Human Feedback
                   </label>
                   <textarea
@@ -653,10 +1016,10 @@ const QuestionOverview = () => {
                     value={newHumanFeedback}
                     onChange={(e) => setNewHumanFeedback(e.target.value)}
                     placeholder="Enter a reference answer or feedback template for this open-ended question"
-                    className="mt-1 block w-full p-2 border border-gray-300 rounded-md min-h-[100px]"
+                    className="block min-h-[100px] w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-slate-300"
                     rows={4}
                   />
-                  <p className="text-xs text-gray-500 mt-1">
+                  <p className="mt-1 text-xs text-slate-500">
                     This reference answer will be used to guide AI feedback generation for student responses.
                   </p>
                 </div>
@@ -664,14 +1027,14 @@ const QuestionOverview = () => {
 
               {/* Course selector */}
               <div>
-                <label htmlFor="courseId" className="block text-sm font-medium text-gray-700">
+                <label htmlFor="courseId" className="mb-1 block text-sm font-medium text-slate-700">
                   Course
                 </label>
                 <select
                   id="courseId"
                   value={course ?? ""}
                   onChange={(e) => setCourse(e.target.value || null)}
-                  className="mt-1 block w-full p-2 border border-gray-300 rounded-md"
+                  className="block w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-slate-300"
                   disabled={coursesLoading}
                 >
                   {coursesLoading && <option>Loading courses…</option>}
@@ -691,7 +1054,7 @@ const QuestionOverview = () => {
 
               {/* Module selector (multi) */}
               <div>
-                <label htmlFor="moduleIds" className="block text-sm font-medium text-gray-700">
+                <label htmlFor="moduleIds" className="mb-1 block text-sm font-medium text-slate-700">
                   Modules
                 </label>
                 <select
@@ -701,7 +1064,7 @@ const QuestionOverview = () => {
                   onChange={(e) =>
                     setModule(Array.from(e.target.selectedOptions).map((o) => o.value))
                   }
-                  className="mt-1 block w-full p-2 border border-gray-300 rounded-md min-h-28"
+                  className="block min-h-28 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-slate-300"
                   disabled={modulesLoading || !course}
                 >
                   {modulesLoading && <option>Loading modules…</option>}
@@ -717,13 +1080,13 @@ const QuestionOverview = () => {
                       );
                     })}
                 </select>
-                <p className="text-xs text-gray-500 mt-1">Hold Ctrl/Cmd to select multiple.</p>
+                <p className="mt-1 text-xs text-slate-500">Hold Ctrl/Cmd to select multiple.</p>
               </div>
 
 
               {/* Slides multi-select */}
               <div>
-                <label htmlFor="slideIds" className="block text-sm font-medium text-gray-700">
+                <label htmlFor="slideIds" className="mb-1 block text-sm font-medium text-slate-700">
                   Slide IDs
                 </label>
                 <select
@@ -733,7 +1096,7 @@ const QuestionOverview = () => {
                   onChange={(e) =>
                     setNewSlideIds(Array.from(e.target.selectedOptions).map((o) => o.value))
                   }
-                  className="mt-1 block w-full p-2 border border-gray-300 rounded-md min-h-28"
+                  className="block min-h-28 w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-slate-300"
                   disabled={slidesLoading}
                 >
                   {slidesLoading && <option>Loading slides…</option>}
@@ -747,12 +1110,12 @@ const QuestionOverview = () => {
                       </option>
                     ))}
                 </select>
-                <p className="text-xs text-gray-500 mt-1">Hold Ctrl/Cmd to select multiple.</p>
+                <p className="mt-1 text-xs text-slate-500">Hold Ctrl/Cmd to select multiple.</p>
               </div>
 
               {/* Learning objectives */}
               <div>
-                <label htmlFor="questionObjective" className="block text-sm font-medium text-gray-700">
+                <label htmlFor="questionObjective" className="mb-1 block text-sm font-medium text-slate-700">
                   Learning Objectives (semicolon-separated)
                 </label>
                 <input
@@ -765,34 +1128,37 @@ const QuestionOverview = () => {
                       e.preventDefault();
                     }
                   }}
-                  className="mt-1 block w-full p-2 border border-gray-300 rounded-md"
+                  className="block w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-slate-300"
                 />
               </div>
 
               <div className="flex justify-end gap-3">
-                <button
+                <ActionButton
                   type="button"
                   onClick={() => {
                     setIsModalOpen(false);
                     clearForm();
                   }}
-                  className="py-2 px-4 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-md"
+                  variant="ghost"
+                  className="rounded-lg"
                 >
                   Cancel
-                </button>
-                <button
+                </ActionButton>
+                <ActionButton
                   type="button"
                   onClick={() => handleCreateQuestion()}
                   disabled={loading}
-                  className="py-2 px-4 text-white bg-indigo-600 hover:bg-indigo-700 rounded-md"
+                  variant="primary"
+                  className="rounded-lg"
                 >
                   {loading ? "Creating…" : "Create Question"}
-                </button>
+                </ActionButton>
               </div>
             </form>
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </main>
   );
 };

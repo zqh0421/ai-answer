@@ -161,6 +161,29 @@ const Manage = async ({ searchParams }: ManageProps) => {
             </Link>
 
             <Link
+              href={withLtiMode("/manage/agent")}
+              className="group rounded-2xl border border-slate-200 bg-white p-5 shadow-sm ring-1 ring-white transition hover:border-blue-200 hover:bg-blue-50/40 hover:shadow-md"
+            >
+              <div className="flex h-full flex-col justify-between gap-4">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.12em] text-blue-600">
+                    Agents
+                  </p>
+                  <h3 className="mt-2 text-lg font-semibold text-slate-900 group-hover:text-blue-800">
+                    Agent Management
+                  </h3>
+                  <p className="mt-2 text-sm leading-relaxed text-slate-600">
+                    Manage agent configurations, metadata, and related content workflows.
+                  </p>
+                </div>
+                <div className="inline-flex items-center gap-2 text-sm font-medium text-blue-600 group-hover:text-blue-700">
+                  Open
+                  <span aria-hidden="true">→</span>
+                </div>
+              </div>
+            </Link>
+
+            <Link
               href={withLtiMode("/manage/question")}
               className="group rounded-2xl border border-slate-200 bg-white p-5 shadow-sm ring-1 ring-white transition hover:border-blue-200 hover:bg-blue-50/40 hover:shadow-md"
             >
