@@ -30,12 +30,11 @@ async def generate_feedback_rag_oeq(request: FeedbackRequestRagModel, settings: 
     OEQ-specific feedback generation endpoint (supports rag_cot)
     """
     if request.promptEngineering == "rag_cot":
-        return await generate_feedback_rag_cot_oeq(request, settings, db)
+        return await _generate_feedback_rag_cot_oeq_impl(request, settings, db)
     else:
         raise HTTPException(status_code=400, detail="This endpoint only supports rag_cot prompt engineering method")
 
-@router.post("/generate_feedback_rag_cot_oeq")
-async def generate_feedback_rag_cot_oeq(request: FeedbackRequestRagModel, settings: Annotated[Settings, Depends(get_settings)], db: Session = Depends(get_db)):
+async def _generate_feedback_rag_cot_oeq_impl(request: FeedbackRequestRagModel, settings: Annotated[Settings, Depends(get_settings)], db: Session):
     """
     OEQ-specific RAG COT feedback generation endpoint
     """
@@ -102,12 +101,11 @@ async def generate_feedback_rag_stream_oeq(request: FeedbackRequestRagModel, set
     OEQ-specific streaming feedback generation endpoint (supports rag_cot)
     """
     if request.promptEngineering == "rag_cot":
-        return await generate_feedback_rag_cot_stream_oeq(request, settings, db)
+        return await _generate_feedback_rag_cot_stream_oeq_impl(request, settings, db)
     else:
         raise HTTPException(status_code=400, detail="This endpoint only supports rag_cot prompt engineering method")
 
-@router.post("/generate_feedback_rag_cot_stream_oeq")
-async def generate_feedback_rag_cot_stream_oeq(request: FeedbackRequestRagModel, settings: Annotated[Settings, Depends(get_settings)], db: Session = Depends(get_db)):
+async def _generate_feedback_rag_cot_stream_oeq_impl(request: FeedbackRequestRagModel, settings: Annotated[Settings, Depends(get_settings)], db: Session):
     """
     OEQ-specific streaming RAG COT feedback generation endpoint
     """

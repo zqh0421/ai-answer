@@ -67,19 +67,6 @@ def get_course_by_id(course_id: str, db: Session = Depends(get_db)):
     return _serialize_course(course)
 
 
-@router.put("/by_id/{course_id}")
-def update_course(course_id: str, course: models.CourseResponse, db: Session = Depends(get_db)):
-    db_course = db.query(schema.Course).filter(schema.Course.course_id == course_id).first()
-    if db_course is None:
-        raise HTTPException(status_code=404, detail="Course not found")
-
-    db_course.course_title = course.title
-    db_course.course_description = course.description
-    db.commit()
-    db.refresh(db_course)
-    return _serialize_course(db_course)
-
-
 @router.patch("/by_id/{course_id}/authority")
 def update_course_authority(
     course_id: str,

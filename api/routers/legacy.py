@@ -6,9 +6,9 @@ from sqlalchemy.orm import Session
 
 from .. import schema
 from ..config import Settings, get_settings
-from ..controllers import askController, embedController
+from ..controllers import embedController
 from ..dependencies import get_db
-from ..models import AskModel, EmbedModel
+from ..models import EmbedModel
 from ..tags import Tags
 
 router = APIRouter(prefix="/api", tags=[Tags.LEGACY_QA])
@@ -18,12 +18,6 @@ def _serialize_with_uuid(obj):
     if isinstance(obj, UUID):
         return str(obj)
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
-
-
-@router.post("/ask")
-def ask(askModel: AskModel, settings: Annotated[Settings, Depends(get_settings)]):
-    result = askController(askModel.question, askModel.answer, settings)
-    return {"result": f"{result}"}
 
 
 @router.post("/embed")

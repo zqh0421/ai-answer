@@ -1,14 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException
-from typing_extensions import Annotated
 from sqlalchemy.orm import Session
 
-from ..config import Settings, get_settings
-from ..concurrency import run_openai_blocking
-from ..controllers import convertBatchController
-from ..controllers.vision import setVision
 from ..dependencies import get_db
 from .. import schema
-from ..models import ConvertModel, ConvertBatchModel, VisionModel
+from ..models import ConvertModel
 from ..tags import Tags
 
 router = APIRouter(prefix="/api")
@@ -34,14 +29,3 @@ async def convert(convertModel: ConvertModel, db: Session = Depends(get_db)):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/openai-vision", tags=[Tags.MEDIA_VISION_V1])
-async def vision(visionModel: VisionModel, settings: Annotated[Settings, Depends(get_settings)]):
-    return await run_openai_blocking(setVision, visionModel.base64_image_arr, settings)
-
-
-@router.post("/pdf-to-img-rephrase", tags=[Tags.MEDIA_CONVERSION])
-async def convert_batch(convertBatchModel: ConvertBatchModel, settings: Annotated[Settings, Depends(get_settings)]):
-    result = await convertBatchController(convertBatchModel, settings)
-    return result

@@ -4,6 +4,25 @@ from typing import List, Literal, Optional
 from pydantic import BaseModel
 
 
+class FeedbackRequestModel(BaseModel):
+    question: str
+    answer: str
+    promptEngineering: str
+    feedbackFramework: str
+
+
+class FeedbackRequestRagModel(BaseModel):
+    participant_id: str
+    question_id: str
+    question: str
+    answer: str
+    slide_text_arr: List[str]
+    promptEngineering: str
+    feedbackFramework: str
+    isStructured: bool = False
+    course_version: Optional[str] = None
+
+
 class RecordResultModel(BaseModel):
     learner_id: str
     session_id: str

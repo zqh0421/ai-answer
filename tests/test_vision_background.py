@@ -1,31 +1,12 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 from tests.env_setup import apply_test_env
 
 apply_test_env()
 
-from api.models.visionModel import VisionModel
-from api.routers import conversion as conversion_router
 from api.services import vision_jobs
-from api.v2 import index_shared as v2_shared_router
-
-
-class VisionWrapperRouteTests(unittest.IsolatedAsyncioTestCase):
-    async def test_v1_conversion_openai_vision_uses_background_wrapper(self):
-        with patch.object(conversion_router, "run_openai_blocking", new=AsyncMock(return_value="vision-output")) as mocked_runner:
-            result = await conversion_router.vision(VisionModel(base64_image_arr=["aGVsbG8="]), settings=object())
-
-        self.assertEqual(result, "vision-output")
-        mocked_runner.assert_awaited_once()
-
-    async def test_v2_shared_vision_uses_background_wrapper(self):
-        with patch.object(v2_shared_router, "run_openai_blocking", new=AsyncMock(return_value="slide-content")) as mocked_runner:
-            result = await v2_shared_router.vision(VisionModel(base64_image_arr=["aGVsbG8="]), settings=object())
-
-        self.assertEqual(result["slide_content"], "slide-content")
-        mocked_runner.assert_awaited_once()
 
 
 class VisionExecutionConsistencyTests(unittest.TestCase):

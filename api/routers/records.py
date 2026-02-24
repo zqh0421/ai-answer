@@ -325,17 +325,3 @@ def update_rating(record_id: int, rating_update: models.UpdateRatingModel, db: S
         db.rollback()
         raise HTTPException(status_code=400, detail=f"Error updating rating: {str(e)}")
 
-
-@router.get("/record_result/count/{question_id}")
-def get_record_count(question_id: str, learner_id: str = None, db: Session = Depends(get_db)):
-    try:
-        query = db.query(schema.RecordResult).filter(schema.RecordResult.question_id == question_id)
-
-        if learner_id:
-            query = query.filter(schema.RecordResult.learner_id == learner_id)
-
-        count = query.count()
-        return {"question_id": question_id, "learner_id": learner_id, "record_count": count}
-
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error getting record count: {str(e)}")
