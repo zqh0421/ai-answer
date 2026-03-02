@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { QuestionContent } from "@/app/manage/question/page";
 import ContentEditor from "@/app/components/ContentEditor";
 import DynamicImage from "@/app/components/DynamicImage";
@@ -70,6 +70,39 @@ export default function QuestionAnswerPanel({
   const isLearnerFeedback =
     promptVersion === "prompt_learner" || promptVersion === null;
   const isCorrectiveFeedback = promptVersion === "prompt_corrective";
+
+  const mcqOptions = useMemo(() => {
+    const asArray = (value: any) => (Array.isArray(value) ? value : []);
+    const direct = asArray(questionPreset?.options);
+    const interactionOptions =
+      asArray(questionPreset?.interactions)?.flatMap((interaction: any) =>
+        asArray(interaction?.options).length > 0
+          ? asArray(interaction.options)
+          : asArray(interaction?.interaction_options)
+      ) || [];
+    const fallback = asArray(questionPreset?.interaction_options);
+    const merged = direct.length > 0 ? direct : interactionOptions.length > 0 ? interactionOptions : fallback;
+
+    return merged
+      .map((option: any) => {
+        if (typeof option === "string") {
+          return { text: option, isCorrect: false };
+        }
+        const text = String(
+          option?.text ??
+            option?.option_text ??
+            option?.option_label ??
+            option?.option_value ??
+            option?.label ??
+            ""
+        ).trim();
+        return {
+          text,
+          isCorrect: Boolean(option?.isCorrect ?? option?.is_correct ?? option?.correct),
+        };
+      })
+      .filter((option: { text: string }) => Boolean(option.text));
+  }, [questionPreset]);
 
   return (
     <div className="space-y-4">
@@ -263,14 +296,13 @@ export default function QuestionAnswerPanel({
           <p className="text-sm text-slate-500">{saveStatus}</p>
         </div>
 
-        {isMCQ && questionPreset?.options?.length > 0 ? (
-          <div className="space-y-3">
-            {questionPreset.options.map((option: any, index: number) => {
+        {isMCQ ? (
+          mcqOptions.length > 0 ? (
+            <div className="space-y-3">
+              {mcqOptions.map((option: { text: string; isCorrect: boolean }, index: number) => {
               // Handle both string and object formats
-              const optionText =
-                typeof option === "string" ? option : option.text;
-              const isCorrectOption =
-                typeof option === "object" ? option.isCorrect : false;
+              const optionText = option.text;
+              const isCorrectOption = option.isCorrect;
               const isSelected = answer === optionText;
               const humanFeedback = questionPreset.mcq_human_feedback?.[index];
 
@@ -295,39 +327,44 @@ export default function QuestionAnswerPanel({
                 }
               }
 
-              return (
-                <div key={index} className="space-y-2">
-                  <label
-                    className={`flex items-center p-4 border rounded-lg cursor-pointer transition-colors duration-200 ${
-                      isSelected
-                        ? "border-blue-500 bg-blue-50"
-                        : "border-slate-200 hover:bg-slate-50"
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="mcq-option"
-                      value={optionText}
-                      checked={isSelected}
-                      onChange={(e) => {
-                        setAnswer(e.target.value);
-                        setSelectedOption(e.target.value);
-                        setSelectedOptionIndex(index);
+                return (
+                  <div key={index} className="space-y-2">
+                    <label
+                      className={`flex items-center p-4 border rounded-lg cursor-pointer transition-colors duration-200 ${
+                        isSelected
+                          ? "border-blue-500 bg-blue-50"
+                          : "border-slate-200 hover:bg-slate-50"
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="mcq-option"
+                        value={optionText}
+                        checked={isSelected}
+                        onChange={(e) => {
+                          setAnswer(e.target.value);
+                          setSelectedOption(e.target.value);
+                          setSelectedOptionIndex(index);
 
-                        // Trigger the save and feedback fetch in parent component
-                        const syntheticEvent = {
-                          target: { value: e.target.value },
-                        } as React.ChangeEvent<HTMLTextAreaElement>;
-                        onAnswerChange(syntheticEvent);
-                      }}
-                      className="mr-3 text-blue-600 focus:ring-blue-500"
-                    />
-                    <span className="text-slate-700 flex-1">{optionText}</span>
-                  </label>
-                </div>
-              );
-            })}
-          </div>
+                          // Trigger the save and feedback fetch in parent component
+                          const syntheticEvent = {
+                            target: { value: e.target.value },
+                          } as React.ChangeEvent<HTMLTextAreaElement>;
+                          onAnswerChange(syntheticEvent);
+                        }}
+                        className="mr-3 text-blue-600 focus:ring-blue-500"
+                      />
+                      <span className="text-slate-700 flex-1">{optionText}</span>
+                    </label>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-700">
+              No options available for this MCQ question.
+            </div>
+          )
         ) : (
           <textarea
             value={answer}

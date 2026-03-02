@@ -41,6 +41,49 @@ const extractExplicitOeqScore = (value: unknown): Pick<RecordResultInput, "score
   };
 };
 
+const extractQuestionPayload = (raw: any) => {
+  if (!raw || typeof raw !== "object") return raw;
+  const hasTopLevelQuestionData =
+    Array.isArray(raw.content_blocks) ||
+    Array.isArray(raw.interactions) ||
+    Array.isArray(raw.options) ||
+    Array.isArray(raw.content) ||
+    typeof raw.question_type === "string" ||
+    typeof raw.type === "string";
+  if (hasTopLevelQuestionData) return raw;
+  if (raw.question && typeof raw.question === "object") return { ...raw.question, ...raw };
+  if (raw.item && typeof raw.item === "object") return { ...raw.item, ...raw };
+  if (raw.data && typeof raw.data === "object" && !Array.isArray(raw.data)) return { ...raw.data, ...raw };
+  return raw;
+};
+
+const normalizeQuestionPresetFromApi = (raw: any): Question => {
+  const payload = extractQuestionPayload(raw);
+  const contentFromBlocks = Array.isArray(payload?.content_blocks)
+    ? payload.content_blocks
+        .map((block: any) => ({
+          type: String(block?.type ?? block?.block_type ?? "text"),
+          content: String(block?.content ?? block?.text_content ?? block?.media_url ?? ""),
+        }))
+        .filter((item: { content: string }) => Boolean(item.content))
+    : [];
+
+  return {
+    ...payload,
+    type: String(payload?.type ?? payload?.question_type ?? ""),
+    content: Array.isArray(payload?.content) && payload.content.length > 0 ? payload.content : contentFromBlocks,
+  };
+};
+
+type CompositionFeedbackMode = "use_latest_version" | "runtime_generate";
+type CompositionResolveResponse = {
+  composition_id?: string;
+  matched_rule_id?: string | null;
+  feedback_mode?: CompositionFeedbackMode;
+  slide_mode?: string;
+};
+const createFallbackLearnerId = () => `test_learner_${Math.random().toString(36).slice(2, 10)}`;
+
 function PageChildren({ 
   questionId, 
   searchParams 
@@ -63,6 +106,8 @@ function PageChildren({
   }), [searchParams]);
   const ltiLaunchId = (searchParams?.lti_launch_id as string) || undefined;
   const ltiUserId = (searchParams?.lti_user_id as string) || undefined;
+  const compositionId = (searchParams?.composition_id as string) || undefined;
+  const learnerIdFromUrl = (searchParams?.learner_id as string) || undefined;
 
   const dispatch = useDispatch<AppDispatch>();
 
@@ -122,6 +167,27 @@ function PageChildren({
     draftQuestion ? [{ type: "text", content: draftQuestion }] : [{ type: "text", content: base_question }]
   );
   const [saveStatus, setSaveStatus] = useState("Saved");
+  const [fallbackLearnerId] = useState(() => createFallbackLearnerId());
+  const effectiveLearnerId = learnerIdFromUrl || prolificPid || participantId || fallbackLearnerId;
+
+  const resolveCompositionForQuestion = useCallback(async (resolvedQuestionId?: string) => {
+    if (!compositionId || !resolvedQuestionId) return null;
+    try {
+      const res = await axios.get<CompositionResolveResponse>(
+        `/api/feedback-compositions/${encodeURIComponent(compositionId)}/resolve`,
+        {
+          params: {
+            question_id: resolvedQuestionId,
+            learner_id: effectiveLearnerId,
+          },
+        }
+      );
+      return res.data;
+    } catch (error) {
+      console.error("Error resolving composition:", error);
+      return null;
+    }
+  }, [compositionId, effectiveLearnerId]);
 
   useEffect(() => {
     const resourceTitle = buildQuestionResourceTitle({
@@ -213,11 +279,12 @@ function PageChildren({
     if (!question_id) return;
     setQuestionLoading(true);
     axios
-      .get(`/api/questions/by_id/${question_id}`)
+      .get(`/api/questions/${question_id}`)
       .then((res) => {
-        setQuestionPreset(res.data);
+        const normalizedQuestion = normalizeQuestionPresetFromApi(res.data);
+        setQuestionPreset(normalizedQuestion);
         // If needed, prefill question input for non-preset usage
-        if (!res.data?.content?.length) return;
+        if (!normalizedQuestion?.content?.length) return;
         // Keep the original behavior of showing preset content and no free-input box
       })
       .catch((err) => {
@@ -341,9 +408,14 @@ function PageChildren({
 
   const handleStreamingSubmit = async () => {
     if (!question && !questionPreset) return;
+    const resolvedComposition = await resolveCompositionForQuestion(questionPreset.question_id);
+    const resolvedMode =
+      resolvedComposition?.matched_rule_id && resolvedComposition.feedback_mode
+        ? resolvedComposition.feedback_mode
+        : null;
     
-    // Handle v2a - use human feedback only but still get reference for slide link
-    if (course_version === "v2a") {
+    // Composition/legacy static mode: use saved/latest feedback version
+    if (resolvedMode === "use_latest_version" || (!resolvedMode && course_version === "v2a")) {
       if (questionPreset) {
         try {
           setIsFeedbackLoading(true);
@@ -389,7 +461,7 @@ function PageChildren({
 
       // Prepare the request payload
       const requestPayload = {
-        participant_id: prolificPid || participantId || null,
+        participant_id: effectiveLearnerId || null,
         question_id: questionPreset.question_id || null,
         promptEngineering: selectedPromptEngineering,
         feedbackFramework: selectedFeedbackFramework,
@@ -473,7 +545,7 @@ function PageChildren({
               }
               
               const recordPayload: RecordResultInput = {
-                learner_id: prolificPid || participantId || "unidentifiable_learner",
+                learner_id: effectiveLearnerId,
                 study_id: studyId || "unidentifiable_study",
                 session_id: sessionId || "unidentifiable_session",
                 ...extractExplicitOeqScore(accumulatedText),
@@ -563,6 +635,11 @@ function PageChildren({
 
   const handleSubmit = async () => {
     if (!question && !questionPreset) return;
+    const resolvedComposition = await resolveCompositionForQuestion(questionPreset.question_id);
+    const resolvedMode =
+      resolvedComposition?.matched_rule_id && resolvedComposition.feedback_mode
+        ? resolvedComposition.feedback_mode
+        : null;
     setIsFeedbackLoading(true);
     setIsImageLoading(true);
     setIsReferenceLoading(true);
@@ -570,7 +647,7 @@ function PageChildren({
     const startTime = Date.now();
     let retrievalResult: any = null;
 
-    if (course_version === "v2a") {
+    if (resolvedMode === "use_latest_version" || (!resolvedMode && course_version === "v2a")) {
       if (questionPreset) {
         try {
           // Get human feedback
@@ -581,7 +658,7 @@ function PageChildren({
           
           const endTime = Date.now();
           const recordPayload: RecordResultInput = {
-            learner_id: prolificPid || participantId || "unidentifiable_learner",
+            learner_id: effectiveLearnerId,
             study_id: studyId || "unidentifiable_study",
             session_id: sessionId || "unidentifiable_session",
             ...extractExplicitOeqScore(response.data.human_feedback),
@@ -617,7 +694,7 @@ function PageChildren({
         if (["rag_zero", "rag_few", "rag_cot", "graph_rag"].includes(selectedPromptEngineering)) {
           retrievalResult = await handleRetrieve();
           response = await axios.post("/api/v2/generate_feedback_rag_oeq", {
-            participant_id: prolificPid || participantId || null,
+            participant_id: effectiveLearnerId || null,
             question_id: questionPreset.question_id || null,
             promptEngineering: selectedPromptEngineering,
             feedbackFramework: selectedFeedbackFramework,
@@ -645,7 +722,7 @@ function PageChildren({
 
         if (questionPreset) {
           const recordPayload: RecordResultInput = {
-            learner_id: prolificPid || participantId || "unidentifiable_learner",
+            learner_id: effectiveLearnerId,
             study_id: studyId || "unidentifiable_study",
             session_id: sessionId || "unidentifiable_session",
             ...extractExplicitOeqScore(response.data.feedback || response.data),
@@ -714,12 +791,28 @@ function PageChildren({
     }
   };
 
+  const questionDisplayText = useMemo(() => {
+    const source = (questionPreset?.content?.length ? questionPreset.content : question) || [];
+    const text = source
+      .filter((item) => item?.type === "text" && typeof item?.content === "string")
+      .map((item) => item.content.trim())
+      .filter(Boolean)
+      .join(" ");
+    if (text) return text;
+    return questionLoading ? "Question is loading..." : "No question content available.";
+  }, [questionPreset?.content, question, questionLoading]);
+
   return (
-    <div className="">
+    <div className="px-3 pb-3 pt-4 md:px-4 md:pb-4 md:pt-5">
       {/* If you only want to show the participant modal for Prolific flows, you can also gate this by prolificPid */}
       <ParticipantModal isOpen={!prolificPid && !participantId && !!course_version} />
 
-      <div className="grid grid-cols-11 gap-2 h-full">
+      <section className="mb-3 rounded-xl border border-slate-200 bg-white px-4 py-3">
+        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Question</p>
+        <p className="mt-1 text-sm text-slate-900">{questionDisplayText}</p>
+      </section>
+
+      <div className="grid h-full grid-cols-11 gap-2">
         <LeftFeedbackPanel
           result={result}
           reference={reference}

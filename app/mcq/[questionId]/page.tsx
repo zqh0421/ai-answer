@@ -40,6 +40,81 @@ const scoreFromIsCorrect = (isCorrect: unknown): Pick<RecordResultInput, "score_
   return { score_given: isCorrect ? 1 : 0, score_maximum: 1 };
 };
 
+const extractQuestionPayload = (raw: any) => {
+  if (!raw || typeof raw !== "object") return raw;
+  const hasTopLevelQuestionData =
+    Array.isArray(raw.content_blocks) ||
+    Array.isArray(raw.interactions) ||
+    Array.isArray(raw.options) ||
+    Array.isArray(raw.content) ||
+    typeof raw.question_type === "string" ||
+    typeof raw.type === "string";
+  if (hasTopLevelQuestionData) return raw;
+  if (raw.question && typeof raw.question === "object") return { ...raw.question, ...raw };
+  if (raw.item && typeof raw.item === "object") return { ...raw.item, ...raw };
+  if (raw.data && typeof raw.data === "object" && !Array.isArray(raw.data)) return { ...raw.data, ...raw };
+  return raw;
+};
+
+const normalizeQuestionPresetFromApi = (raw: any): Question => {
+  const payload = extractQuestionPayload(raw);
+  const normalizeOption = (option: any) => {
+    if (typeof option === "string") {
+      return { text: option, isCorrect: false };
+    }
+    return {
+      text: String(
+        option?.text ??
+          option?.option_text ??
+          option?.option_label ??
+          option?.option_value ??
+          option?.label ??
+          ""
+      ).trim(),
+      isCorrect: Boolean(option?.isCorrect ?? option?.is_correct ?? option?.correct),
+    };
+  };
+  const contentFromBlocks = Array.isArray(payload?.content_blocks)
+    ? payload.content_blocks
+        .map((block: any) => ({
+          type: String(block?.type ?? block?.block_type ?? "text"),
+          content: String(block?.content ?? block?.text_content ?? block?.media_url ?? ""),
+        }))
+        .filter((item: { content: string }) => Boolean(item.content))
+    : [];
+  const optionsFromInteractions = Array.isArray(payload?.interactions)
+    ? payload.interactions
+        .flatMap((interaction: any) =>
+          Array.isArray(interaction?.options)
+            ? interaction.options
+            : Array.isArray(interaction?.interaction_options)
+              ? interaction.interaction_options
+              : []
+        )
+        .map((option: any) => normalizeOption(option))
+        .filter((option: { text: string }) => Boolean(option.text))
+    : [];
+  const optionsFromTopLevel = Array.isArray(payload?.options)
+    ? payload.options.map((option: any) => normalizeOption(option)).filter((option: { text: string }) => Boolean(option.text))
+    : [];
+
+  return {
+    ...payload,
+    type: String(payload?.type ?? payload?.question_type ?? ""),
+    content: Array.isArray(payload?.content) && payload.content.length > 0 ? payload.content : contentFromBlocks,
+    options: optionsFromTopLevel.length > 0 ? optionsFromTopLevel : optionsFromInteractions,
+  };
+};
+
+type CompositionFeedbackMode = "use_latest_version" | "runtime_generate";
+type CompositionResolveResponse = {
+  composition_id?: string;
+  matched_rule_id?: string | null;
+  feedback_mode?: CompositionFeedbackMode;
+  slide_mode?: string;
+};
+const createFallbackLearnerId = () => `test_learner_${Math.random().toString(36).slice(2, 10)}`;
+
 function PageChildren({ 
   questionId, 
   searchParams 
@@ -62,6 +137,9 @@ function PageChildren({
   }), [searchParams]);
   const ltiLaunchId = (searchParams?.lti_launch_id as string) || undefined;
   const ltiUserId = (searchParams?.lti_user_id as string) || undefined;
+  const launchId = (searchParams?.launch_id as string) || undefined;
+  const compositionId = (searchParams?.composition_id as string) || undefined;
+  const learnerIdFromUrl = (searchParams?.learner_id as string) || undefined;
 
   const dispatch = useDispatch<AppDispatch>();
 
@@ -126,6 +204,27 @@ function PageChildren({
     draftQuestion ? [{ type: "text", content: draftQuestion }] : [{ type: "text", content: base_question }]
   );
   const [saveStatus, setSaveStatus] = useState("Saved");
+  const [fallbackLearnerId] = useState(() => createFallbackLearnerId());
+  const effectiveLearnerId = learnerIdFromUrl || prolificPid || participantId || fallbackLearnerId;
+
+  const resolveCompositionForQuestion = useCallback(async (resolvedQuestionId?: string) => {
+    if (!compositionId || !resolvedQuestionId) return null;
+    try {
+      const res = await axios.get<CompositionResolveResponse>(
+        `/api/feedback-compositions/${encodeURIComponent(compositionId)}/resolve`,
+        {
+          params: {
+            question_id: resolvedQuestionId,
+            learner_id: effectiveLearnerId,
+          },
+        }
+      );
+      return res.data;
+    } catch (error) {
+      console.error("Error resolving composition:", error);
+      return null;
+    }
+  }, [compositionId, effectiveLearnerId]);
 
   useEffect(() => {
     const resourceTitle = buildQuestionResourceTitle({
@@ -162,11 +261,20 @@ function PageChildren({
     debouncedSaveAnswer(selectedAnswer);
     
     // For MCQ, automatically fetch feedback when option is selected
-    console.log("MCQ Check - Question type:", questionPreset?.type, "Has options:", !!questionPreset?.options);
-    if (questionPreset?.type === "multiple choice" && questionPreset?.options) {
+    const normalizedType = String((questionPreset as any)?.question_type ?? questionPreset?.type ?? "").toLowerCase();
+    const isMcqLikeType =
+      normalizedType.includes("choice") ||
+      normalizedType.includes("dropdown") ||
+      normalizedType.includes("true_false") ||
+      normalizedType.includes("mcq");
+    console.log("MCQ Check - Question type:", normalizedType, "Has options:", !!questionPreset?.options);
+    if (isMcqLikeType && questionPreset?.options) {
       // Find the index of the selected option
       const selectedIndex = questionPreset.options.findIndex((opt: any) => {
-        const optionText = typeof opt === 'string' ? opt : opt.text;
+        const optionText =
+          typeof opt === 'string'
+            ? opt
+            : (opt.text ?? opt.option_text ?? opt.option_label ?? opt.option_value ?? opt.label ?? "");
         return optionText === selectedAnswer;
       });
       
@@ -182,8 +290,8 @@ function PageChildren({
       return;
     }
     
-    // Use prolificPid if available, otherwise use participantId from Redux, otherwise use a default
-    const effectiveParticipantId = prolificPid || participantId || "anonymous_user";
+    // learner_id should come from URL; fallback is generated with test_learner_* prefix.
+    const effectiveParticipantId = effectiveLearnerId;
     
     setIsFeedbackLoading(true);
     setIsReferenceLoading(true);
@@ -192,61 +300,36 @@ function PageChildren({
     const startTime = Date.now();
     
     try {
-      let feedbackResponse;
-      
-      // Handle v2a - use human feedback only
-      if (course_version === "v2a") {
-        feedbackResponse = await axios.post('/api/v2/mcq/get_human_feedback', {
-          question_id: questionPreset.question_id,
-          selected_option_index: optionIndex
-        });
-        
-        console.log("MCQ Human Feedback Response:", {
-          course_version: course_version,
+      const selectedOption = questionPreset.options?.[optionIndex];
+      const selectedText = typeof selectedOption === 'string' ? selectedOption : selectedOption?.text || "";
+      const feedbackResponse = await axios.post(
+        `/api/questions/${questionPreset.question_id}/feedback-runtime`,
+        {
+          composition_id: compositionId || null,
+          learner_id: effectiveParticipantId,
           selected_option_index: optionIndex,
-          feedback: feedbackResponse.data.feedback?.substring(0, 100) + '...',
-          isCorrect: feedbackResponse.data.isCorrect
-        });
-      } else {
-        // Fetch MCQ AI feedback (using the new AI-specific endpoint)
-        feedbackResponse = await axios.post('/api/v2/mcq/get_ai_feedback', {
-          question_id: questionPreset.question_id,
-          participant_id: effectiveParticipantId,
-          selected_option_index: optionIndex,
-          course_version: course_version
-        });
-        
-        console.log("MCQ AI Feedback Response:", {
-          participant_id: effectiveParticipantId,
-          course_version: course_version,
-          feedbackType: feedbackResponse.data.feedbackType,
-          attemptCount: feedbackResponse.data.attemptCount,
-          feedback: feedbackResponse.data.feedback?.substring(0, 100) + '...',
-          isCorrect: feedbackResponse.data.isCorrect
-        });
-      }
-      
-      const feedbackData = feedbackResponse.data;
+          answer_text: selectedText,
+          launch_id: launchId || null,
+          lti_launch_id: ltiLaunchId || null,
+        }
+      );
+      const feedbackData = feedbackResponse.data || {};
       
       // Format the result for display in the feedback panel
       // The feedback is already structured from backend
       const formattedResult = {
-        feedback: feedbackData.feedback,
-        score: feedbackData.isCorrect ? "1" : "0",
-        structured_feedback: feedbackData.structured_feedback || feedbackData.feedback
+        feedback: feedbackData.feedback || "",
+        score: "",
+        structured_feedback: feedbackData.structured_feedback || feedbackData.feedback || ""
       };
       
       setResult(formattedResult);
       
-      // Set prompt version based on feedback type (only for AI feedback)
-      if (course_version !== "v2a") {
-        const version = feedbackData.feedbackType === 'learner' ? 'prompt_learner' : 'prompt_corrective';
-        setPromptVersion(version);
-        console.log("Setting prompt version:", version, "based on feedbackType:", feedbackData.feedbackType);
+      // Set prompt label based on unified runtime feedback mode.
+      if (feedbackData.feedback_mode === 'runtime_generate') {
+        setPromptVersion("prompt_corrective");
       } else {
-        // For v2a (human feedback), no prompt version needed
         setPromptVersion("human_feedback");
-        console.log("Using human feedback for v2a");
       }
       
       // Find correct option(s) for embedding
@@ -264,17 +347,19 @@ function PageChildren({
       
       // Record MCQ result to database
       const endTime = Date.now();
-      const selectedOption = questionPreset.options?.[optionIndex];
-      const selectedText = typeof selectedOption === 'string' ? selectedOption : selectedOption?.text || "";
+      const isCorrect =
+        typeof selectedOption === 'object'
+          ? Boolean((selectedOption as any).isCorrect ?? (selectedOption as any).is_correct ?? (selectedOption as any).correct)
+          : false;
       
       const recordPayload: RecordResultInput = {
         learner_id: effectiveParticipantId,
         study_id: studyId || "unidentifiable_study",
         session_id: sessionId || "unidentifiable_session",
-        ...scoreFromIsCorrect(feedbackData.isCorrect),
+        ...scoreFromIsCorrect(isCorrect),
         question_id: questionPreset.question_id,
         answer: selectedText,
-        feedback: typeof feedbackData.feedback === 'string' ? feedbackData.feedback : JSON.stringify(feedbackData.feedback),
+        feedback: typeof feedbackData.feedback === 'string' ? feedbackData.feedback : JSON.stringify(feedbackData.feedback || ""),
         prompt_engineering_method: "rag_cot",
         preferred_info_type: preferredInfoType,
         feedback_framework: selectedFeedbackFramework,
@@ -285,8 +370,9 @@ function PageChildren({
       await recordResultToDatabase(recordPayload);
       console.log("MCQ result recorded:", {
         option_index: optionIndex,
-        is_correct: feedbackData.isCorrect,
-        feedback_type: feedbackData.feedbackType,
+        is_correct: isCorrect,
+        feedback_mode: feedbackData.feedback_mode,
+        matched_rule_id: feedbackData.matched_rule_id,
         response_time: endTime - startTime
       });
       
@@ -371,26 +457,27 @@ function PageChildren({
     if (!question_id) return;
     setQuestionLoading(true);
     axios
-      .get(`/api/questions/by_id/${question_id}`)
+      .get(`/api/questions/${question_id}`)
       .then((res) => {
-        setQuestionPreset(res.data);
+        const normalizedQuestion = normalizeQuestionPresetFromApi(res.data);
+        setQuestionPreset(normalizedQuestion);
         // Debug log to check AI feedback structure
         console.log("MCQ Question Data:", {
-          question_id: res.data.question_id,
-          has_human_feedback: !!res.data.mcq_human_feedback,
-          has_ai_feedback: !!res.data.mcq_ai_feedback,
-          ai_feedback_type: res.data.mcq_ai_feedback ? typeof res.data.mcq_ai_feedback : 'none',
-          ai_feedback_structure: res.data.mcq_ai_feedback ? 
-            (Array.isArray(res.data.mcq_ai_feedback) ? 'array' : 
-             (res.data.mcq_ai_feedback.corrective_feedback ? 'structured' : 'unknown')) : 'none',
-          slide_ids: res.data.slide_ids
+          question_id: normalizedQuestion.question_id,
+          has_human_feedback: !!(normalizedQuestion as any).mcq_human_feedback,
+          has_ai_feedback: !!(normalizedQuestion as any).mcq_ai_feedback,
+          ai_feedback_type: (normalizedQuestion as any).mcq_ai_feedback ? typeof (normalizedQuestion as any).mcq_ai_feedback : 'none',
+          ai_feedback_structure: (normalizedQuestion as any).mcq_ai_feedback ? 
+            (Array.isArray((normalizedQuestion as any).mcq_ai_feedback) ? 'array' : 
+             ((normalizedQuestion as any).mcq_ai_feedback.corrective_feedback ? 'structured' : 'unknown')) : 'none',
+          slide_ids: normalizedQuestion.slide_ids
         });
         // Set slide IDs if available from the question data
-        if (res.data.slide_ids && res.data.slide_ids.length > 0) {
-          setSlide(res.data.slide_ids);
+        if (normalizedQuestion.slide_ids && normalizedQuestion.slide_ids.length > 0) {
+          setSlide(normalizedQuestion.slide_ids);
         }
         // If needed, prefill question input for non-preset usage
-        if (!res.data?.content?.length) return;
+        if (!normalizedQuestion?.content?.length) return;
         // Keep the original behavior of showing preset content and no free-input box
       })
       .catch((err) => {
@@ -733,219 +820,19 @@ function PageChildren({
   }
 
   const handleStreamingSubmit = async () => {
-    if (!question && !questionPreset) return;
-    
-    // Handle v2a - use human feedback only
-    if (course_version === "v2a") {
-      if (questionPreset) {
-        try {
-          setIsFeedbackLoading(true);
-          
-          // Find the selected option index from the answer text
-          let selectedOptionIndex = -1;
-          if (questionPreset.options && answer) {
-            for (let i = 0; i < questionPreset.options.length; i++) {
-              const option = questionPreset.options[i];
-              const optionText = typeof option === 'string' ? option : option?.text || "";
-              if (optionText === answer) {
-                selectedOptionIndex = i;
-                break;
-              }
-            }
-          }
-          
-          if (selectedOptionIndex >= 0) {
-            const response = await axios.post('/api/v2/mcq/get_human_feedback', {
-              question_id: questionPreset.question_id,
-              selected_option_index: selectedOptionIndex
-            });
-            setResult(response.data.feedback);
-          } else {
-            setResult("Please select an option first.");
-          }
-          setIsFeedbackLoading(false);
-        } catch (error) {
-          console.error("Failed to get human feedback:", error);
-          setResult("Failed to get human feedback for this option.");
-          setIsFeedbackLoading(false);
-        }
-      }
+    if (!questionPreset?.question_id || !Array.isArray(questionPreset.options)) return;
+    const selectedOptionIndex = questionPreset.options.findIndex((option: any) => {
+      const optionText =
+        typeof option === "string"
+          ? option
+          : (option?.text ?? option?.option_text ?? option?.option_label ?? option?.option_value ?? option?.label ?? "");
+      return optionText === answer;
+    });
+    if (selectedOptionIndex < 0) {
+      setResult("Please select an option first.");
       return;
     }
-    
-    setIsFeedbackLoading(true);
-    setIsImageLoading(true);
-    setIsReferenceLoading(true);
-    setIsStreaming(true);
-    setStreamingContent("");
-    setResult("");
-
-    const startTime = Date.now();
-    let retrievalResult: { slide_text_arr?: string[]; reference?: { page_number?: number; image_text?: string; text?: string; slide_google_id?: string } } | null = null;
-
-    // Create abort controller for canceling the request
-    const controller = new AbortController();
-    setAbortController(controller);
-
-    try {
-      // Handle retrieval for reference content and images
-      if (["rag_zero", "rag_few", "rag_cot", "graph_rag"].includes(selectedPromptEngineering)) {
-        retrievalResult = await handleRetrieve();
-      }
-
-      // Prepare the request payload
-      const requestPayload = {
-        participant_id: prolificPid || participantId || null,
-        question_id: questionPreset.question_id || null,
-        promptEngineering: selectedPromptEngineering,
-        feedbackFramework: selectedFeedbackFramework,
-        question: questionPreset.content || question,
-        answer: isValidInput(answer) ? answer : "The student haven't provided any answer yet.",
-        slide_text_arr: slideTextArr,
-        isStructured: true,
-        course_version: course_version || null,  // Include course_version
-      };
-
-      // Start streaming fetch
-      const response = await fetch('/api/generate_feedback_rag_stream', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(requestPayload),
-        signal: controller.signal,
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const reader = response.body?.getReader();
-      if (!reader) {
-        throw new Error('Failed to get response reader');
-      }
-
-      const decoder = new TextDecoder();
-      let accumulatedText = "";
-      let buffer = "";
-
-      // Read the streaming response
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        // Append new chunk to buffer
-        buffer += decoder.decode(value, { stream: true });
-        
-        // Process complete lines
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || ""; // Keep incomplete line in buffer
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          
-          const data = line.slice(6);
-          
-          // Handle [DONE] signal
-          if (data === '[DONE]') {
-            console.log(accumulatedText)
-            setIsStreaming(false);
-            setIsFeedbackLoading(false);
-            
-            // Try to parse as JSON, otherwise keep as plain text
-            try {
-              const cleanedText = accumulatedText.trim()
-                .replace(/^```json\s*/, '')
-                .replace(/\s*```$/, '');
-              
-              const parsed = JSON.parse(cleanedText);
-              setResult(parsed?.structured_feedback || parsed?.feedback ? parsed : accumulatedText);
-            } catch {
-              setResult(accumulatedText);
-            }
-            
-            const endTime = Date.now();
-
-            // Record result to database
-            if (questionPreset) {
-              let feedbackForDB = accumulatedText;
-              try {
-                const parsed = JSON.parse(accumulatedText.trim().replace(/^```json\s*/, '').replace(/\s*```$/, ''));
-                if (parsed?.structured_feedback) {
-                  feedbackForDB = parsed.structured_feedback;
-                }
-              } catch {
-                // Keep original text
-              }
-              
-              const recordPayload: RecordResultInput = {
-                learner_id: prolificPid || participantId || "unidentifiable_learner",
-                study_id: studyId || "unidentifiable_study",
-                session_id: sessionId || "unidentifiable_session",
-                ...extractExplicitScore(accumulatedText),
-                question_id: questionPreset.question_id,
-                answer: answer,
-                feedback: feedbackForDB,
-                prompt_engineering_method: selectedPromptEngineering,
-                preferred_info_type: preferredInfoType === "vision" && reference?.image_text ? "vision" : "text",
-                feedback_framework: selectedFeedbackFramework,
-                slide_retrieval_range: retrievalResult?.slide_text_arr,
-                reference_slide_page_number: retrievalResult?.reference?.page_number,
-                reference_slide_content:
-                  preferredInfoType === "vision" && retrievalResult?.reference?.image_text
-                    ? retrievalResult?.reference?.image_text
-                    : reference?.text || "",
-                reference_slide_id: retrievalResult?.reference?.slide_google_id,
-                submission_time: startTime,
-                system_total_response_time: endTime - startTime,
-              };
-              await recordResultToDatabase(recordPayload);
-            }
-            break;
-          }
-          
-          // Check if it's metadata - handle it separately
-          if (data) {
-            try {
-              const parsed = JSON.parse(data);
-              if (parsed.type === 'metadata' && parsed.prompt_version) {
-                setPromptVersion(parsed.prompt_version);
-                console.log('Received prompt version:', parsed.prompt_version);
-                // Don't add metadata to accumulatedText - skip to next iteration
-                continue;
-              }
-            } catch {
-              // Not JSON metadata, it's actual feedback content
-            }
-            
-            // Only add non-metadata data to accumulated text
-            accumulatedText += data;
-            // Update streaming content immediately after appending data
-            setStreamingContent(accumulatedText);
-          }
-        }
-        
-        // Also update streaming content with partial data in buffer if we have accumulated text
-        // This ensures smoother streaming even if server sends partial chunks
-        if (accumulatedText.length > 0 && buffer.length > 0) {
-          setStreamingContent(accumulatedText + buffer);
-        }
-      }
-
-    } catch (error) {
-      console.error("Error in streaming:", error);
-      setIsStreaming(false);
-      setIsFeedbackLoading(false);
-      
-      if ((error as Error).name === 'AbortError') {
-        console.log('Streaming request was aborted');
-        setResult("Request was cancelled");
-      } else {
-        setResult(`Error: ${(error as Error).message}`);
-      }
-    } finally {
-      setAbortController(null);
-    }
+    await fetchMCQFeedback(selectedOptionIndex);
   };
 
   const stopStreaming = () => {
@@ -966,151 +853,7 @@ function PageChildren({
   };
 
   const handleSubmit = async () => {
-    if (!question && !questionPreset) return;
-    setIsFeedbackLoading(true);
-    setIsImageLoading(true);
-    setIsReferenceLoading(true);
-
-    const startTime = Date.now();
-    let retrievalResult: { slide_text_arr?: string[]; reference?: { page_number?: number; image_text?: string; text?: string; slide_google_id?: string } } | null = null;
-
-    if (course_version === "v2a") {
-      if (questionPreset) {
-        try {
-          // Find the selected option index from the answer text
-          let selectedOptionIndex = -1;
-          if (questionPreset.options && answer) {
-            for (let i = 0; i < questionPreset.options.length; i++) {
-              const option = questionPreset.options[i];
-              const optionText = typeof option === 'string' ? option : option?.text || "";
-              if (optionText === answer) {
-                selectedOptionIndex = i;
-                break;
-              }
-            }
-          }
-          
-          if (selectedOptionIndex < 0) {
-            throw new Error("Please select an option first");
-          }
-          
-          const response = await axios.post('/api/v2/mcq/get_human_feedback', {
-            question_id: questionPreset.question_id,
-            selected_option_index: selectedOptionIndex
-          });
-          const endTime = Date.now();
-          const recordPayload: RecordResultInput = {
-            learner_id: prolificPid || participantId || "unidentifiable_learner",
-            study_id: studyId || "unidentifiable_study",
-            session_id: sessionId || "unidentifiable_session",
-            ...scoreFromIsCorrect(response.data.isCorrect),
-            question_id: questionPreset.question_id,
-            answer: answer,
-            feedback: response.data.feedback,
-            prompt_engineering_method: selectedPromptEngineering,
-            preferred_info_type: preferredInfoType === "vision" && reference?.image_text ? "vision" : "text",
-            feedback_framework: selectedFeedbackFramework,
-            slide_retrieval_range: [],
-            reference_slide_page_number: -1,
-            reference_slide_content: "",
-            reference_slide_id: "",
-            submission_time: startTime,
-            system_total_response_time: endTime - startTime,
-          };
-          await recordResultToDatabase(recordPayload);
-
-          setResult(response.data.feedback);
-          setIsFeedbackLoading(false);
-          setIsImageLoading(false);
-          setIsReferenceLoading(false);
-        } catch (error) {
-          console.error("Failed to record result:", error);
-          setIsFeedbackLoading(false);
-          setIsImageLoading(false);
-          setIsReferenceLoading(false);
-        }
-      }
-    } else {
-      try {
-        let response;
-        if (["rag_zero", "rag_few", "rag_cot", "graph_rag"].includes(selectedPromptEngineering)) {
-          retrievalResult = await handleRetrieve();
-          response = await axios.post("/api/generate_feedback_rag", {
-            participant_id: prolificPid || participantId || null,
-            question_id: questionPreset.question_id || null,
-            promptEngineering: selectedPromptEngineering,
-            feedbackFramework: selectedFeedbackFramework,
-            question: questionPreset.content || question,
-            answer: isValidInput(answer) ? answer : "The student haven't provided any answer yet.",
-            slide_text_arr: slideTextArr,
-            isStructured: true,
-            course_version: course_version || null,  // Include course_version
-          });
-        } else {
-          const [retrieval, feedbackResponse] = await Promise.all([
-            handleRetrieve(),
-            axios.post("/api/generate_feedback", {
-              promptEngineering: selectedPromptEngineering,
-              feedbackFramework: selectedFeedbackFramework,
-              question: questionPreset.content || question,
-              answer: isValidInput(answer) ? answer : "The student haven't provided any answer yet.",
-            }),
-          ]);
-          response = feedbackResponse;
-          retrievalResult = retrieval;
-        }
-
-        const endTime = Date.now();
-
-        if (questionPreset) {
-          const recordPayload: RecordResultInput = {
-            learner_id: prolificPid || participantId || "unidentifiable_learner",
-            study_id: studyId || "unidentifiable_study",
-            session_id: sessionId || "unidentifiable_session",
-            ...extractExplicitScore(response.data.feedback || response.data),
-            question_id: questionPreset.question_id,
-            answer: answer,
-            feedback: response.data.feedback,
-            prompt_engineering_method: selectedPromptEngineering,
-            preferred_info_type: preferredInfoType === "vision" && reference?.image_text ? "vision" : "text",
-            feedback_framework: selectedFeedbackFramework,
-            slide_retrieval_range: retrievalResult?.slide_text_arr,
-            reference_slide_page_number: retrievalResult?.reference?.page_number,
-            reference_slide_content:
-              preferredInfoType === "vision" && retrievalResult?.reference?.image_text
-                ? retrievalResult?.reference?.image_text
-                : reference?.text || "",
-            reference_slide_id: retrievalResult?.reference?.slide_google_id,
-            submission_time: startTime,
-            system_total_response_time: endTime - startTime,
-          };
-          await recordResultToDatabase(recordPayload);
-        }
-
-        // Handle the response which might be structured or plain text
-        const feedbackData = response.data.feedback || response.data;
-        if (typeof feedbackData === 'string') {
-          // Try to parse as JSON if it's a string
-          try {
-            const parsed = JSON.parse(feedbackData);
-            if (parsed && typeof parsed === 'object' && ('structured_feedback' in parsed || 'feedback' in parsed)) {
-              setResult(parsed);
-            } else {
-              setResult(feedbackData);
-            }
-          } catch {
-            setResult(feedbackData);
-          }
-        } else {
-          // Already an object
-          setResult(feedbackData);
-        }
-        setIsFeedbackLoading(false);
-      } catch (error) {
-        console.error("Error generating feedback:", error);
-        setIsFeedbackLoading(false);
-      }
-    }
+    await handleStreamingSubmit();
   };
 
   const handleImageClick = (image: string, index: number) => {
@@ -1132,12 +875,28 @@ function PageChildren({
     }
   };
 
+  const questionDisplayText = useMemo(() => {
+    const source = (questionPreset?.content?.length ? questionPreset.content : question) || [];
+    const text = source
+      .filter((item) => item?.type === "text" && typeof item?.content === "string")
+      .map((item) => item.content.trim())
+      .filter(Boolean)
+      .join(" ");
+    if (text) return text;
+    return questionLoading ? "Question is loading..." : "No question content available.";
+  }, [questionPreset?.content, question, questionLoading]);
+
   return (
-    <div className="">
+    <div className="px-3 pb-3 pt-4 md:px-4 md:pb-4 md:pt-5">
       {/* If you only want to show the participant modal for Prolific flows, you can also gate this by prolificPid */}
       <ParticipantModal isOpen={!prolificPid && !participantId && !!course_version} />
 
-      <div className="grid grid-cols-11 gap-2 h-full">
+      <section className="mb-3 rounded-xl border border-slate-200 bg-white px-4 py-3">
+        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Question</p>
+        <p className="mt-1 text-sm text-slate-900">{questionDisplayText}</p>
+      </section>
+
+      <div className="grid h-full grid-cols-11 gap-2">
         <LeftFeedbackPanel
           result={result}
           reference={reference}

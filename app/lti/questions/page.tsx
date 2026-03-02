@@ -80,7 +80,6 @@ const getQuestionImagePreview = (question: QuestionRow) =>
   (question.content ?? []).find((item) => item.type === 'image')?.content ?? '';
 
 const formatCreatedAt = (value?: string) => formatDateTimeForUser(value);
-const createFallbackLearnerId = () => `test_learner_${Math.random().toString(36).slice(2, 10)}`;
 
 const normalizeQuestionRow = (raw: any): QuestionRow => {
   const contentFromBlocks = Array.isArray(raw?.content_blocks)
@@ -140,7 +139,6 @@ export default function LtiQuestionsPage() {
   const defaultCompositionId = searchParams.get('composition_id') || '';
   const queryLearnerId = searchParams.get('learner_id');
   const [learnerIdInput, setLearnerIdInput] = useState(queryLearnerId || ltiUserId || '');
-  const [fallbackLearnerId] = useState(() => createFallbackLearnerId());
 
   useEffect(() => {
     document.title = buildStaticPageTitle('LTI Question Library');
@@ -168,12 +166,12 @@ export default function LtiQuestionsPage() {
       const parsed = parsePublicQuestionsResponse(res.data);
       setQuestions(parsed);
       if (parsed.length === 0) {
-        setLoadError('未获取到 public questions（返回为空）');
+        setLoadError('No public questions were returned (empty response).');
       }
     } catch (error) {
       console.error('Error fetching questions:', error);
       setQuestions([]);
-      setLoadError('未获取到 public questions');
+      setLoadError('Failed to load public questions.');
     } finally {
       setLoading(false);
     }
@@ -270,8 +268,8 @@ export default function LtiQuestionsPage() {
     const compositionId = getSelectedCompositionId(question.question_id);
     const params = new URLSearchParams();
     if (compositionId) params.set('composition_id', compositionId);
-    const normalizedLearnerId = learnerIdInput.trim() || fallbackLearnerId;
-    params.set('learner_id', normalizedLearnerId);
+    const normalizedLearnerId = learnerIdInput.trim();
+    if (normalizedLearnerId) params.set('learner_id', normalizedLearnerId);
     if (isDeepLinkMode) params.set('lti_mode', 'deep_link');
     if (launchId) params.set('launch_id', launchId);
     if (ltiLaunchId) params.set('lti_launch_id', ltiLaunchId);

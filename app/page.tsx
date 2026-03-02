@@ -135,7 +135,7 @@ function HomeChildren() {
       setQuestionLoading(true);
       // Fetch the question by ID
       axios
-        .get(`/api/questions/by_id/${question_id}`)
+        .get(`/api/questions/${question_id}`)
         .then((res) => {
           setQuestionPreset(res.data);
           // console.log(res.data)
