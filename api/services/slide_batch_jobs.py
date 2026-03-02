@@ -153,7 +153,13 @@ class SlideBatchJobManager:
 
     def enqueue_callable(self, func: Any, *args: Any, **kwargs: Any) -> str:
         queue = self._queue()
-        job = queue.enqueue(func, *args, result_ttl=int(self._result_ttl), **kwargs)
+        rq_target: Any = func
+        if callable(func):
+            module_name = getattr(func, "__module__", "") or ""
+            func_name = getattr(func, "__name__", "") or ""
+            if module_name and func_name:
+                rq_target = f"{module_name}.{func_name}"
+        job = queue.enqueue(rq_target, *args, result_ttl=int(self._result_ttl), **kwargs)
         return job.id
 
     def queue_name(self) -> str:

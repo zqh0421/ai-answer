@@ -54,7 +54,7 @@ def call_gpt_oeq(system_prompt: str, user_prompt: List[dict], settings: Annotate
             }
         ],
         reasoning={
-            "effort": "minimal"
+            "effort": "low"
         },
         text={
             "verbosity": "low",

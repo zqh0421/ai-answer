@@ -25,12 +25,29 @@ _NON_LTI_LEARNER_SENTINELS = {
 
 
 def _resolve_mcq_score(db: Session, question_id: str, answer: str) -> tuple[float, float] | None:
-    question = db.query(Question).filter(Question.question_id == question_id).first()
-    if not question:
-        return None
-    options = question.options or []
-    if not isinstance(options, list):
-        return None
+    if question_id.startswith("qn_"):
+        rows = db.execute(
+            text(
+                """
+                SELECT o.option_value, o.is_correct
+                FROM content_question q
+                JOIN content_question_version qv ON qv.question_version_id = q.current_version_id
+                JOIN content_question_interaction i ON i.question_version_id = qv.question_version_id
+                JOIN content_question_interaction_option o ON o.interaction_id = i.interaction_id
+                WHERE q.question_id = :question_id
+                ORDER BY i.interaction_order ASC, o.option_order ASC
+                """
+            ),
+            {"question_id": question_id},
+        ).mappings().all()
+        options = [{"text": str(r["option_value"] or ""), "isCorrect": bool(r["is_correct"])} for r in rows]
+    else:
+        question = db.query(Question).filter(Question.question_id == question_id).first()
+        if not question:
+            return None
+        options = question.options or []
+        if not isinstance(options, list):
+            return None
 
     normalized_answer = (answer or "").strip()
     selected_index = None
@@ -324,4 +341,3 @@ def update_rating(record_id: int, rating_update: models.UpdateRatingModel, db: S
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=f"Error updating rating: {str(e)}")
-

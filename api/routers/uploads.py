@@ -36,5 +36,7 @@ async def upload_file(settings: Annotated[Settings, Depends(get_settings)], file
         file_url = f"https://{settings.s3_bucket_name}.s3.amazonaws.com/{file_key}"
 
         return {"url": file_url}
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e))

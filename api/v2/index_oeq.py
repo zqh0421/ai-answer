@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from typing_extensions import Annotated
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 import json
 
 from ..database import SessionLocal
@@ -151,6 +152,15 @@ def get_human_feedback_oeq(question_id: str, db: Session = Depends(get_db)):
     Returns error if no human feedback is available.
     """
     try:
+        if question_id.startswith("qn_"):
+            exists = db.execute(
+                text("SELECT 1 FROM content_question WHERE question_id = :qid LIMIT 1"),
+                {"qid": question_id},
+            ).scalar()
+            if not exists:
+                raise HTTPException(status_code=404, detail=f"Question with ID {question_id} not found")
+            raise HTTPException(status_code=404, detail=f"No human feedback available for question {question_id}")
+
         question = db.query(Question).filter(Question.question_id == question_id).first()
         
         if not question:

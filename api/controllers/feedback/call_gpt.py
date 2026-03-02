@@ -45,7 +45,7 @@ def call_gpt(system_prompt: str, user_prompt: list[ResponseInputItemParam], sett
             }
         ],
         reasoning={
-            "effort": "minimal"
+            "effort": "low"
         },
         text={
             "verbosity": "low",

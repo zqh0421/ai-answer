@@ -1,3 +1,5 @@
+from uuid import UUID
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -40,6 +42,12 @@ def get_all_question(db: Session = Depends(get_db)):
 
 @router.get("/questions/by_id/{question_id}")
 def get_question_by_id(question_id: str, db: Session = Depends(get_db)):
+    if str(question_id).startswith("qn_"):
+        raise HTTPException(status_code=400, detail="Semantic question ids (qn_...) are not supported by /api/questions/by_id; use /api/questions/{question_id}")
+    try:
+        UUID(str(question_id))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Legacy question_id must be a UUID")
     question = db.query(schema.Question).filter(schema.Question.question_id == question_id).first()
     if question is None:
         raise HTTPException(status_code=404, detail="Question not found")
@@ -48,6 +56,12 @@ def get_question_by_id(question_id: str, db: Session = Depends(get_db)):
 
 @router.delete("/questions/by_id/{question_id}")
 def delete_question_by_id(question_id: str, db: Session = Depends(get_db)):
+    if str(question_id).startswith("qn_"):
+        raise HTTPException(status_code=400, detail="Semantic question ids (qn_...) are not supported by /api/questions/by_id; use DELETE /api/questions/{question_id}")
+    try:
+        UUID(str(question_id))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Legacy question_id must be a UUID")
     db_question = db.query(schema.Question).filter(schema.Question.question_id == question_id).first()
     if db_question is None:
         raise HTTPException(status_code=404, detail="Question not found")

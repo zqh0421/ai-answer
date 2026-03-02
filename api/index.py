@@ -13,6 +13,10 @@ from .routers import (
     questions,
     uploads,
     records,
+    feedback_agents,
+    feedback_links,
+    feedback_compositions,
+    questions_semantic,
 )
 from .tags import tags_metadata
 from .v2 import index_oeq, index_mcq
@@ -46,3 +50,7 @@ app.include_router(slides.router)
 app.include_router(questions.router)
 app.include_router(uploads.router)
 app.include_router(records.router)
+app.include_router(feedback_agents.router)
+app.include_router(feedback_links.router)
+app.include_router(feedback_compositions.router)
+app.include_router(questions_semantic.router)

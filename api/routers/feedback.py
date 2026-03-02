@@ -2,6 +2,7 @@ import json
 import re
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 from typing_extensions import Annotated
 
@@ -167,11 +168,22 @@ async def generate_feedback_rag_stream(
 @router.get("/get_human_feedback/{question_id}")
 def get_human_feedback(question_id: str, db: Session = Depends(get_db)):
     try:
+        if question_id.startswith("qn_"):
+            exists = db.execute(
+                text("SELECT 1 FROM content_question WHERE question_id = :qid LIMIT 1"),
+                {"qid": question_id},
+            ).scalar()
+            if not exists:
+                raise HTTPException(status_code=404, detail="No human feedback found for this question_id")
+            raise HTTPException(status_code=404, detail="No human feedback found for this question_id")
+
         question = db.query(schema.Question).filter(schema.Question.question_id == question_id).first()
 
         if not question or question.human_feedback is None:
             raise HTTPException(status_code=404, detail="No human feedback found for this question_id")
 
         return {"human_feedback": question.human_feedback}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

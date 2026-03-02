@@ -45,7 +45,7 @@ def call_gpt_mcq(system_prompt: str, user_content: List[Dict[str, Any]], setting
                 }
             ],
             reasoning={
-                "effort": "minimal"
+                "effort": "low"
             },
             text={
                 "verbosity": "low",

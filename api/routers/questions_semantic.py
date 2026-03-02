@@ -1,0 +1,2610 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+import secrets
+from typing import Any, Literal, Optional
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from openai import OpenAI
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+
+from ..config import get_settings
+from ..dependencies import get_db
+from .feedback_links import _get_agent as _get_feedback_agent, _insert_feedback_link
+from ..services.feedback_link_generation_jobs import (
+    generate_static_feedback_for_feedback_link,
+    generate_static_feedback_with_version_snapshot_for_feedback_link,
+)
+from ..services.feedback_link_job_status import (
+    get_feedback_link_generation_status,
+    get_rq_job_status,
+    set_feedback_link_generation_job_id,
+)
+from ..services.feedback_composition_expr import CompositionExprError, compile_condition_expression
+from ..services.semantic_schema import generate_short_id, get_semantic_question_version_detail
+from ..services.slide_batch_jobs import slide_batch_job_manager
+from ..tags import Tags
+
+router = APIRouter(prefix="/api", tags=[Tags.CONTENT_QUESTIONS])
+
+
+QuestionType = Literal["single_choice", "multi_choice", "dropdown", "true_false", "free_text", "essay"]
+InteractionType = QuestionType
+AccessScope = Literal["private", "public"]
+ScoreInputFormat = Literal["fraction", "ratio", "absolute"]
+ScoreRoundingMode = Literal["none", "floor", "ceil", "round"]
+BlockType = Literal["text", "image", "latex", "html", "instruction"]
+
+
+class ScoringPolicyIn(BaseModel):
+    score_maximum: float = Field(gt=0)
+    score_input_format: ScoreInputFormat = "fraction"
+    score_normalize_to_maximum: bool = True
+    score_rounding_mode: ScoreRoundingMode = "none"
+    score_rounding_step: Optional[float] = Field(default=1, gt=0)
+
+
+class ContentBlockIn(BaseModel):
+    block_type: BlockType
+    text_content: Optional[str] = None
+    media_url: Optional[str] = None
+    alt_text: Optional[str] = None
+
+
+class InteractionOptionIn(BaseModel):
+    option_order: int = Field(ge=1)
+    option_value: str = Field(min_length=1, max_length=2000)
+    option_label: str = Field(min_length=0)
+    is_correct: bool = False
+
+
+class InteractionIn(BaseModel):
+    interaction_type: InteractionType
+    interaction_order: int = Field(ge=1)
+    prompt_text: Optional[str] = None
+    is_required: bool = True
+    max_score: Optional[float] = Field(default=None, ge=0)
+    options: list[InteractionOptionIn] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_options(self):
+        option_required_types = {"single_choice", "multi_choice", "dropdown", "true_false"}
+        if self.interaction_type in option_required_types and len(self.options) == 0:
+            raise ValueError(f"interaction_type '{self.interaction_type}' requires options")
+        if self.interaction_type in {"free_text", "essay"} and self.options:
+            raise ValueError(f"interaction_type '{self.interaction_type}' cannot have options")
+        if self.interaction_type == "true_false" and len(self.options) != 2:
+            raise ValueError("true_false interaction requires exactly 2 options")
+        if self.interaction_type == "single_choice":
+            if sum(1 for x in self.options if x.is_correct) > 1:
+                raise ValueError("single_choice supports at most one correct option")
+        return self
+
+
+class SlideScopeIn(BaseModel):
+    slide_id: str
+    page_start: Optional[int] = Field(default=None, ge=1)
+    page_end: Optional[int] = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def validate_range(self):
+        if (self.page_start is None) != (self.page_end is None):
+            raise ValueError("page_start and page_end must both be set or both be null")
+        if self.page_start is not None and self.page_end is not None and self.page_end < self.page_start:
+            raise ValueError("page_end must be >= page_start")
+        return self
+
+
+class QuestionCreateRequest(BaseModel):
+    question_type: QuestionType
+    title: Optional[str] = None
+    access_scope: AccessScope = "private"
+    content_blocks: list[ContentBlockIn] = Field(default_factory=list)
+    interactions: list[InteractionIn] = Field(min_length=1)
+    slide_scope: list[SlideScopeIn] = Field(default_factory=list)
+    scoring_policy: ScoringPolicyIn
+    created_by: str = Field(min_length=16, max_length=16)
+
+    @model_validator(mode="after")
+    def validate_question(self):
+        if len(self.interactions) != 1:
+            raise ValueError("current implementation supports exactly 1 interaction per question")
+        if self.interactions[0].interaction_type != self.question_type:
+            raise ValueError("question_type must match the first interaction_type")
+        return self
+
+
+class QuestionVersionCreateRequest(BaseModel):
+    question_type: QuestionType
+    title: Optional[str] = None
+    content_blocks: list[ContentBlockIn] = Field(default_factory=list)
+    interactions: list[InteractionIn] = Field(min_length=1)
+    slide_scope: list[SlideScopeIn] = Field(default_factory=list)
+    scoring_policy: ScoringPolicyIn
+    created_by: str = Field(min_length=16, max_length=16)
+    change_note: Optional[str] = None
+    copy_feedback_links_from_previous: bool = False
+
+    @model_validator(mode="after")
+    def validate_question(self):
+        if len(self.interactions) != 1:
+            raise ValueError("current implementation supports exactly 1 interaction per question")
+        if self.interactions[0].interaction_type != self.question_type:
+            raise ValueError("question_type must match the first interaction_type")
+        return self
+
+
+class ScopePatchRequest(BaseModel):
+    access_scope: AccessScope
+    updated_by: str = Field(min_length=16, max_length=16)
+
+
+class VisibilityPatchRequest(BaseModel):
+    is_visible: bool
+    updated_by: str = Field(min_length=16, max_length=16)
+
+
+class BatchQuestionIdsRequest(BaseModel):
+    question_ids: list[str] = Field(min_length=1)
+    updated_by: str = Field(min_length=16, max_length=16)
+
+
+class BatchAttachFeedbackAgentRequest(BaseModel):
+    question_ids: list[str] = Field(min_length=1)
+    agent_id: str = Field(min_length=16, max_length=16)
+    updated_by: str = Field(min_length=16, max_length=16)
+    priority: int = 100
+    static_feedback_text: Optional[str] = None
+
+
+class BatchJobIdsRequest(BaseModel):
+    job_ids: list[str] = Field(min_length=1)
+
+
+class BatchResolveQuestionVersionsRequest(BaseModel):
+    question_ids: list[str] = Field(min_length=1)
+
+
+class SingleAttachAgentRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    agent_id: str = Field(min_length=16, max_length=16, alias="agentId")
+    updated_by: str = Field(min_length=16, max_length=16, alias="updatedBy")
+
+
+class StaticFeedbackOptionFeedbackItem(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    interaction_option_id: str = Field(min_length=16, max_length=16, alias="interactionOptionId")
+    feedback_text: str = Field(min_length=1, alias="feedbackText")
+
+
+class StaticFeedbackUpdateRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    updated_by: str = Field(min_length=16, max_length=16, alias="updatedBy")
+    # Backward compatible aliases:
+    # - staticFeedbackText: legacy question-level only payload
+    # - questionFeedbackText: preferred question-level field
+    static_feedback_text: Optional[str] = Field(default=None, alias="staticFeedbackText")
+    question_feedback_text: Optional[str] = Field(default=None, alias="questionFeedbackText")
+    option_feedback: list[StaticFeedbackOptionFeedbackItem] = Field(default_factory=list, alias="optionFeedback")
+    expected_option_count: Optional[int] = Field(default=None, ge=0, alias="expectedOptionCount")
+    if_match_version_id: Optional[str] = Field(default=None, min_length=16, max_length=16, alias="ifMatchVersionId")
+
+
+class StaticFeedbackRestoreRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    updated_by: str = Field(min_length=16, max_length=16, alias="updatedBy")
+    if_match_version_id: Optional[str] = Field(default=None, min_length=16, max_length=16, alias="ifMatchVersionId")
+
+
+class AttachedAgentDryRunRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    updated_by: Optional[str] = Field(default=None, min_length=16, max_length=16, alias="updatedBy")
+    dry_run: bool = Field(default=True, alias="dryRun")
+    input_values: Optional[dict[str, Any]] = Field(default=None, alias="inputValues")
+
+
+class QuestionFeedbackRuntimeRequest(BaseModel):
+    composition_id: Optional[str] = Field(default=None, max_length=64)
+    learner_id: Optional[str] = Field(default=None, max_length=128)
+    launch_id: Optional[str] = None
+    lti_launch_id: Optional[str] = None
+    selected_option_index: Optional[int] = Field(default=None, ge=0)
+    answer_text: Optional[str] = None
+    input_values: Optional[dict[str, Any]] = None
+
+
+def _user_exists(db: Session, user_id: str) -> bool:
+    return bool(db.execute(text("SELECT 1 FROM users WHERE user_id = :user_id LIMIT 1"), {"user_id": user_id}).scalar())
+
+
+def _user_role(db: Session, user_id: str) -> str | None:
+    role = db.execute(text("SELECT role::text FROM users WHERE user_id = :user_id LIMIT 1"), {"user_id": user_id}).scalar()
+    return str(role) if role is not None else None
+
+
+def _require_admin_user(db: Session, user_id: str) -> None:
+    role_value = _user_role(db, user_id)
+    if role_value is None:
+        raise HTTPException(status_code=400, detail="updated_by user_id not found")
+    if role_value != "admin":
+        raise HTTPException(status_code=403, detail="admin permission required")
+
+
+def _batch_result(question_ids: list[str], success_ids: list[str], failed: list[dict[str, str]]) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "requested_count": len(question_ids),
+        "success_count": len(success_ids),
+        "failed_count": len(failed),
+        "success_ids": success_ids,
+        "failed": failed,
+    }
+
+
+def _question_rows_map(db: Session, question_ids: list[str]) -> dict[str, dict[str, Any]]:
+    if not question_ids:
+        return {}
+    rows = db.execute(
+        text(
+            """
+            SELECT question_id, current_version_id, access_scope, is_visible, created_by, created_at
+            FROM content_question
+            WHERE question_id = ANY(CAST(:question_ids AS TEXT[]))
+            """
+        ),
+        {"question_ids": question_ids},
+    ).mappings().all()
+    return {str(r["question_id"]): dict(r) for r in rows}
+
+
+def _find_visible_question_version_link(db: Session, *, question_version_id: str, agent_id: str) -> str | None:
+    row = db.execute(
+        text(
+            """
+            SELECT feedback_link_id
+            FROM feedback_link
+            WHERE question_version_id = :qv_id
+              AND agent_id = :agent_id
+              AND target_entity_type = 'question_version'
+              AND target_entity_id = :qv_id
+              AND is_visible = TRUE
+            ORDER BY created_at ASC
+            LIMIT 1
+            """
+        ),
+        {"qv_id": question_version_id, "agent_id": agent_id},
+    ).scalar()
+    return str(row) if row else None
+
+
+def _find_any_visible_question_link(db: Session, *, question_version_id: str, agent_id: str) -> str | None:
+    row = db.execute(
+        text(
+            """
+            SELECT feedback_link_id
+            FROM feedback_link
+            WHERE question_version_id = :qv_id
+              AND agent_id = :agent_id
+              AND is_visible = TRUE
+            ORDER BY
+              CASE WHEN target_entity_type = 'question_version' THEN 0 ELSE 1 END ASC,
+              created_at ASC
+            LIMIT 1
+            """
+        ),
+        {"qv_id": question_version_id, "agent_id": agent_id},
+    ).scalar()
+    return str(row) if row else None
+
+
+def _find_visible_feedback_link_by_target(
+    db: Session,
+    *,
+    question_version_id: str,
+    agent_id: str,
+    target_entity_type: str,
+    target_entity_id: str,
+) -> str | None:
+    row = db.execute(
+        text(
+            """
+            SELECT feedback_link_id
+            FROM feedback_link
+            WHERE question_version_id = :qv_id
+              AND agent_id = :agent_id
+              AND target_entity_type = :target_entity_type
+              AND target_entity_id = :target_entity_id
+              AND is_visible = TRUE
+            ORDER BY created_at ASC
+            LIMIT 1
+            """
+        ),
+        {
+            "qv_id": question_version_id,
+            "agent_id": agent_id,
+            "target_entity_type": target_entity_type,
+            "target_entity_id": target_entity_id,
+        },
+    ).scalar()
+    return str(row) if row else None
+
+
+def _question_version_belongs_to_question(db: Session, *, question_id: str, question_version_id: str) -> bool:
+    return bool(
+        db.execute(
+            text(
+                """
+                SELECT 1
+                FROM content_question_version
+                WHERE question_id = :question_id
+                  AND question_version_id = :question_version_id
+                LIMIT 1
+                """
+            ),
+            {"question_id": question_id, "question_version_id": question_version_id},
+        ).scalar()
+    )
+
+
+def _interaction_options_for_question_version(db: Session, question_version_id: str) -> dict[str, dict[str, Any]]:
+    rows = db.execute(
+        text(
+            """
+            SELECT
+              o.interaction_option_id,
+              o.interaction_id,
+              o.option_order,
+              o.option_label,
+              i.question_version_id
+            FROM content_question_interaction_option o
+            JOIN content_question_interaction i ON i.interaction_id = o.interaction_id
+            WHERE i.question_version_id = :question_version_id
+            """
+        ),
+        {"question_version_id": question_version_id},
+    ).mappings().all()
+    return {str(r["interaction_option_id"]): dict(r) for r in rows}
+
+
+def _ensure_static_feedback_version_schema(db: Session) -> None:
+    db.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS feedback_static_feedback_version (
+                version_id VARCHAR(16) PRIMARY KEY,
+                question_id VARCHAR(16) NOT NULL,
+                question_version_id VARCHAR(16) NOT NULL,
+                agent_id VARCHAR(16) NOT NULL,
+                revision_no INT NOT NULL,
+                question_feedback_text TEXT NULL,
+                parent_version_id VARCHAR(16) NULL,
+                restored_from_version_id VARCHAR(16) NULL,
+                created_by VARCHAR(16) NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS ix_feedback_static_feedback_version_question_agent_created_at
+            ON feedback_static_feedback_version (question_id, agent_id, created_at DESC);
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS feedback_static_feedback_version_option (
+                version_option_id VARCHAR(16) PRIMARY KEY,
+                version_id VARCHAR(16) NOT NULL REFERENCES feedback_static_feedback_version(version_id) ON DELETE CASCADE,
+                interaction_option_id VARCHAR(16) NOT NULL,
+                feedback_text TEXT NOT NULL,
+                created_by VARCHAR(16) NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                CONSTRAINT uq_feedback_static_feedback_version_option UNIQUE (version_id, interaction_option_id)
+            );
+            """
+        )
+    )
+    # Backward-compat migration for existing deployments created before TZ support.
+    db.execute(
+        text(
+            """
+            ALTER TABLE feedback_static_feedback_version
+            ALTER COLUMN created_at TYPE TIMESTAMPTZ
+            USING created_at AT TIME ZONE 'UTC';
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            ALTER TABLE feedback_static_feedback_version_option
+            ALTER COLUMN created_at TYPE TIMESTAMPTZ
+            USING created_at AT TIME ZONE 'UTC';
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS ix_feedback_static_feedback_version_option_version_id
+            ON feedback_static_feedback_version_option (version_id);
+            """
+        )
+    )
+
+
+def _get_latest_static_feedback_version(db: Session, *, question_id: str, agent_id: str) -> dict[str, Any] | None:
+    row = db.execute(
+        text(
+            """
+            SELECT
+              version_id, question_id, question_version_id, agent_id, revision_no,
+              question_feedback_text, parent_version_id, restored_from_version_id,
+              created_by, created_at
+            FROM feedback_static_feedback_version
+            WHERE question_id = :question_id AND agent_id = :agent_id
+            ORDER BY revision_no DESC, created_at DESC
+            LIMIT 1
+            """
+        ),
+        {"question_id": question_id, "agent_id": agent_id},
+    ).mappings().first()
+    return dict(row) if row else None
+
+
+def _get_static_feedback_version_by_id(db: Session, *, version_id: str, question_id: str, agent_id: str) -> dict[str, Any] | None:
+    row = db.execute(
+        text(
+            """
+            SELECT
+              version_id, question_id, question_version_id, agent_id, revision_no,
+              question_feedback_text, parent_version_id, restored_from_version_id,
+              created_by, created_at
+            FROM feedback_static_feedback_version
+            WHERE version_id = :version_id
+              AND question_id = :question_id
+              AND agent_id = :agent_id
+            LIMIT 1
+            """
+        ),
+        {"version_id": version_id, "question_id": question_id, "agent_id": agent_id},
+    ).mappings().first()
+    return dict(row) if row else None
+
+
+def _get_static_feedback_version_option_feedback(db: Session, version_id: str) -> list[dict[str, Any]]:
+    rows = db.execute(
+        text(
+            """
+            SELECT interaction_option_id, feedback_text
+            FROM feedback_static_feedback_version_option
+            WHERE version_id = :version_id
+            ORDER BY interaction_option_id ASC
+            """
+        ),
+        {"version_id": version_id},
+    ).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def _to_utc_iso_z(value: Any) -> str | None:
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    else:
+        value = value.astimezone(timezone.utc)
+    return value.isoformat().replace("+00:00", "Z")
+
+
+def _read_current_feedback_link_state(
+    db: Session, *, question_version_id: str, agent_id: str
+) -> tuple[Optional[str], list[dict[str, Any]]]:
+    q_row = db.execute(
+        text(
+            """
+            SELECT static_feedback_text
+            FROM feedback_link
+            WHERE question_version_id = :question_version_id
+              AND agent_id = :agent_id
+              AND target_entity_type = 'question_version'
+              AND target_entity_id = :question_version_id
+              AND is_visible = TRUE
+            ORDER BY created_at DESC
+            LIMIT 1
+            """
+        ),
+        {"question_version_id": question_version_id, "agent_id": agent_id},
+    ).mappings().first()
+    question_feedback_text = str(q_row["static_feedback_text"]) if q_row and q_row.get("static_feedback_text") is not None else None
+
+    opt_rows = db.execute(
+        text(
+            """
+            SELECT target_entity_id AS interaction_option_id, static_feedback_text AS feedback_text
+            FROM feedback_link
+            WHERE question_version_id = :question_version_id
+              AND agent_id = :agent_id
+              AND target_entity_type = 'interaction_option'
+              AND is_visible = TRUE
+            ORDER BY target_entity_id ASC
+            """
+        ),
+        {"question_version_id": question_version_id, "agent_id": agent_id},
+    ).mappings().all()
+    option_feedback = []
+    for row in opt_rows:
+        text_value = (row.get("feedback_text") or "").strip()
+        if text_value:
+            option_feedback.append(
+                {
+                    "interaction_option_id": str(row["interaction_option_id"]),
+                    "feedback_text": text_value,
+                }
+            )
+    return question_feedback_text, option_feedback
+
+
+def _create_static_feedback_version_snapshot(
+    db: Session,
+    *,
+    question_id: str,
+    question_version_id: str,
+    agent_id: str,
+    created_by: str,
+    question_feedback_text: Optional[str],
+    option_feedback: list[dict[str, Any]],
+    parent_version_id: Optional[str],
+    restored_from_version_id: Optional[str] = None,
+) -> dict[str, Any]:
+    latest = _get_latest_static_feedback_version(db, question_id=question_id, agent_id=agent_id)
+    revision_no = int(latest["revision_no"]) + 1 if latest else 1
+    version_id = _generate_unique_id(db, "feedback_static_feedback_version", "version_id", "fv")
+    db.execute(
+        text(
+            """
+            INSERT INTO feedback_static_feedback_version (
+              version_id, question_id, question_version_id, agent_id, revision_no,
+              question_feedback_text, parent_version_id, restored_from_version_id, created_by, created_at
+            ) VALUES (
+              :version_id, :question_id, :question_version_id, :agent_id, :revision_no,
+              :question_feedback_text, :parent_version_id, :restored_from_version_id, :created_by, NOW()
+            )
+            """
+        ),
+        {
+            "version_id": version_id,
+            "question_id": question_id,
+            "question_version_id": question_version_id,
+            "agent_id": agent_id,
+            "revision_no": revision_no,
+            "question_feedback_text": question_feedback_text,
+            "parent_version_id": parent_version_id,
+            "restored_from_version_id": restored_from_version_id,
+            "created_by": created_by,
+        },
+    )
+
+    for item in option_feedback:
+        db.execute(
+            text(
+                """
+                INSERT INTO feedback_static_feedback_version_option (
+                  version_option_id, version_id, interaction_option_id, feedback_text, created_by, created_at
+                ) VALUES (
+                  :version_option_id, :version_id, :interaction_option_id, :feedback_text, :created_by, NOW()
+                )
+                """
+            ),
+            {
+                "version_option_id": _generate_unique_id(
+                    db, "feedback_static_feedback_version_option", "version_option_id", "fo"
+                ),
+                "version_id": version_id,
+                "interaction_option_id": item["interaction_option_id"],
+                "feedback_text": item["feedback_text"],
+                "created_by": created_by,
+            },
+        )
+
+    created = _get_static_feedback_version_by_id(db, version_id=version_id, question_id=question_id, agent_id=agent_id)
+    if created is None:
+        raise HTTPException(status_code=500, detail="failed to load created static feedback version")
+    created["option_feedback"] = option_feedback
+    return created
+
+
+def _generate_unique_id(db: Session, table: str, col: str, prefix: str) -> str:
+    sql = text(f"SELECT 1 FROM {table} WHERE {col} = :v LIMIT 1")
+    for _ in range(50):
+        cand = generate_short_id(prefix)
+        if not db.execute(sql, {"v": cand}).scalar():
+            return cand
+    raise HTTPException(status_code=500, detail=f"Unable to generate unique id for {table}.{col}")
+
+
+def _question_exists(db: Session, question_id: str) -> bool:
+    return bool(db.execute(text("SELECT 1 FROM content_question WHERE question_id = :qid LIMIT 1"), {"qid": question_id}).scalar())
+
+
+def _question_row(db: Session, question_id: str) -> dict[str, Any] | None:
+    row = db.execute(
+        text(
+            """
+            SELECT question_id, current_version_id, access_scope, is_visible, created_by, created_at
+            FROM content_question
+            WHERE question_id = :qid
+            LIMIT 1
+            """
+        ),
+        {"qid": question_id},
+    ).mappings().first()
+    return dict(row) if row else None
+
+
+def _question_version_exists(db: Session, question_version_id: str) -> bool:
+    return bool(db.execute(text("SELECT 1 FROM content_question_version WHERE question_version_id = :qv LIMIT 1"), {"qv": question_version_id}).scalar())
+
+
+def _question_version_type(db: Session, question_version_id: str) -> str | None:
+    row = db.execute(
+        text(
+            """
+            SELECT question_type
+            FROM content_question_version
+            WHERE question_version_id = :qv
+            LIMIT 1
+            """
+        ),
+        {"qv": question_version_id},
+    ).scalar()
+    return str(row) if row is not None else None
+
+
+def _coerce_runtime_learner_id(value: str | None) -> str:
+    if value and value.strip():
+        return value.strip()
+    return f"test_learner_{secrets.token_hex(4)}"
+
+
+def _resolve_runtime_attempt_stats(db: Session, *, learner_id: str, question_id: str) -> dict[str, int]:
+    row = db.execute(
+        text(
+            """
+            SELECT
+              COUNT(*)::INT AS attempted_count,
+              COALESCE(SUM(
+                CASE
+                  WHEN COALESCE(score_maximum, 0) > 0
+                   AND COALESCE(score_given, 0) >= COALESCE(score_maximum, 0)
+                  THEN 1 ELSE 0 END
+              ), 0)::INT AS correct_count
+            FROM feedback_record_result
+            WHERE question_id = :question_id
+              AND participant_id = :learner_id
+            """
+        ),
+        {"question_id": question_id, "learner_id": learner_id},
+    ).mappings().first()
+    attempted = int(row["attempted_count"] or 0) if row else 0
+    correct = int(row["correct_count"] or 0) if row else 0
+    return {
+        "attempted_count": attempted,
+        "correct_count": correct,
+        "wrong_count": max(attempted - correct, 0),
+    }
+
+
+def _resolve_composition_match(
+    db: Session,
+    *,
+    composition_id: str,
+    question_id: str,
+    learner_id: str,
+) -> tuple[dict[str, Any] | None, dict[str, int] | None]:
+    comp = db.execute(
+        text(
+            """
+            SELECT composition_id, question_id, question_type, is_visible
+            FROM feedback_compositions
+            WHERE composition_id = :composition_id
+            LIMIT 1
+            """
+        ),
+        {"composition_id": composition_id},
+    ).mappings().first()
+    if not comp or not bool(comp["is_visible"]):
+        return None, None
+    bound_qid = comp["question_id"]
+    if bound_qid and str(bound_qid) != question_id:
+        return None, None
+
+    context = _resolve_runtime_attempt_stats(db, learner_id=learner_id, question_id=question_id)
+    rows = db.execute(
+        text(
+            """
+            SELECT
+              rule_id, rule_order, condition_expression, feedback_mode, feedback_agent_id, slide_mode, is_enabled
+            FROM feedback_composition_rules
+            WHERE composition_id = :composition_id
+            ORDER BY rule_order ASC, rule_id ASC
+            """
+        ),
+        {"composition_id": composition_id},
+    ).mappings().all()
+
+    for row in rows:
+        if not bool(row["is_enabled"]):
+            continue
+        try:
+            if compile_condition_expression(str(row["condition_expression"])).evaluate(context):
+                return dict(row), context
+        except CompositionExprError:
+            continue
+    return None, context
+
+
+def _runtime_option_ids_for_version(db: Session, question_version_id: str) -> list[str]:
+    rows = db.execute(
+        text(
+            """
+            SELECT o.interaction_option_id
+            FROM content_question_interaction i
+            JOIN content_question_interaction_option o ON o.interaction_id = i.interaction_id
+            WHERE i.question_version_id = :qv
+            ORDER BY i.interaction_order ASC, o.option_order ASC
+            """
+        ),
+        {"qv": question_version_id},
+    ).mappings().all()
+    return [str(r["interaction_option_id"]) for r in rows]
+
+
+def _build_question_list_content_blocks(db: Session, version_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+    if not version_ids:
+        return {}
+
+    rows = db.execute(
+        text(
+            """
+            SELECT question_version_id, block_order, block_type, text_content, media_url, alt_text
+            FROM content_question_content_block
+            WHERE question_version_id = ANY(CAST(:version_ids AS TEXT[]))
+            ORDER BY question_version_id ASC, block_order ASC
+            """
+        ),
+        {"version_ids": version_ids},
+    ).mappings().all()
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        item = dict(row)
+        # Compatibility fields for frontends that still render legacy node shape.
+        item["type"] = item.get("block_type")
+        item["content"] = item.get("text_content") or item.get("media_url")
+        if item.get("block_type") == "image":
+            item["image_url"] = item.get("media_url")
+            item["src"] = item.get("media_url")
+        grouped.setdefault(str(row["question_version_id"]), []).append(item)
+    return grouped
+
+
+def _build_question_list_slide_scope(db: Session, version_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+    if not version_ids:
+        return {}
+
+    rows = db.execute(
+        text(
+            """
+            SELECT
+              s.question_version_id,
+              s.slide_scope_id,
+              s.slide_id::text AS slide_id,
+              s.page_start,
+              s.page_end,
+              s.created_by,
+              s.created_at,
+              sl.slide_title,
+              sl.module_id::text AS module_id,
+              m.module_title,
+              m.course_id::text AS course_id,
+              c.course_title
+            FROM content_question_slide_scope s
+            JOIN slide sl ON sl.id = s.slide_id
+            JOIN module m ON m.module_id = sl.module_id
+            JOIN course c ON c.course_id = m.course_id
+            WHERE question_version_id = ANY(CAST(:version_ids AS TEXT[]))
+            ORDER BY s.question_version_id ASC, s.created_at ASC, s.slide_scope_id ASC
+            """
+        ),
+        {"version_ids": version_ids},
+    ).mappings().all()
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        item = dict(row)
+        item["slide"] = {
+            "slide_id": item.get("slide_id"),
+            "slide_title": item.get("slide_title"),
+            "module_id": item.get("module_id"),
+            "module_title": item.get("module_title"),
+            "course_id": item.get("course_id"),
+            "course_title": item.get("course_title"),
+        }
+        grouped.setdefault(str(row["question_version_id"]), []).append(item)
+    return grouped
+
+
+def _build_question_list_interactions(db: Session, version_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+    if not version_ids:
+        return {}
+
+    interaction_rows = db.execute(
+        text(
+            """
+            SELECT
+              interaction_id,
+              question_version_id,
+              interaction_order,
+              interaction_type,
+              prompt_text,
+              is_required,
+              max_score
+            FROM content_question_interaction
+            WHERE question_version_id = ANY(CAST(:version_ids AS TEXT[]))
+            ORDER BY question_version_id ASC, interaction_order ASC
+            """
+        ),
+        {"version_ids": version_ids},
+    ).mappings().all()
+
+    interaction_ids = [str(r["interaction_id"]) for r in interaction_rows]
+    options_by_interaction: dict[str, list[dict[str, Any]]] = {}
+    if interaction_ids:
+        option_rows = db.execute(
+            text(
+                """
+                SELECT
+                  interaction_option_id,
+                  interaction_id,
+                  option_order,
+                  option_value,
+                  option_label,
+                  is_correct
+                FROM content_question_interaction_option
+                WHERE interaction_id = ANY(CAST(:interaction_ids AS TEXT[]))
+                ORDER BY interaction_id ASC, option_order ASC
+                """
+            ),
+            {"interaction_ids": interaction_ids},
+        ).mappings().all()
+        for row in option_rows:
+            item = dict(row)
+            # Frontend compatibility aliases
+            item["option_text"] = item.get("option_label")
+            item["text"] = item.get("option_label") or item.get("option_value")
+            item["label"] = item.get("option_label")
+            item["correct"] = item.get("is_correct")
+            options_by_interaction.setdefault(str(row["interaction_id"]), []).append(item)
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in interaction_rows:
+        item = dict(row)
+        opts = options_by_interaction.get(str(row["interaction_id"]), [])
+        item["options"] = opts
+        # Additional alias for frontend parsers that expect a different key.
+        item["interaction_options"] = opts
+        grouped.setdefault(str(row["question_version_id"]), []).append(item)
+    return grouped
+
+
+def _parse_slide_uuid(value: str) -> UUID:
+    try:
+        return UUID(value)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid slide_id UUID: {value}") from e
+
+
+def _validate_slide_scope(db: Session, scopes: list[SlideScopeIn]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for scope in scopes:
+        slide_uuid = _parse_slide_uuid(scope.slide_id)
+        exists = db.execute(text("SELECT 1 FROM slide WHERE id = :sid LIMIT 1"), {"sid": slide_uuid}).scalar()
+        if not exists:
+            raise HTTPException(status_code=400, detail=f"slide_id not found: {scope.slide_id}")
+        normalized.append(
+            {
+                "slide_id": slide_uuid,
+                "page_start": scope.page_start,
+                "page_end": scope.page_end,
+            }
+        )
+    return normalized
+
+
+def _ensure_question_embedding_columns(db: Session) -> None:
+    db.execute(
+        text(
+            """
+            ALTER TABLE content_question_version
+            ADD COLUMN IF NOT EXISTS question_vector DOUBLE PRECISION[],
+            ADD COLUMN IF NOT EXISTS question_answer_vector DOUBLE PRECISION[];
+            """
+        )
+    )
+
+
+def _build_question_embedding_text(payload: QuestionCreateRequest | QuestionVersionCreateRequest) -> str:
+    lines: list[str] = []
+    for block in payload.content_blocks:
+        if block.block_type == "image":
+            content = (block.alt_text or block.media_url or "").strip()
+        else:
+            content = (block.text_content or block.media_url or "").strip()
+        if content:
+            lines.append(content)
+    for interaction in sorted(payload.interactions, key=lambda x: x.interaction_order):
+        prompt = (interaction.prompt_text or "").strip()
+        if prompt:
+            lines.append(prompt)
+        if interaction.options:
+            for opt in sorted(interaction.options, key=lambda x: x.option_order):
+                value = (opt.option_label or opt.option_value or "").strip()
+                if value:
+                    lines.append(f"Option {opt.option_order}: {value}")
+    return "\n".join(lines).strip()
+
+
+def _build_correct_answer_text(payload: QuestionCreateRequest | QuestionVersionCreateRequest) -> str:
+    answers: list[str] = []
+    for interaction in payload.interactions:
+        correct = [
+            (opt.option_label or opt.option_value or "").strip()
+            for opt in sorted(interaction.options, key=lambda x: x.option_order)
+            if opt.is_correct and (opt.option_label or opt.option_value)
+        ]
+        if correct:
+            answers.append("; ".join(correct))
+    return "\n".join(answers).strip()
+
+
+def _create_question_vectors(
+    payload: QuestionCreateRequest | QuestionVersionCreateRequest,
+) -> tuple[list[float] | None, list[float] | None]:
+    question_text = _build_question_embedding_text(payload)
+    if not question_text:
+        raise HTTPException(status_code=400, detail="question content is empty; cannot create vectors")
+    correct_answer_text = _build_correct_answer_text(payload)
+    question_with_answer_text = (
+        f"{question_text}\n\nCorrect answer:\n{correct_answer_text}" if correct_answer_text else question_text
+    )
+
+    # Retrieval vectors are type-specific:
+    # - free_text/essay: use question vector only
+    # - single_choice: use question + correct answer vector only
+    # - fallback for other types: question vector only
+    inputs: list[str] = []
+    use_question_vector = False
+    use_question_answer_vector = False
+    if payload.question_type in {"free_text", "essay"}:
+        inputs = [question_text]
+        use_question_vector = True
+    elif payload.question_type == "single_choice":
+        inputs = [question_with_answer_text]
+        use_question_answer_vector = True
+    else:
+        inputs = [question_text]
+        use_question_vector = True
+
+    settings = get_settings()
+    client = OpenAI(
+        api_key=settings.openai_api_key,
+        organization=settings.openai_api_org,
+        project=settings.openai_api_proj,
+    )
+    try:
+        response = client.embeddings.create(
+            model="text-embedding-3-small",
+            input=inputs,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"failed to create question vectors: {e}") from e
+
+    vectors = [list(item.embedding) for item in response.data]
+    if not vectors:
+        raise HTTPException(status_code=500, detail="failed to create question vectors: incomplete embedding response")
+    question_vector: list[float] | None = vectors[0] if use_question_vector else None
+    question_answer_vector: list[float] | None = vectors[0] if use_question_answer_vector else None
+    return question_vector, question_answer_vector
+
+
+def _insert_question_version_bundle(
+    db: Session,
+    *,
+    question_id: str,
+    version_no: int,
+    payload: QuestionCreateRequest | QuestionVersionCreateRequest,
+    change_note: str | None,
+    set_as_current: bool = True,
+) -> dict[str, str]:
+    qv_id = _generate_unique_id(db, "content_question_version", "question_version_id", "qv")
+    scoring = payload.scoring_policy
+    _ensure_question_embedding_columns(db)
+    question_vector, question_answer_vector = _create_question_vectors(payload)
+
+    db.execute(
+        text(
+            """
+            INSERT INTO content_question_version (
+              question_version_id, question_id, version_no, question_type, title, change_note,
+              score_maximum, score_input_format, score_normalize_to_maximum, score_rounding_mode, score_rounding_step,
+              question_vector, question_answer_vector, created_by, created_at
+            ) VALUES (
+              :question_version_id, :question_id, :version_no, :question_type, :title, :change_note,
+              :score_maximum, :score_input_format, :score_normalize_to_maximum, :score_rounding_mode, :score_rounding_step,
+              :question_vector, :question_answer_vector, :created_by, NOW()
+            )
+            """
+        ),
+        {
+            "question_version_id": qv_id,
+            "question_id": question_id,
+            "version_no": version_no,
+            "question_type": payload.question_type,
+            "title": payload.title,
+            "change_note": change_note,
+            "score_maximum": scoring.score_maximum,
+            "score_input_format": scoring.score_input_format,
+            "score_normalize_to_maximum": scoring.score_normalize_to_maximum,
+            "score_rounding_mode": scoring.score_rounding_mode,
+            "score_rounding_step": scoring.score_rounding_step,
+            "question_vector": question_vector,
+            "question_answer_vector": question_answer_vector,
+            "created_by": payload.created_by,
+        },
+    )
+
+    for idx, block in enumerate(payload.content_blocks, start=1):
+        db.execute(
+            text(
+                """
+                INSERT INTO content_question_content_block (
+                  content_block_id, question_version_id, block_order, block_type, text_content, media_url, alt_text, created_by, created_at
+                ) VALUES (
+                  :content_block_id, :question_version_id, :block_order, :block_type, :text_content, :media_url, :alt_text, :created_by, NOW()
+                )
+                """
+            ),
+            {
+                "content_block_id": _generate_unique_id(db, "content_question_content_block", "content_block_id", "qb"),
+                "question_version_id": qv_id,
+                "block_order": idx,
+                "block_type": block.block_type,
+                "text_content": block.text_content,
+                "media_url": block.media_url,
+                "alt_text": block.alt_text,
+                "created_by": payload.created_by,
+            },
+        )
+
+    interaction_id_map: dict[int, str] = {}
+    for interaction in sorted(payload.interactions, key=lambda x: x.interaction_order):
+        interaction_id = _generate_unique_id(db, "content_question_interaction", "interaction_id", "qi")
+        interaction_id_map[interaction.interaction_order] = interaction_id
+        db.execute(
+            text(
+                """
+                INSERT INTO content_question_interaction (
+                  interaction_id, question_version_id, interaction_order, interaction_type, prompt_text, is_required, max_score, created_by, created_at
+                ) VALUES (
+                  :interaction_id, :question_version_id, :interaction_order, :interaction_type, :prompt_text, :is_required, :max_score, :created_by, NOW()
+                )
+                """
+            ),
+            {
+                "interaction_id": interaction_id,
+                "question_version_id": qv_id,
+                "interaction_order": interaction.interaction_order,
+                "interaction_type": interaction.interaction_type,
+                "prompt_text": interaction.prompt_text,
+                "is_required": interaction.is_required,
+                "max_score": interaction.max_score,
+                "created_by": payload.created_by,
+            },
+        )
+
+        for opt in sorted(interaction.options, key=lambda x: x.option_order):
+            db.execute(
+                text(
+                    """
+                    INSERT INTO content_question_interaction_option (
+                      interaction_option_id, interaction_id, option_order, option_value, option_label, is_correct, created_by, created_at
+                    ) VALUES (
+                      :interaction_option_id, :interaction_id, :option_order, :option_value, :option_label, :is_correct, :created_by, NOW()
+                    )
+                    """
+                ),
+                {
+                    "interaction_option_id": _generate_unique_id(db, "content_question_interaction_option", "interaction_option_id", "qo"),
+                    "interaction_id": interaction_id,
+                    "option_order": opt.option_order,
+                    "option_value": opt.option_value,
+                    "option_label": opt.option_label,
+                    "is_correct": opt.is_correct,
+                    "created_by": payload.created_by,
+                },
+            )
+
+    slide_scopes = _validate_slide_scope(db, payload.slide_scope)
+    for scope in slide_scopes:
+        db.execute(
+            text(
+                """
+                INSERT INTO content_question_slide_scope (
+                  slide_scope_id, question_version_id, slide_id, page_start, page_end, created_by, created_at
+                ) VALUES (
+                  :slide_scope_id, :question_version_id, :slide_id, :page_start, :page_end, :created_by, NOW()
+                )
+                """
+            ),
+            {
+                "slide_scope_id": _generate_unique_id(db, "content_question_slide_scope", "slide_scope_id", "qs"),
+                "question_version_id": qv_id,
+                "slide_id": scope["slide_id"],
+                "page_start": scope["page_start"],
+                "page_end": scope["page_end"],
+                "created_by": payload.created_by,
+            },
+        )
+
+    if set_as_current:
+        db.execute(
+            text("UPDATE content_question SET current_version_id = :qv WHERE question_id = :qid"),
+            {"qv": qv_id, "qid": question_id},
+        )
+
+    return {"question_version_id": qv_id, "interaction_id": interaction_id_map.get(1)}
+
+
+def _copy_feedback_links_from_previous(db: Session, *, source_qv_id: str, target_qv_id: str, created_by: str) -> int:
+    # Copying target references safely across versions requires entity remapping. For now only clone question_version-level links.
+    rows = db.execute(
+        text(
+            """
+            SELECT agent_id, target_entity_type, target_entity_id, priority, static_feedback_text, structured_feedback_text, is_visible
+            FROM feedback_link
+            WHERE question_version_id = :source_qv_id AND is_visible = TRUE AND target_entity_type = 'question_version'
+            """
+        ),
+        {"source_qv_id": source_qv_id},
+    ).mappings().all()
+    count = 0
+    for row in rows:
+        _insert_feedback_link(
+            db,
+            question_version_id=target_qv_id,
+            agent_id=row["agent_id"],
+            target_entity_type="question_version",
+            target_entity_id=target_qv_id,
+            priority=row["priority"],
+            static_feedback_text=row["static_feedback_text"],
+            structured_feedback_text=row["structured_feedback_text"],
+            created_by=created_by,
+        )
+        count += 1
+    return count
+
+
+@router.post("/questions")
+def create_semantic_question(payload: QuestionCreateRequest, db: Session = Depends(get_db)):
+    if not _user_exists(db, payload.created_by):
+        raise HTTPException(status_code=400, detail="created_by user_id not found")
+
+    try:
+        question_id = _generate_unique_id(db, "content_question", "question_id", "qn")
+        db.execute(
+            text(
+                """
+                INSERT INTO content_question (question_id, current_version_id, access_scope, is_visible, created_by, created_at)
+                VALUES (:question_id, NULL, :access_scope, TRUE, :created_by, NOW())
+                """
+            ),
+            {"question_id": question_id, "access_scope": payload.access_scope, "created_by": payload.created_by},
+        )
+        version_bundle = _insert_question_version_bundle(
+            db,
+            question_id=question_id,
+            version_no=1,
+            payload=payload,
+            change_note="Initial version",
+            set_as_current=True,
+        )
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+    detail = get_semantic_question_version_detail(db, version_bundle["question_version_id"])
+    return {
+        "ok": True,
+        "question_id": question_id,
+        "current_version_id": version_bundle["question_version_id"],
+        "version_no": 1,
+        "item": detail,
+    }
+
+
+@router.get("/questions")
+def list_user_semantic_questions(
+    user_id: str = Query(..., min_length=16, max_length=16),
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    question_type: Optional[QuestionType] = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    where = ["q.created_by = :user_id", "q.is_visible = TRUE"]
+    params: dict[str, Any] = {"user_id": user_id, "limit": limit, "offset": offset}
+    if question_type:
+        where.append("qv.question_type = :question_type")
+        params["question_type"] = question_type
+    where_sql = " AND ".join(where)
+
+    rows = db.execute(
+        text(
+            f"""
+            SELECT q.question_id, q.current_version_id, q.access_scope, q.is_visible, q.created_by, q.created_at,
+                   qv.question_type, qv.version_no, qv.title,
+                   qv.score_maximum, qv.score_rounding_mode, qv.score_rounding_step
+            FROM content_question q
+            JOIN content_question_version qv ON qv.question_version_id = q.current_version_id
+            WHERE {where_sql}
+            ORDER BY q.created_at DESC, q.question_id ASC
+            LIMIT :limit OFFSET :offset
+            """
+        ),
+        params,
+    ).mappings().all()
+
+    total_params = {k: v for k, v in params.items() if k in {"user_id", "question_type"}}
+    total = db.execute(
+        text(
+            f"""
+            SELECT COUNT(*)::int
+            FROM content_question q
+            JOIN content_question_version qv ON qv.question_version_id = q.current_version_id
+            WHERE {where_sql}
+            """
+        ),
+        total_params,
+    ).scalar() or 0
+
+    items = [dict(r) for r in rows]
+    content_block_map = _build_question_list_content_blocks(
+        db,
+        [str(item.get("current_version_id")) for item in items if item.get("current_version_id")],
+    )
+    version_ids = [str(item.get("current_version_id")) for item in items if item.get("current_version_id")]
+    slide_scope_map = _build_question_list_slide_scope(db, version_ids)
+    interactions_map = _build_question_list_interactions(db, version_ids)
+    for item in items:
+        blocks = content_block_map.get(str(item.get("current_version_id")), [])
+        slide_scope = slide_scope_map.get(str(item.get("current_version_id")), [])
+        interactions = interactions_map.get(str(item.get("current_version_id")), [])
+        item.update(
+            {
+                "content_blocks": blocks,
+                "content_block_count": len(blocks),
+                "slide_scope": slide_scope,
+                "slide_ids": [str(s.get("slide_id")) for s in slide_scope if s.get("slide_id")],
+                "interactions": interactions,
+                "interaction_options": interactions[0].get("options", []) if interactions else [],
+            }
+        )
+
+    return {
+        "ok": True,
+        "user_id": user_id,
+        "total": int(total),
+        "limit": limit,
+        "offset": offset,
+        "items": items,
+    }
+
+
+@router.get("/questions/public")
+def list_public_semantic_questions(
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    question_type: Optional[QuestionType] = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    where = ["q.access_scope = 'public'", "q.is_visible = TRUE"]
+    params: dict[str, Any] = {"limit": limit, "offset": offset}
+    if question_type:
+        where.append("qv.question_type = :question_type")
+        params["question_type"] = question_type
+    where_sql = " AND ".join(where)
+    rows = db.execute(
+        text(
+            f"""
+            SELECT q.question_id, q.current_version_id, q.access_scope, q.is_visible, q.created_by, q.created_at,
+                   qv.question_type, qv.version_no, qv.title,
+                   qv.score_maximum, qv.score_rounding_mode, qv.score_rounding_step
+            FROM content_question q
+            JOIN content_question_version qv ON qv.question_version_id = q.current_version_id
+            WHERE {where_sql}
+            ORDER BY q.created_at DESC, q.question_id ASC
+            LIMIT :limit OFFSET :offset
+            """
+        ),
+        params,
+    ).mappings().all()
+    total_params = {k: v for k, v in params.items() if k == "question_type"}
+    total = db.execute(
+        text(
+            f"""
+            SELECT COUNT(*)::int
+            FROM content_question q
+            JOIN content_question_version qv ON qv.question_version_id = q.current_version_id
+            WHERE {where_sql}
+            """
+        ),
+        total_params,
+    ).scalar() or 0
+    items = [dict(r) for r in rows]
+    content_block_map = _build_question_list_content_blocks(
+        db,
+        [str(item.get("current_version_id")) for item in items if item.get("current_version_id")],
+    )
+    version_ids = [str(item.get("current_version_id")) for item in items if item.get("current_version_id")]
+    slide_scope_map = _build_question_list_slide_scope(db, version_ids)
+    interactions_map = _build_question_list_interactions(db, version_ids)
+    for item in items:
+        blocks = content_block_map.get(str(item.get("current_version_id")), [])
+        slide_scope = slide_scope_map.get(str(item.get("current_version_id")), [])
+        interactions = interactions_map.get(str(item.get("current_version_id")), [])
+        item.update(
+            {
+                "content_blocks": blocks,
+                "content_block_count": len(blocks),
+                "slide_scope": slide_scope,
+                "slide_ids": [str(s.get("slide_id")) for s in slide_scope if s.get("slide_id")],
+                "interactions": interactions,
+                "interaction_options": interactions[0].get("options", []) if interactions else [],
+            }
+        )
+
+    return {"ok": True, "total": int(total), "limit": limit, "offset": offset, "items": items}
+
+
+@router.post("/questions/batch/publish")
+def batch_publish_semantic_questions(payload: BatchQuestionIdsRequest, db: Session = Depends(get_db)):
+    _require_admin_user(db, payload.updated_by)
+    requested_ids = list(dict.fromkeys(payload.question_ids))
+    question_map = _question_rows_map(db, requested_ids)
+    success_ids: list[str] = []
+    failed: list[dict[str, str]] = []
+
+    for question_id in requested_ids:
+        if question_id not in question_map:
+            failed.append({"question_id": question_id, "code": "NOT_FOUND", "message": "question not found"})
+            continue
+        try:
+            db.execute(
+                text(
+                    """
+                    UPDATE content_question
+                    SET access_scope = 'public'
+                    WHERE question_id = :question_id
+                    """
+                ),
+                {"question_id": question_id},
+            )
+            db.commit()
+            success_ids.append(question_id)
+        except Exception as e:
+            db.rollback()
+            failed.append({"question_id": question_id, "code": "CONFLICT", "message": str(e)})
+
+    return _batch_result(requested_ids, success_ids, failed)
+
+
+@router.post("/questions/batch/unpublish")
+def batch_unpublish_semantic_questions(payload: BatchQuestionIdsRequest, db: Session = Depends(get_db)):
+    _require_admin_user(db, payload.updated_by)
+    requested_ids = list(dict.fromkeys(payload.question_ids))
+    question_map = _question_rows_map(db, requested_ids)
+    success_ids: list[str] = []
+    failed: list[dict[str, str]] = []
+
+    for question_id in requested_ids:
+        if question_id not in question_map:
+            failed.append({"question_id": question_id, "code": "NOT_FOUND", "message": "question not found"})
+            continue
+        try:
+            db.execute(
+                text(
+                    """
+                    UPDATE content_question
+                    SET access_scope = 'private'
+                    WHERE question_id = :question_id
+                    """
+                ),
+                {"question_id": question_id},
+            )
+            db.commit()
+            success_ids.append(question_id)
+        except Exception as e:
+            db.rollback()
+            failed.append({"question_id": question_id, "code": "CONFLICT", "message": str(e)})
+
+    return _batch_result(requested_ids, success_ids, failed)
+
+
+@router.post("/questions/batch/delete")
+def batch_delete_semantic_questions(payload: BatchQuestionIdsRequest, db: Session = Depends(get_db)):
+    _require_admin_user(db, payload.updated_by)
+    requested_ids = list(dict.fromkeys(payload.question_ids))
+    question_map = _question_rows_map(db, requested_ids)
+    success_ids: list[str] = []
+    failed: list[dict[str, str]] = []
+
+    for question_id in requested_ids:
+        if question_id not in question_map:
+            failed.append({"question_id": question_id, "code": "NOT_FOUND", "message": "question not found"})
+            continue
+        try:
+            db.execute(
+                text(
+                    """
+                    UPDATE content_question
+                    SET is_visible = FALSE
+                    WHERE question_id = :question_id
+                    """
+                ),
+                {"question_id": question_id},
+            )
+            db.commit()
+            success_ids.append(question_id)
+        except Exception as e:
+            db.rollback()
+            failed.append({"question_id": question_id, "code": "CONFLICT", "message": str(e)})
+
+    return _batch_result(requested_ids, success_ids, failed)
+
+
+@router.post("/questions/batch/attach-feedback-agent")
+def batch_attach_feedback_agent_to_questions(payload: BatchAttachFeedbackAgentRequest, db: Session = Depends(get_db)):
+    _require_admin_user(db, payload.updated_by)
+    requested_ids = list(dict.fromkeys(payload.question_ids))
+    question_map = _question_rows_map(db, requested_ids)
+    success_ids: list[str] = []
+    failed: list[dict[str, str]] = []
+    queued_feedback_generation: list[dict[str, str]] = []
+    enqueue_failed: list[dict[str, str]] = []
+
+    agent = _get_feedback_agent(db, payload.agent_id)
+    if not agent or not agent.get("is_visible", True):
+        return _batch_result(
+            requested_ids,
+            [],
+            [{"question_id": qid, "code": "NOT_FOUND", "message": "feedback agent not found"} for qid in requested_ids],
+        )
+
+    agent_role = str(agent.get("role") or "")
+    static_feedback_text = (payload.static_feedback_text or "").strip() or None
+
+    for question_id in requested_ids:
+        question = question_map.get(question_id)
+        if not question:
+            failed.append({"question_id": question_id, "code": "NOT_FOUND", "message": "question not found"})
+            continue
+
+        current_version_id = str(question.get("current_version_id") or "")
+        if not current_version_id:
+            failed.append({"question_id": question_id, "code": "CONFLICT", "message": "question has no current version"})
+            continue
+
+        try:
+            attached_link_id: str | None = None
+            existing_link_id = _find_visible_question_version_link(
+                db, question_version_id=current_version_id, agent_id=payload.agent_id
+            )
+            if existing_link_id:
+                # Idempotent attach: reuse existing link and optionally update static text/priority.
+                update_params = {
+                    "feedback_link_id": existing_link_id,
+                    "priority": payload.priority,
+                    "static_feedback_text": static_feedback_text,
+                }
+                db.execute(
+                    text(
+                        """
+                        UPDATE feedback_link
+                        SET priority = :priority,
+                            static_feedback_text = CASE
+                                WHEN :static_feedback_text IS NOT NULL THEN :static_feedback_text
+                                ELSE static_feedback_text
+                            END
+                        WHERE feedback_link_id = :feedback_link_id
+                        """
+                    ),
+                    update_params,
+                )
+                attached_link_id = existing_link_id
+            else:
+                attached_link_id = _insert_feedback_link(
+                    db,
+                    question_version_id=current_version_id,
+                    agent_id=payload.agent_id,
+                    target_entity_type="question_version",
+                    target_entity_id=current_version_id,
+                    priority=payload.priority,
+                    static_feedback_text=static_feedback_text,
+                    structured_feedback_text=None,
+                    created_by=payload.updated_by,
+                )
+            db.commit()
+            success_ids.append(question_id)
+            if agent_role == "ai":
+                try:
+                    rq_job_id = slide_batch_job_manager.enqueue_callable(
+                        generate_static_feedback_with_version_snapshot_for_feedback_link,
+                        str(attached_link_id),
+                        created_by=payload.updated_by,
+                    )
+                    set_feedback_link_generation_job_id(str(attached_link_id), str(rq_job_id))
+                    queued_feedback_generation.append(
+                        {
+                            "question_id": question_id,
+                            "feedback_link_id": str(attached_link_id),
+                            "job_id": str(rq_job_id),
+                        }
+                    )
+                except Exception as enqueue_err:
+                    enqueue_failed.append(
+                        {
+                            "question_id": question_id,
+                            "code": "JOB_ENQUEUE_FAILED",
+                            "message": str(enqueue_err),
+                        }
+                    )
+        except Exception as e:
+            db.rollback()
+            failed.append({"question_id": question_id, "code": "CONFLICT", "message": str(e)})
+
+    result = _batch_result(requested_ids, success_ids, failed)
+    if queued_feedback_generation:
+        result["queued_feedback_generation"] = queued_feedback_generation
+    if enqueue_failed:
+        result["enqueue_failed"] = enqueue_failed
+    return result
+
+
+@router.get("/questions/{question_id}/attached-agents")
+def list_attached_agents_for_question(question_id: str, db: Session = Depends(get_db)):
+    question = _question_row(db, question_id)
+    if not question:
+        raise HTTPException(status_code=404, detail="question not found")
+    current_version_id = str(question.get("current_version_id") or "")
+    if not current_version_id:
+        raise HTTPException(status_code=409, detail="question has no current version")
+
+    rows = db.execute(
+        text(
+            """
+            SELECT
+              fl.feedback_link_id,
+              fl.agent_id,
+              fl.target_entity_type,
+              fl.target_entity_id,
+              fl.static_feedback_text,
+              fl.priority,
+              fl.created_at,
+              fa.title AS agent_title,
+              fa.role AS agent_role,
+              fa.is_structured
+            FROM feedback_link fl
+            JOIN feedback_agent fa ON fa.agent_id = fl.agent_id
+            WHERE fl.question_version_id = :question_version_id
+              AND fl.is_visible = TRUE
+              AND fa.is_visible = TRUE
+            ORDER BY fl.created_at ASC
+            """
+        ),
+        {"question_version_id": current_version_id},
+    ).mappings().all()
+
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        agent_id = str(row["agent_id"])
+        item = grouped.get(agent_id)
+        if item is None:
+            item = {
+                "agent_id": agent_id,
+                "title": row["agent_title"],
+                "role": row["agent_role"],
+                "is_structured": row["is_structured"],
+                "question_feedback_link_id": None,
+                "question_feedback_text": None,
+                "option_feedback_count": 0,
+                "link_count": 0,
+            }
+            grouped[agent_id] = item
+        item["link_count"] += 1
+        if row["target_entity_type"] == "question_version":
+            item["question_feedback_link_id"] = row["feedback_link_id"]
+            item["question_feedback_text"] = row["static_feedback_text"]
+        elif row["target_entity_type"] == "interaction_option":
+            item["option_feedback_count"] += 1
+
+    items = list(grouped.values())
+    for item in items:
+        if item.get("role") == "ai" and item.get("question_feedback_link_id"):
+            generation = get_feedback_link_generation_status(str(item["question_feedback_link_id"]))
+            if generation:
+                item["generation"] = generation
+                item["generation_status"] = generation.get("status")
+                if generation.get("error"):
+                    item["generation_error"] = generation.get("error")
+
+    return {
+        "ok": True,
+        "question_id": question_id,
+        "question_version_id": current_version_id,
+        "count": len(items),
+        "items": items,
+    }
+
+
+@router.post("/questions/{question_id}/attached-agents")
+def attach_agent_to_single_question(question_id: str, payload: SingleAttachAgentRequest, db: Session = Depends(get_db)):
+    _require_admin_user(db, payload.updated_by)
+    question = _question_row(db, question_id)
+    if not question:
+        raise HTTPException(status_code=404, detail="question not found")
+    current_version_id = str(question.get("current_version_id") or "")
+    if not current_version_id:
+        raise HTTPException(status_code=409, detail="question has no current version")
+
+    agent = _get_feedback_agent(db, payload.agent_id)
+    if not agent or not agent.get("is_visible", True):
+        raise HTTPException(status_code=404, detail="feedback agent not found")
+
+    existing_link_id = _find_visible_question_version_link(
+        db, question_version_id=current_version_id, agent_id=payload.agent_id
+    )
+    attached_link_id = existing_link_id
+    if not existing_link_id:
+        attached_link_id = _insert_feedback_link(
+            db,
+            question_version_id=current_version_id,
+            agent_id=payload.agent_id,
+            target_entity_type="question_version",
+            target_entity_id=current_version_id,
+            priority=100,
+            static_feedback_text=None,
+            structured_feedback_text=None,
+            created_by=payload.updated_by,
+        )
+        db.commit()
+
+    queued_job = None
+    if str(agent.get("role") or "") == "ai":
+        try:
+            rq_job_id = slide_batch_job_manager.enqueue_callable(
+                generate_static_feedback_with_version_snapshot_for_feedback_link,
+                str(attached_link_id),
+                created_by=payload.updated_by,
+            )
+            set_feedback_link_generation_job_id(str(attached_link_id), str(rq_job_id))
+            queued_job = {"job_id": str(rq_job_id), "feedback_link_id": str(attached_link_id)}
+        except Exception as enqueue_err:
+            queued_job = {"error": str(enqueue_err), "feedback_link_id": str(attached_link_id)}
+
+    return {
+        "ok": True,
+        "question_id": question_id,
+        "question_version_id": current_version_id,
+        "agent_id": payload.agent_id,
+        "feedback_link_id": str(attached_link_id),
+        "already_attached": bool(existing_link_id),
+        "queued_feedback_generation": queued_job,
+    }
+
+
+@router.post("/questions/{question_id}/attached-agents/{agent_id}/dry-run")
+def dry_run_attached_agent_feedback(
+    question_id: str,
+    agent_id: str,
+    payload: Optional[AttachedAgentDryRunRequest] = None,
+    db: Session = Depends(get_db),
+):
+    dry_run = True if payload is None else bool(payload.dry_run)
+    updated_by = (payload.updated_by if payload else None) or None
+    if updated_by:
+        _require_admin_user(db, updated_by)
+    if not dry_run and not updated_by:
+        raise HTTPException(status_code=403, detail="updatedBy is required when dryRun is false")
+    question = _question_row(db, question_id)
+    if not question:
+        raise HTTPException(status_code=404, detail="question not found")
+    current_version_id = str(question.get("current_version_id") or "")
+    if not current_version_id:
+        raise HTTPException(status_code=409, detail="question has no current version")
+
+    agent = _get_feedback_agent(db, agent_id)
+    if not agent or not agent.get("is_visible", True):
+        raise HTTPException(status_code=404, detail="feedback agent not found")
+    if str(agent.get("role") or "") != "ai":
+        raise HTTPException(status_code=400, detail="dry-run generation is only supported for ai agents")
+
+    feedback_link_id = _find_visible_question_version_link(
+        db, question_version_id=current_version_id, agent_id=agent_id
+    ) or _find_any_visible_question_link(
+        db, question_version_id=current_version_id, agent_id=agent_id
+    )
+    if not feedback_link_id:
+        raise HTTPException(status_code=404, detail="agent is not attached to this question")
+
+    result = generate_static_feedback_for_feedback_link(
+        str(feedback_link_id),
+        persist=not dry_run,
+        enforce_ai_role=not dry_run,
+        input_values=(payload.input_values if payload else None),
+        include_debug=True,
+    )
+
+    created_version: dict[str, Any] | None = None
+    if not dry_run and result.get("ok") and not result.get("skipped"):
+        _ensure_static_feedback_version_schema(db)
+        latest_before_update = _get_latest_static_feedback_version(db, question_id=question_id, agent_id=agent_id)
+        latest_version_id = str(latest_before_update["version_id"]) if latest_before_update else None
+        current_q_text, current_option_feedback = _read_current_feedback_link_state(
+            db, question_version_id=current_version_id, agent_id=agent_id
+        )
+        created_version = _create_static_feedback_version_snapshot(
+            db,
+            question_id=question_id,
+            question_version_id=current_version_id,
+            agent_id=agent_id,
+            created_by=str(updated_by),
+            question_feedback_text=current_q_text,
+            option_feedback=current_option_feedback,
+            parent_version_id=latest_version_id,
+            restored_from_version_id=None,
+        )
+        db.commit()
+
+    result.update(
+        {
+            "question_id": question_id,
+            "question_version_id": current_version_id,
+            "agent_id": agent_id,
+            "dry_run": dry_run,
+        }
+    )
+    if created_version:
+        result["version_id"] = created_version["version_id"]
+        result["revision_no"] = int(created_version["revision_no"])
+        result["version_created_at"] = _to_utc_iso_z(created_version.get("created_at"))
+    return result
+
+
+@router.delete("/questions/{question_id}/attached-agents/{agent_id}")
+def detach_agent_from_single_question(
+    question_id: str,
+    agent_id: str,
+    updated_by: str = Query(..., min_length=16, max_length=16),
+    db: Session = Depends(get_db),
+):
+    _require_admin_user(db, updated_by)
+    question = _question_row(db, question_id)
+    if not question:
+        raise HTTPException(status_code=404, detail="question not found")
+    current_version_id = str(question.get("current_version_id") or "")
+    if not current_version_id:
+        raise HTTPException(status_code=409, detail="question has no current version")
+
+    db.execute(
+        text(
+            """
+            UPDATE feedback_link
+            SET is_visible = FALSE
+            WHERE question_version_id = :question_version_id
+              AND agent_id = :agent_id
+              AND is_visible = TRUE
+            """
+        ),
+        {"question_version_id": current_version_id, "agent_id": agent_id},
+    )
+    db.commit()
+    return {
+        "ok": True,
+        "question_id": question_id,
+        "question_version_id": current_version_id,
+        "agent_id": agent_id,
+        "detached": True,
+    }
+
+
+@router.patch("/questions/{question_id}/attached-agents/{agent_id}/static-feedback")
+def update_single_question_static_feedback(
+    question_id: str,
+    agent_id: str,
+    payload: StaticFeedbackUpdateRequest,
+    db: Session = Depends(get_db),
+):
+    _require_admin_user(db, payload.updated_by)
+    _ensure_static_feedback_version_schema(db)
+    question = _question_row(db, question_id)
+    if not question:
+        raise HTTPException(status_code=404, detail="question not found")
+    current_version_id = str(question.get("current_version_id") or "")
+    if not current_version_id:
+        raise HTTPException(status_code=409, detail="question has no current version")
+
+    agent = _get_feedback_agent(db, agent_id)
+    if not agent or not agent.get("is_visible", True):
+        raise HTTPException(status_code=404, detail="feedback agent not found")
+    latest_before_update = _get_latest_static_feedback_version(db, question_id=question_id, agent_id=agent_id)
+    latest_version_id = str(latest_before_update["version_id"]) if latest_before_update else None
+    if payload.if_match_version_id and payload.if_match_version_id != latest_version_id:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "VERSION_CONFLICT",
+                "message": "if_match_version_id does not match latest version",
+                "latest_version_id": latest_version_id,
+                "latest_revision_no": int(latest_before_update["revision_no"]) if latest_before_update else None,
+                "latest_created_at": _to_utc_iso_z(latest_before_update.get("created_at")) if latest_before_update else None,
+            },
+        )
+
+    question_feedback_text = (
+        (payload.question_feedback_text or "").strip() or (payload.static_feedback_text or "").strip() or ""
+    )
+    option_feedback = payload.option_feedback or []
+    option_map = _interaction_options_for_question_version(db, current_version_id)
+    actual_option_count = len(option_map)
+    has_options = actual_option_count > 0
+
+    if payload.expected_option_count is not None and int(payload.expected_option_count) != int(actual_option_count):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"option_count_mismatch: expected_option_count={payload.expected_option_count}, "
+                f"actual_option_count={actual_option_count}"
+            ),
+        )
+
+    if not question_feedback_text and not option_feedback:
+        raise HTTPException(status_code=400, detail="question_feedback_text or option_feedback is required")
+    if not has_options and option_feedback:
+        raise HTTPException(status_code=400, detail="option_feedback is not allowed for questions without options")
+    if not has_options and not question_feedback_text:
+        raise HTTPException(status_code=400, detail="question_feedback_text is required when question has no options")
+    if has_options and len(option_feedback) != actual_option_count:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"option_feedback_count_mismatch: expected={actual_option_count}, "
+                f"received={len(option_feedback)}"
+            ),
+        )
+
+    option_ids_seen: set[str] = set()
+    invalid_option_ids: list[str] = []
+    duplicate_option_ids: list[str] = []
+    for opt in option_feedback:
+        oid = str(opt.interaction_option_id)
+        if oid in option_ids_seen:
+            duplicate_option_ids.append(oid)
+            continue
+        option_ids_seen.add(oid)
+        if oid not in option_map:
+            invalid_option_ids.append(oid)
+    if invalid_option_ids:
+        raise HTTPException(status_code=400, detail=f"invalid interaction_option_id(s): {', '.join(invalid_option_ids)}")
+    if duplicate_option_ids:
+        raise HTTPException(status_code=400, detail=f"duplicate interaction_option_id(s): {', '.join(duplicate_option_ids)}")
+    if has_options:
+        missing_option_ids = sorted(set(option_map.keys()) - option_ids_seen)
+        if missing_option_ids:
+            raise HTTPException(
+                status_code=400,
+                detail=f"missing interaction_option_id(s): {', '.join(missing_option_ids)}",
+            )
+
+    feedback_link_id = None
+    if question_feedback_text:
+        existing_link_id = _find_visible_feedback_link_by_target(
+            db,
+            question_version_id=current_version_id,
+            agent_id=agent_id,
+            target_entity_type="question_version",
+            target_entity_id=current_version_id,
+        )
+        if existing_link_id:
+            db.execute(
+                text(
+                    """
+                    UPDATE feedback_link
+                    SET static_feedback_text = :static_feedback_text
+                    WHERE feedback_link_id = :feedback_link_id
+                    """
+                ),
+                {"feedback_link_id": existing_link_id, "static_feedback_text": question_feedback_text},
+            )
+            feedback_link_id = existing_link_id
+        else:
+            feedback_link_id = _insert_feedback_link(
+                db,
+                question_version_id=current_version_id,
+                agent_id=agent_id,
+                target_entity_type="question_version",
+                target_entity_id=current_version_id,
+                priority=100,
+                static_feedback_text=question_feedback_text,
+                structured_feedback_text=None,
+                created_by=payload.updated_by,
+            )
+
+    updated_option_feedback_count = 0
+    for opt in option_feedback:
+        feedback_text = (opt.feedback_text or "").strip()
+        if not feedback_text:
+            raise HTTPException(status_code=400, detail="option feedback_text is required")
+        existing_opt_link = _find_visible_feedback_link_by_target(
+            db,
+            question_version_id=current_version_id,
+            agent_id=agent_id,
+            target_entity_type="interaction_option",
+            target_entity_id=opt.interaction_option_id,
+        )
+        if existing_opt_link:
+            db.execute(
+                text(
+                    """
+                    UPDATE feedback_link
+                    SET static_feedback_text = :static_feedback_text
+                    WHERE feedback_link_id = :feedback_link_id
+                    """
+                ),
+                {"feedback_link_id": existing_opt_link, "static_feedback_text": feedback_text},
+            )
+        else:
+            _insert_feedback_link(
+                db,
+                question_version_id=current_version_id,
+                agent_id=agent_id,
+                target_entity_type="interaction_option",
+                target_entity_id=opt.interaction_option_id,
+                priority=100,
+                static_feedback_text=feedback_text,
+                structured_feedback_text=None,
+                created_by=payload.updated_by,
+            )
+        updated_option_feedback_count += 1
+
+    db.commit()
+    current_q_text, current_option_feedback = _read_current_feedback_link_state(
+        db, question_version_id=current_version_id, agent_id=agent_id
+    )
+    version = _create_static_feedback_version_snapshot(
+        db,
+        question_id=question_id,
+        question_version_id=current_version_id,
+        agent_id=agent_id,
+        created_by=payload.updated_by,
+        question_feedback_text=current_q_text,
+        option_feedback=current_option_feedback,
+        parent_version_id=latest_version_id,
+        restored_from_version_id=None,
+    )
+    db.commit()
+    return {
+        "ok": True,
+        "question_id": question_id,
+        "question_version_id": current_version_id,
+        "agent_id": agent_id,
+        "feedback_link_id": str(feedback_link_id) if feedback_link_id else None,
+        "question_feedback_text": question_feedback_text or None,
+        "updated_option_feedback_count": updated_option_feedback_count,
+        "actual_option_count": actual_option_count,
+        "version_id": version["version_id"],
+        "revision_no": int(version["revision_no"]),
+        "created_at": _to_utc_iso_z(version.get("created_at")),
+    }
+
+
+@router.get("/questions/{question_id}/attached-agents/{agent_id}/static-feedback/versions")
+def list_static_feedback_versions(question_id: str, agent_id: str, db: Session = Depends(get_db)):
+    _ensure_static_feedback_version_schema(db)
+    question = _question_row(db, question_id)
+    if not question:
+        raise HTTPException(status_code=404, detail="question not found")
+
+    rows = db.execute(
+        text(
+            """
+            SELECT
+              version_id, question_id, question_version_id, agent_id, revision_no,
+              question_feedback_text, parent_version_id, restored_from_version_id,
+              created_by, created_at
+            FROM feedback_static_feedback_version
+            WHERE question_id = :question_id
+              AND agent_id = :agent_id
+            ORDER BY revision_no DESC, created_at DESC
+            """
+        ),
+        {"question_id": question_id, "agent_id": agent_id},
+    ).mappings().all()
+
+    items = []
+    for row in rows:
+        item = dict(row)
+        option_feedback = _get_static_feedback_version_option_feedback(db, str(row["version_id"]))
+        item["option_feedback"] = option_feedback
+        item["created_at"] = _to_utc_iso_z(item.get("created_at"))
+        items.append(item)
+
+    return {"ok": True, "question_id": question_id, "agent_id": agent_id, "count": len(items), "items": items}
+
+
+@router.post("/questions/{question_id}/attached-agents/{agent_id}/static-feedback/versions/{version_id}/restore")
+def restore_static_feedback_version(
+    question_id: str,
+    agent_id: str,
+    version_id: str,
+    payload: StaticFeedbackRestoreRequest,
+    db: Session = Depends(get_db),
+):
+    _require_admin_user(db, payload.updated_by)
+    _ensure_static_feedback_version_schema(db)
+    question = _question_row(db, question_id)
+    if not question:
+        raise HTTPException(status_code=404, detail="question not found")
+    current_version_id = str(question.get("current_version_id") or "")
+    if not current_version_id:
+        raise HTTPException(status_code=409, detail="question has no current version")
+
+    target_version = _get_static_feedback_version_by_id(
+        db, version_id=version_id, question_id=question_id, agent_id=agent_id
+    )
+    if not target_version:
+        raise HTTPException(status_code=404, detail="static feedback version not found")
+
+    latest_before_restore = _get_latest_static_feedback_version(db, question_id=question_id, agent_id=agent_id)
+    latest_version_id = str(latest_before_restore["version_id"]) if latest_before_restore else None
+    if payload.if_match_version_id and payload.if_match_version_id != latest_version_id:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "VERSION_CONFLICT",
+                "message": "if_match_version_id does not match latest version",
+                "latest_version_id": latest_version_id,
+                "latest_revision_no": int(latest_before_restore["revision_no"]) if latest_before_restore else None,
+                "latest_created_at": _to_utc_iso_z(latest_before_restore.get("created_at")) if latest_before_restore else None,
+            },
+        )
+
+    question_feedback_text = (target_version.get("question_feedback_text") or "").strip()
+    option_feedback = _get_static_feedback_version_option_feedback(db, version_id)
+
+    # Restore question-level text.
+    existing_q_link = _find_visible_feedback_link_by_target(
+        db,
+        question_version_id=current_version_id,
+        agent_id=agent_id,
+        target_entity_type="question_version",
+        target_entity_id=current_version_id,
+    )
+    if question_feedback_text:
+        if existing_q_link:
+            db.execute(
+                text(
+                    """
+                    UPDATE feedback_link
+                    SET static_feedback_text = :static_feedback_text
+                    WHERE feedback_link_id = :feedback_link_id
+                    """
+                ),
+                {"feedback_link_id": existing_q_link, "static_feedback_text": question_feedback_text},
+            )
+        else:
+            _insert_feedback_link(
+                db,
+                question_version_id=current_version_id,
+                agent_id=agent_id,
+                target_entity_type="question_version",
+                target_entity_id=current_version_id,
+                priority=100,
+                static_feedback_text=question_feedback_text,
+                structured_feedback_text=None,
+                created_by=payload.updated_by,
+            )
+    elif existing_q_link:
+        db.execute(
+            text("UPDATE feedback_link SET is_visible = FALSE WHERE feedback_link_id = :feedback_link_id"),
+            {"feedback_link_id": existing_q_link},
+        )
+
+    # Restore option-level text.
+    target_option_ids = {str(x["interaction_option_id"]) for x in option_feedback}
+    existing_option_rows = db.execute(
+        text(
+            """
+            SELECT feedback_link_id, target_entity_id
+            FROM feedback_link
+            WHERE question_version_id = :question_version_id
+              AND agent_id = :agent_id
+              AND target_entity_type = 'interaction_option'
+              AND is_visible = TRUE
+            """
+        ),
+        {"question_version_id": current_version_id, "agent_id": agent_id},
+    ).mappings().all()
+    existing_option_link_by_target = {str(r["target_entity_id"]): str(r["feedback_link_id"]) for r in existing_option_rows}
+
+    for item in option_feedback:
+        option_id = str(item["interaction_option_id"])
+        feedback_text = (item["feedback_text"] or "").strip()
+        if not feedback_text:
+            continue
+        existing_link_id = existing_option_link_by_target.get(option_id)
+        if existing_link_id:
+            db.execute(
+                text(
+                    """
+                    UPDATE feedback_link
+                    SET static_feedback_text = :static_feedback_text
+                    WHERE feedback_link_id = :feedback_link_id
+                    """
+                ),
+                {"feedback_link_id": existing_link_id, "static_feedback_text": feedback_text},
+            )
+        else:
+            _insert_feedback_link(
+                db,
+                question_version_id=current_version_id,
+                agent_id=agent_id,
+                target_entity_type="interaction_option",
+                target_entity_id=option_id,
+                priority=100,
+                static_feedback_text=feedback_text,
+                structured_feedback_text=None,
+                created_by=payload.updated_by,
+            )
+
+    obsolete_option_ids = set(existing_option_link_by_target.keys()) - target_option_ids
+    if obsolete_option_ids:
+        db.execute(
+            text(
+                """
+                UPDATE feedback_link
+                SET is_visible = FALSE
+                WHERE question_version_id = :question_version_id
+                  AND agent_id = :agent_id
+                  AND target_entity_type = 'interaction_option'
+                  AND target_entity_id = ANY(CAST(:target_option_ids AS TEXT[]))
+                  AND is_visible = TRUE
+                """
+            ),
+            {
+                "question_version_id": current_version_id,
+                "agent_id": agent_id,
+                "target_option_ids": list(obsolete_option_ids),
+            },
+        )
+
+    db.commit()
+
+    current_q_text, current_option_feedback = _read_current_feedback_link_state(
+        db, question_version_id=current_version_id, agent_id=agent_id
+    )
+    restored_version = _create_static_feedback_version_snapshot(
+        db,
+        question_id=question_id,
+        question_version_id=current_version_id,
+        agent_id=agent_id,
+        created_by=payload.updated_by,
+        question_feedback_text=current_q_text,
+        option_feedback=current_option_feedback,
+        parent_version_id=latest_version_id,
+        restored_from_version_id=version_id,
+    )
+    db.commit()
+
+    return {
+        "ok": True,
+        "question_id": question_id,
+        "question_version_id": current_version_id,
+        "agent_id": agent_id,
+        "restored_from_version_id": version_id,
+        "version_id": restored_version["version_id"],
+        "revision_no": int(restored_version["revision_no"]),
+        "created_at": _to_utc_iso_z(restored_version.get("created_at")),
+        "question_feedback_text": current_q_text,
+        "option_feedback": current_option_feedback,
+    }
+
+
+@router.get("/questions/feedback-generation-jobs/{job_id}")
+def get_question_feedback_generation_job_status(job_id: str, db: Session = Depends(get_db)):
+    # `db` dependency keeps route auth/session behavior consistent with other routes, even if unused.
+    _ = db
+    payload = get_rq_job_status(job_id)
+    return {"ok": payload.get("status") not in {"not_found", "unavailable"}, "job": payload}
+
+
+@router.post("/questions/feedback-generation-jobs/batch-status")
+def batch_get_question_feedback_generation_job_status(payload: BatchJobIdsRequest, db: Session = Depends(get_db)):
+    _ = db
+    requested_ids = list(dict.fromkeys(payload.job_ids))
+    items = [get_rq_job_status(job_id) for job_id in requested_ids]
+    return {
+        "ok": True,
+        "requested_count": len(requested_ids),
+        "items": items,
+    }
+
+
+@router.post("/questions/batch/resolve-current-versions")
+def batch_resolve_question_current_versions(payload: BatchResolveQuestionVersionsRequest, db: Session = Depends(get_db)):
+    requested_ids = list(dict.fromkeys(payload.question_ids))
+    rows = db.execute(
+        text(
+            """
+            SELECT
+              q.question_id,
+              q.current_version_id AS question_version_id,
+              q.is_visible,
+              q.access_scope,
+              qv.question_type,
+              qv.title,
+              qv.version_no
+            FROM content_question q
+            LEFT JOIN content_question_version qv ON qv.question_version_id = q.current_version_id
+            WHERE q.question_id = ANY(CAST(:question_ids AS TEXT[]))
+            """
+        ),
+        {"question_ids": requested_ids},
+    ).mappings().all()
+    by_id = {str(r["question_id"]): dict(r) for r in rows}
+
+    items: list[dict[str, Any]] = []
+    failed: list[dict[str, str]] = []
+    for qid in requested_ids:
+        row = by_id.get(qid)
+        if not row:
+            failed.append({"question_id": qid, "code": "NOT_FOUND", "message": "question not found"})
+            continue
+        if not row.get("question_version_id"):
+            failed.append({"question_id": qid, "code": "CONFLICT", "message": "question has no current version"})
+            continue
+        items.append(row)
+
+    return {
+        "ok": True,
+        "requested_count": len(requested_ids),
+        "resolved_count": len(items),
+        "failed_count": len(failed),
+        "items": items,
+        "failed": failed,
+    }
+
+
+@router.get("/questions/{question_id}")
+def get_semantic_question(
+    question_id: str,
+    include: Optional[str] = Query(default=None, description="Comma-separated: current_version,content_blocks,interactions,options,slide_scope,feedback_links"),
+    db: Session = Depends(get_db),
+):
+    q = _question_row(db, question_id)
+    if not q:
+        raise HTTPException(status_code=404, detail="question not found")
+
+    detail = get_semantic_question_version_detail(db, q["current_version_id"])
+    if detail is None:
+        raise HTTPException(status_code=500, detail="current version not found")
+
+    # Stable default payload for question runtime pages:
+    # always expose question_type/content_blocks/interactions(+options) without include flags.
+    first_interaction = detail["interactions"][0] if detail["interactions"] else None
+    top_level_options = list(first_interaction.get("options") or []) if isinstance(first_interaction, dict) else []
+    payload = {
+        "ok": True,
+        "question": q,
+        "question_id": q["question_id"],
+        "question_type": detail["question_version"]["question_type"],
+        "content_blocks": detail["content_blocks"],
+        "interactions": detail["interactions"],
+        "options": top_level_options,
+    }
+
+    includes = {x.strip() for x in (include or "").split(",") if x.strip()}
+    if "current_version" in includes:
+        payload["question_version"] = detail["question_version"]
+    if "slide_scope" in includes:
+        payload["slide_scope"] = detail["slide_scope"]
+    if "feedback_links" in includes:
+        payload["feedback_links"] = detail["feedback_links"]
+    return payload
+
+
+@router.post("/questions/{question_id}/feedback-runtime")
+def run_question_feedback_runtime(
+    question_id: str,
+    payload: QuestionFeedbackRuntimeRequest,
+    db: Session = Depends(get_db),
+):
+    question = _question_row(db, question_id)
+    if not question:
+        raise HTTPException(status_code=404, detail="question not found")
+    question_version_id = str(question.get("current_version_id") or "")
+    if not question_version_id:
+        raise HTTPException(status_code=409, detail="question has no current version")
+
+    question_type = _question_version_type(db, question_version_id)
+    learner_id = _coerce_runtime_learner_id(payload.learner_id)
+    launch_id = payload.launch_id or payload.lti_launch_id
+
+    matched_rule: dict[str, Any] | None = None
+    variables: dict[str, int] | None = None
+    if payload.composition_id:
+        matched_rule, variables = _resolve_composition_match(
+            db,
+            composition_id=payload.composition_id,
+            question_id=question_id,
+            learner_id=learner_id,
+        )
+    if variables is None:
+        variables = _resolve_runtime_attempt_stats(db, learner_id=learner_id, question_id=question_id)
+
+    if not matched_rule:
+        return {
+            "ok": True,
+            "question_id": question_id,
+            "question_version_id": question_version_id,
+            "question_type": question_type,
+            "composition_id": payload.composition_id,
+            "learner_id": learner_id,
+            "launch_id": launch_id,
+            "lti_launch_id": payload.lti_launch_id or payload.launch_id,
+            "variables": variables,
+            "matched_rule_id": None,
+            "feedback_mode": None,
+            "feedback_agent_id": None,
+            "slide_mode": None,
+            "feedback": None,
+            "fallback_to_legacy": True,
+        }
+
+    matched_rule_id = str(matched_rule["rule_id"])
+    feedback_mode = str(matched_rule["feedback_mode"])
+    agent_id = str(matched_rule["feedback_agent_id"])
+    slide_mode = str(matched_rule["slide_mode"])
+
+    option_ids = _runtime_option_ids_for_version(db, question_version_id)
+    selected_option_id: str | None = None
+    if payload.selected_option_index is not None:
+        if payload.selected_option_index >= len(option_ids):
+            raise HTTPException(status_code=400, detail="selected_option_index out of range")
+        selected_option_id = option_ids[payload.selected_option_index]
+
+    if feedback_mode == "use_latest_version":
+        feedback_link_id = None
+        feedback_text = None
+        if selected_option_id:
+            feedback_link_id = _find_visible_feedback_link_by_target(
+                db,
+                question_version_id=question_version_id,
+                agent_id=agent_id,
+                target_entity_type="interaction_option",
+                target_entity_id=selected_option_id,
+            )
+            if feedback_link_id:
+                feedback_text = db.execute(
+                    text("SELECT static_feedback_text FROM feedback_link WHERE feedback_link_id = :fid LIMIT 1"),
+                    {"fid": feedback_link_id},
+                ).scalar()
+        if not feedback_text:
+            feedback_link_id = _find_visible_question_version_link(
+                db, question_version_id=question_version_id, agent_id=agent_id
+            ) or _find_any_visible_question_link(
+                db, question_version_id=question_version_id, agent_id=agent_id
+            )
+            if feedback_link_id:
+                feedback_text = db.execute(
+                    text("SELECT static_feedback_text FROM feedback_link WHERE feedback_link_id = :fid LIMIT 1"),
+                    {"fid": feedback_link_id},
+                ).scalar()
+
+        return {
+            "ok": True,
+            "question_id": question_id,
+            "question_version_id": question_version_id,
+            "question_type": question_type,
+            "composition_id": payload.composition_id,
+            "learner_id": learner_id,
+            "launch_id": launch_id,
+            "lti_launch_id": payload.lti_launch_id or payload.launch_id,
+            "variables": variables,
+            "matched_rule_id": matched_rule_id,
+            "feedback_mode": feedback_mode,
+            "feedback_agent_id": agent_id,
+            "slide_mode": slide_mode,
+            "feedback_link_id": feedback_link_id,
+            "feedback": str(feedback_text) if feedback_text is not None else None,
+            "feedback_source": "saved_version",
+            "has_feedback": bool(feedback_text),
+        }
+
+    if feedback_mode == "runtime_generate":
+        feedback_link_id = _find_visible_question_version_link(
+            db, question_version_id=question_version_id, agent_id=agent_id
+        ) or _find_any_visible_question_link(
+            db, question_version_id=question_version_id, agent_id=agent_id
+        )
+        if not feedback_link_id:
+            raise HTTPException(status_code=404, detail="no attached feedback link for runtime generation")
+
+        runtime_inputs = dict(payload.input_values or {})
+        if payload.answer_text is not None:
+            runtime_inputs["answer_text"] = payload.answer_text
+        runtime_inputs["learner_id"] = learner_id
+        runtime_inputs["question_id"] = question_id
+        runtime_inputs["question_type"] = question_type
+        if selected_option_id:
+            runtime_inputs["selected_option_id"] = selected_option_id
+            runtime_inputs["selected_option_index"] = payload.selected_option_index
+
+        generated = generate_static_feedback_for_feedback_link(
+            str(feedback_link_id),
+            persist=False,
+            enforce_ai_role=True,
+            input_values=runtime_inputs,
+            include_debug=False,
+        )
+        if not generated.get("ok"):
+            raise HTTPException(status_code=409, detail=f"runtime generation failed: {generated.get('reason') or 'unknown'}")
+
+        return {
+            "ok": True,
+            "question_id": question_id,
+            "question_version_id": question_version_id,
+            "question_type": question_type,
+            "composition_id": payload.composition_id,
+            "learner_id": learner_id,
+            "launch_id": launch_id,
+            "lti_launch_id": payload.lti_launch_id or payload.launch_id,
+            "variables": variables,
+            "matched_rule_id": matched_rule_id,
+            "feedback_mode": feedback_mode,
+            "feedback_agent_id": agent_id,
+            "slide_mode": slide_mode,
+            "feedback_link_id": feedback_link_id,
+            "feedback": generated.get("static_feedback_text"),
+            "feedback_source": "runtime_generate",
+            "has_feedback": bool(generated.get("static_feedback_text")),
+        }
+
+    raise HTTPException(status_code=400, detail=f"unsupported feedback_mode: {feedback_mode}")
+
+
+@router.patch("/questions/{question_id}/scope")
+def patch_semantic_question_scope(question_id: str, payload: ScopePatchRequest, db: Session = Depends(get_db)):
+    if not _user_exists(db, payload.updated_by):
+        raise HTTPException(status_code=400, detail="updated_by user_id not found")
+    row = db.execute(
+        text(
+            "UPDATE content_question SET access_scope = :access_scope WHERE question_id = :question_id RETURNING question_id"
+        ),
+        {"access_scope": payload.access_scope, "question_id": question_id},
+    ).first()
+    if not row:
+        db.rollback()
+        raise HTTPException(status_code=404, detail="question not found")
+    db.commit()
+    return {"ok": True, "question": _question_row(db, question_id)}
+
+
+@router.patch("/questions/{question_id}/visibility")
+def patch_semantic_question_visibility(question_id: str, payload: VisibilityPatchRequest, db: Session = Depends(get_db)):
+    if not _user_exists(db, payload.updated_by):
+        raise HTTPException(status_code=400, detail="updated_by user_id not found")
+    row = db.execute(
+        text(
+            "UPDATE content_question SET is_visible = :is_visible WHERE question_id = :question_id RETURNING question_id"
+        ),
+        {"is_visible": payload.is_visible, "question_id": question_id},
+    ).first()
+    if not row:
+        db.rollback()
+        raise HTTPException(status_code=404, detail="question not found")
+    db.commit()
+    return {"ok": True, "question": _question_row(db, question_id)}
+
+
+@router.delete("/questions/{question_id}")
+def delete_semantic_question(
+    question_id: str,
+    updated_by: str = Query(..., min_length=16, max_length=16),
+    db: Session = Depends(get_db),
+):
+    if not _user_exists(db, updated_by):
+        raise HTTPException(status_code=400, detail="updated_by user_id not found")
+    row = db.execute(
+        text(
+            "UPDATE content_question SET is_visible = FALSE WHERE question_id = :question_id RETURNING question_id"
+        ),
+        {"question_id": question_id},
+    ).first()
+    if not row:
+        db.rollback()
+        raise HTTPException(status_code=404, detail="question not found")
+    db.commit()
+    return {"ok": True, "question_id": question_id, "is_visible": False}
+
+
+@router.post("/questions/{question_id}/versions")
+def create_semantic_question_version(question_id: str, payload: QuestionVersionCreateRequest, db: Session = Depends(get_db)):
+    if not _user_exists(db, payload.created_by):
+        raise HTTPException(status_code=400, detail="created_by user_id not found")
+    question = _question_row(db, question_id)
+    if not question:
+        raise HTTPException(status_code=404, detail="question not found")
+
+    try:
+        max_version = db.execute(
+            text("SELECT COALESCE(MAX(version_no), 0) FROM content_question_version WHERE question_id = :qid"),
+            {"qid": question_id},
+        ).scalar() or 0
+        bundle = _insert_question_version_bundle(
+            db,
+            question_id=question_id,
+            version_no=int(max_version) + 1,
+            payload=payload,
+            change_note=payload.change_note,
+            set_as_current=True,
+        )
+        copied_feedback_links = 0
+        if payload.copy_feedback_links_from_previous and question.get("current_version_id"):
+            copied_feedback_links = _copy_feedback_links_from_previous(
+                db,
+                source_qv_id=question["current_version_id"],
+                target_qv_id=bundle["question_version_id"],
+                created_by=payload.created_by,
+            )
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+    detail = get_semantic_question_version_detail(db, bundle["question_version_id"])
+    return {
+        "ok": True,
+        "question_id": question_id,
+        "question_version_id": bundle["question_version_id"],
+        "copied_feedback_links": copied_feedback_links,
+        "item": detail,
+    }

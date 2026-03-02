@@ -3,12 +3,38 @@ import asyncio
 import json
 from fastapi import Depends
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 from ....config import Settings, get_settings
 from ....schema.resultSchema import RecordResult
 from ....schema.questionSchema import Question
 from ....schema.courseSchema import Slide
 from ..call_gpt_mcq import call_gpt_mcq_async, format_question_mcq
 from typing_extensions import Annotated
+
+
+def _semantic_mcq_options(db: Session, question_id: str) -> list[dict[str, Any]]:
+    rows = db.execute(
+        text(
+            """
+            SELECT o.option_value, o.option_label, o.is_correct
+            FROM content_question q
+            JOIN content_question_version qv ON qv.question_version_id = q.current_version_id
+            JOIN content_question_interaction i ON i.question_version_id = qv.question_version_id
+            JOIN content_question_interaction_option o ON o.interaction_id = i.interaction_id
+            WHERE q.question_id = :question_id
+            ORDER BY i.interaction_order ASC, o.option_order ASC
+            """
+        ),
+        {"question_id": question_id},
+    ).mappings().all()
+    return [
+        {
+            "text": str(r["option_value"] or ""),
+            "label": str(r["option_label"] or ""),
+            "isCorrect": bool(r["is_correct"]),
+        }
+        for r in rows
+    ]
 
 
 def get_participant_question_record_count_mcq(participant_id: str, question_id: str, db: Session) -> int:
@@ -308,19 +334,25 @@ def get_mcq_ai_feedback_for_option(
     Returns error if no AI feedback is available.
     """
 
-    # Get the question from database
-    question = db.query(Question).filter(
-        Question.question_id == question_id).first()
-    if not question:
+    question = None
+    options: list[dict[str, Any]] = []
+    if question_id.startswith("qn_"):
+        options = _semantic_mcq_options(db, question_id)
+    else:
+        # Get the question from legacy database
+        question = db.query(Question).filter(Question.question_id == question_id).first()
+        if question and isinstance(question.options, list):
+            options = list(question.options)
+    if not options:
         return {
             "error": "Question not found",
             "feedback": "Failed to get feedback: Question not found",
             "isCorrect": False,
-            "feedbackType": "error"
+            "feedbackType": "error",
         }
 
     # Check if option index is valid
-    if not question.options or selected_option_index >= len(question.options):
+    if selected_option_index >= len(options):
         return {
             "error": "Invalid option index",
             "feedback": "Failed to get feedback: Invalid option index",
@@ -329,7 +361,7 @@ def get_mcq_ai_feedback_for_option(
         }
 
     # Get option details
-    selected_option = question.options[selected_option_index]
+    selected_option = options[selected_option_index]
     is_correct = selected_option.get("isCorrect", False)
 
     # Determine feedback type based on version
@@ -359,7 +391,7 @@ def get_mcq_ai_feedback_for_option(
     # Get AI feedback only
     feedback_text = ""
 
-    if question.mcq_ai_feedback:
+    if question and question.mcq_ai_feedback:
         print(
             f"[MCQ AI] AI feedback structure type: {type(question.mcq_ai_feedback)}")
         if isinstance(question.mcq_ai_feedback, dict):
@@ -406,18 +438,24 @@ def get_mcq_human_feedback_for_option(
     Returns error if no human feedback is available.
     """
 
-    # Get the question from database
-    question = db.query(Question).filter(
-        Question.question_id == question_id).first()
-    if not question:
+    question = None
+    options: list[dict[str, Any]] = []
+    if question_id.startswith("qn_"):
+        options = _semantic_mcq_options(db, question_id)
+    else:
+        # Get the question from database
+        question = db.query(Question).filter(Question.question_id == question_id).first()
+        if question and isinstance(question.options, list):
+            options = list(question.options)
+    if not options:
         return {
             "error": "Question not found",
             "feedback": "Failed to get feedback: Question not found",
-            "isCorrect": False
+            "isCorrect": False,
         }
 
     # Check if option index is valid
-    if not question.options or selected_option_index >= len(question.options):
+    if selected_option_index >= len(options):
         return {
             "error": "Invalid option index",
             "feedback": "Failed to get feedback: Invalid option index",
@@ -425,13 +463,13 @@ def get_mcq_human_feedback_for_option(
         }
 
     # Get option details
-    selected_option = question.options[selected_option_index]
+    selected_option = options[selected_option_index]
     is_correct = selected_option.get("isCorrect", False)
 
     # Get human feedback only
     feedback_text = ""
 
-    if question.mcq_human_feedback and selected_option_index < len(question.mcq_human_feedback):
+    if question and question.mcq_human_feedback and selected_option_index < len(question.mcq_human_feedback):
         feedback_text = question.mcq_human_feedback[selected_option_index]
 
     # Return error if no human feedback found
