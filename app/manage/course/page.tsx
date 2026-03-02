@@ -8,8 +8,10 @@ import { FormEvent, useCallback, useEffect, useState } from 'react';
 import ActionButton from '@/app/components/ActionButton';
 import ManageDataTable, { ManageTableColumn } from '@/app/components/manage/ManageDataTable';
 import ManageListPanel from '@/app/components/manage/ManageListPanel';
+import ManageModal from '@/app/components/manage/ManageModal';
 import { useManagePermissionGuard } from '@/app/manage/hooks/useManagePermissionGuard';
 import { Course } from '@/app/types';
+import { formatDateTimeForUser } from '@/app/utils/datetime';
 import { buildStaticPageTitle } from '@/app/utils/title';
 
 type SortKey = 'course_title' | 'course_description' | 'created_at';
@@ -19,15 +21,7 @@ type PaginationToken = number | 'ellipsis';
 const PAGE_SIZE = 20;
 const DESCRIPTION_PREVIEW_LENGTH = 100;
 
-const formatCreatedAt = (value?: string) => {
-  if (!value) return '-';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(date);
-};
+const formatCreatedAt = (value?: string) => formatDateTimeForUser(value);
 
 const getSortValue = (course: Course, key: SortKey) => {
   if (key === 'created_at') return String(course.created_at ?? '');
@@ -455,62 +449,61 @@ const CourseOverview = () => {
           )}
         />
 
-        {isModalOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
-            <div className="w-full max-w-xl rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl">
-              <div className="mb-4">
-                <h2 className="text-xl font-semibold text-slate-900">Create New Course</h2>
-                <p className="mt-1 text-sm text-slate-500">Add a title and optional description for your course.</p>
-              </div>
-
-              <form onSubmit={handleCreateCourse} className="space-y-4">
-                <div>
-                  <label htmlFor="courseTitle" className="mb-1 block text-sm font-medium text-slate-700">
-                    Course Title
-                  </label>
-                  <input
-                    id="courseTitle"
-                    type="text"
-                    value={newCourseTitle}
-                    onChange={(e) => setNewCourseTitle(e.target.value)}
-                    className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-slate-300"
-                    required
-                  />
-                </div>
-                <div>
-                  <label htmlFor="courseDescription" className="mb-1 block text-sm font-medium text-slate-700">
-                    Course Description
-                  </label>
-                  <textarea
-                    id="courseDescription"
-                    value={newCourseDescription}
-                    onChange={(e) => setNewCourseDescription(e.target.value)}
-                    rows={4}
-                    className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-slate-300"
-                  />
-                </div>
-                <div className="flex justify-end gap-2 pt-1">
-                  <ActionButton
-                    type="button"
-                    onClick={() => setIsModalOpen(false)}
-                    variant="ghost"
-                    className="rounded-lg"
-                  >
-                    Cancel
-                  </ActionButton>
-                  <ActionButton
-                    type="submit"
-                    disabled={loading || !newCourseTitle.trim()}
-                    variant="primary"
-                    className="rounded-lg"
-                  >
-                    {loading ? 'Creating...' : 'Create Course'}
-                  </ActionButton>
-                </div>
-              </form>
+        <ManageModal
+          open={isModalOpen}
+          onClose={() => setIsModalOpen(false)}
+          title="Create New Course"
+          description="Add a title and optional description for your course."
+          maxWidthClassName="max-w-xl"
+          disableClose={loading}
+        >
+          <form onSubmit={handleCreateCourse} className="space-y-4">
+            <div>
+              <label htmlFor="courseTitle" className="mb-1 block text-sm font-medium text-slate-700">
+                Course Title
+              </label>
+              <input
+                id="courseTitle"
+                type="text"
+                value={newCourseTitle}
+                onChange={(e) => setNewCourseTitle(e.target.value)}
+                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-slate-300"
+                required
+              />
             </div>
-          </div>
-        )}
+            <div>
+              <label htmlFor="courseDescription" className="mb-1 block text-sm font-medium text-slate-700">
+                Course Description
+              </label>
+              <textarea
+                id="courseDescription"
+                value={newCourseDescription}
+                onChange={(e) => setNewCourseDescription(e.target.value)}
+                rows={4}
+                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-slate-300"
+              />
+            </div>
+            <div className="flex justify-end gap-2 border-t border-slate-100 pt-4">
+              <ActionButton
+                type="button"
+                onClick={() => setIsModalOpen(false)}
+                variant="ghost"
+                className="rounded-lg"
+                disabled={loading}
+              >
+                Cancel
+              </ActionButton>
+              <ActionButton
+                type="submit"
+                disabled={loading || !newCourseTitle.trim()}
+                variant="primary"
+                className="rounded-lg"
+              >
+                {loading ? 'Creating...' : 'Create Course'}
+              </ActionButton>
+            </div>
+          </form>
+        </ManageModal>
       </div>
     </main>
   );

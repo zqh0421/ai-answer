@@ -59,6 +59,7 @@ import {
   updateCourseAuthorityApi,
   uploadModuleSlidesBatchApi,
 } from './services/courseSlidesApi';
+import { formatDateTimeForUser } from '@/app/utils/datetime';
 
 const CoursePage = () => {
   const JOB_POLL_INTERVAL_MS = 2000;
@@ -1063,7 +1064,7 @@ const CoursePage = () => {
             <div className="mt-4 flex flex-wrap gap-2">
               <div className="inline-flex items-center gap-2 px-0 py-1 text-xs text-slate-600">
                 <span className="h-1.5 w-1.5 rounded-full bg-slate-400"></span>
-                Created at: {course.created_at}
+                Created at: {formatDateTimeForUser(course.created_at)}
               </div>
             </div>
           </div>

@@ -54,6 +54,9 @@ const SlideCard = ({
           {slide.slide_title}
         </a>
       </h3>
+      <p className="mt-1 break-all font-mono text-xs text-slate-500">
+        {slide.id}
+      </p>
       {slide.slide_cover && (
         <div className="mt-2 rounded-xl border border-slate-200 bg-slate-50 p-1">
           <DynamicImage

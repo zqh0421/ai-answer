@@ -7,6 +7,12 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import ActionButton from '@/app/components/ActionButton';
 import DynamicImage from '@/app/components/DynamicImage';
 import ManageListPanel from '@/app/components/manage/ManageListPanel';
+import {
+  FeedbackComposition,
+  FEEDBACK_COMPOSITION_STORAGE_KEY,
+  loadFeedbackCompositions,
+} from '@/app/lib/feedbackCompositions';
+import { formatDateTimeForUser } from '@/app/utils/datetime';
 import { buildStaticPageTitle } from '@/app/utils/title';
 
 type PaginationToken = number | 'ellipsis';
@@ -19,20 +25,38 @@ interface QuestionContentItem {
 interface QuestionRow {
   question_id: string;
   type?: string;
+  question_type?: string;
   content?: QuestionContentItem[];
+  content_blocks?: Array<{
+    block_type?: string;
+    type?: string;
+    text_content?: string;
+    media_url?: string;
+    content?: string;
+  }>;
   objective?: string[];
   slide_ids?: string[];
   created_at?: string;
 }
 
+type QuestionListPayload = {
+  items?: QuestionRow[];
+  questions?: QuestionRow[];
+  data?: QuestionRow[] | { items?: QuestionRow[]; questions?: QuestionRow[] };
+  results?: QuestionRow[];
+};
+
 type SortKey = 'type' | 'preview' | 'created_at';
 type SortDirection = 'asc' | 'desc';
-type FeedbackOptionKey = 'no_feedback' | 'test_feedback';
 type SlideModeKey = 'no_slide' | 'full_slide' | 'retrieved_slide_page';
 
 const PAGE_SIZE = 20;
-const TEST_FEEDBACK_PLACEHOLDER =
-  'The feedback is currently in the process of being migrated, this is for a placeholder purpose.';
+
+const compositionSlideModeToLegacyMode = (value?: string): SlideModeKey => {
+  if (value === 'no_slide') return 'no_slide';
+  if (value === 'slide_file') return 'full_slide';
+  return 'retrieved_slide_page';
+};
 
 const getPaginationTokens = (currentPage: number, totalPages: number): PaginationToken[] => {
   if (totalPages <= 7) return Array.from({ length: totalPages }, (_, i) => i + 1);
@@ -55,44 +79,101 @@ const getQuestionTextPreview = (question: QuestionRow) => {
 const getQuestionImagePreview = (question: QuestionRow) =>
   (question.content ?? []).find((item) => item.type === 'image')?.content ?? '';
 
-const formatCreatedAt = (value?: string) => {
-  if (!value) return '-';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(date);
+const formatCreatedAt = (value?: string) => formatDateTimeForUser(value);
+const createFallbackLearnerId = () => `test_learner_${Math.random().toString(36).slice(2, 10)}`;
+
+const normalizeQuestionRow = (raw: any): QuestionRow => {
+  const contentFromBlocks = Array.isArray(raw?.content_blocks)
+    ? raw.content_blocks
+        .map((block: any) => ({
+          type: String(block?.type ?? block?.block_type ?? 'text'),
+          content: String(block?.content ?? block?.text_content ?? block?.media_url ?? ''),
+        }))
+        .filter((item: QuestionContentItem) => Boolean(item.content))
+    : [];
+  const content = Array.isArray(raw?.content) ? raw.content : contentFromBlocks;
+  const questionType = String(raw?.question_type ?? raw?.type ?? '').trim();
+
+  return {
+    question_id: String(raw?.question_id ?? ''),
+    question_type: questionType,
+    type: String(raw?.type ?? questionType),
+    content,
+    content_blocks: Array.isArray(raw?.content_blocks) ? raw.content_blocks : [],
+    objective: Array.isArray(raw?.objective) ? raw.objective : [],
+    slide_ids: Array.isArray(raw?.slide_ids) ? raw.slide_ids : [],
+    created_at: typeof raw?.created_at === 'string' ? raw.created_at : undefined,
+  };
+};
+
+const parsePublicQuestionsResponse = (payload: unknown): QuestionRow[] => {
+  if (Array.isArray(payload)) return payload.map(normalizeQuestionRow).filter((item) => item.question_id);
+  if (!payload || typeof payload !== 'object') return [];
+  const data = payload as QuestionListPayload;
+  if (Array.isArray(data.items)) return data.items.map(normalizeQuestionRow).filter((item) => item.question_id);
+  if (Array.isArray(data.questions)) return data.questions.map(normalizeQuestionRow).filter((item) => item.question_id);
+  if (Array.isArray(data.results)) return data.results.map(normalizeQuestionRow).filter((item) => item.question_id);
+  if (Array.isArray(data.data)) return data.data.map(normalizeQuestionRow).filter((item) => item.question_id);
+  if (data.data && typeof data.data === 'object') {
+    if (Array.isArray(data.data.items)) return data.data.items.map(normalizeQuestionRow).filter((item) => item.question_id);
+    if (Array.isArray(data.data.questions)) return data.data.questions.map(normalizeQuestionRow).filter((item) => item.question_id);
+  }
+  return [];
 };
 
 export default function LtiQuestionsPage() {
   const searchParams = useSearchParams();
   const [questions, setQuestions] = useState<QuestionRow[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState<'all' | string>('all');
   const [sortKey, setSortKey] = useState<SortKey>('created_at');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const [currentPage, setCurrentPage] = useState(1);
-  const [feedbackSelectionByQuestion, setFeedbackSelectionByQuestion] = useState<Record<string, FeedbackOptionKey>>({});
-  const [slideModeByQuestion, setSlideModeByQuestion] = useState<Record<string, SlideModeKey>>({});
+  const [compositionSelectionByQuestion, setCompositionSelectionByQuestion] = useState<Record<string, string>>({});
+  const [compositions, setCompositions] = useState<FeedbackComposition[]>([]);
   const isDeepLinkMode = searchParams.get('lti_mode') === 'deep_link';
   const launchId = searchParams.get('launch_id');
   const ltiLaunchId = searchParams.get('lti_launch_id');
   const ltiUserId = searchParams.get('lti_user_id');
+  const defaultCompositionId = searchParams.get('composition_id') || '';
+  const queryLearnerId = searchParams.get('learner_id');
+  const [learnerIdInput, setLearnerIdInput] = useState(queryLearnerId || ltiUserId || '');
+  const [fallbackLearnerId] = useState(() => createFallbackLearnerId());
 
   useEffect(() => {
     document.title = buildStaticPageTitle('LTI Question Library');
   }, []);
 
+  useEffect(() => {
+    setCompositions(loadFeedbackCompositions());
+  }, []);
+
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (!event.key || event.key === FEEDBACK_COMPOSITION_STORAGE_KEY) {
+        setCompositions(loadFeedbackCompositions());
+      }
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
+
   const fetchQuestions = useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
     try {
-      const res = await axios.get('/api/questions/all');
-      setQuestions(Array.isArray(res.data) ? res.data : []);
+      const res = await axios.get('/api/questions/public');
+      const parsed = parsePublicQuestionsResponse(res.data);
+      setQuestions(parsed);
+      if (parsed.length === 0) {
+        setLoadError('未获取到 public questions（返回为空）');
+      }
     } catch (error) {
       console.error('Error fetching questions:', error);
       setQuestions([]);
+      setLoadError('未获取到 public questions');
     } finally {
       setLoading(false);
     }
@@ -163,23 +244,38 @@ export default function LtiQuestionsPage() {
     setSortKey(key);
     setSortDirection(key === 'created_at' ? 'desc' : 'asc');
   };
-  const getSelectedFeedback = (questionId: string): FeedbackOptionKey =>
-    feedbackSelectionByQuestion[questionId] ?? 'test_feedback';
+  const compositionById = useMemo(
+    () => new Map(compositions.map((composition) => [composition.composition_id, composition])),
+    [compositions]
+  );
+  const getSelectedCompositionId = (questionId: string) =>
+    compositionSelectionByQuestion[questionId] ?? defaultCompositionId;
+  const getSelectedComposition = (questionId: string) => {
+    const compositionId = getSelectedCompositionId(questionId);
+    if (!compositionId) return null;
+    return compositionById.get(compositionId) ?? null;
+  };
   const getSelectedSlideMode = (questionId: string): SlideModeKey =>
-    slideModeByQuestion[questionId] ?? 'retrieved_slide_page';
+    getSelectedComposition(questionId)
+      ? compositionSlideModeToLegacyMode(getSelectedComposition(questionId)?.rules?.[0]?.slide_mode)
+      : 'retrieved_slide_page';
   const getQuestionPlayerHref = (question: QuestionRow) => {
-    const normalizedType = (question.type ?? '').toLowerCase();
-    const route = normalizedType.includes('multiple') || normalizedType.includes('mcq') ? 'mcq' : 'oeq';
-    const params = new URLSearchParams({
-      feedback_key: getSelectedFeedback(question.question_id),
-      slide_mode: getSelectedSlideMode(question.question_id),
-    });
-    if (isDeepLinkMode) {
-      params.set('lti_mode', 'deep_link');
-      if (launchId) params.set('launch_id', launchId);
-      if (ltiLaunchId) params.set('lti_launch_id', ltiLaunchId);
-      if (ltiUserId) params.set('lti_user_id', ltiUserId);
-    }
+    const normalizedType = String(question.question_type ?? question.type ?? '').toLowerCase();
+    const route = (
+      normalizedType.includes('choice') ||
+      normalizedType.includes('true_false') ||
+      normalizedType.includes('dropdown') ||
+      normalizedType.includes('mcq')
+    ) ? 'mcq' : 'oeq';
+    const compositionId = getSelectedCompositionId(question.question_id);
+    const params = new URLSearchParams();
+    if (compositionId) params.set('composition_id', compositionId);
+    const normalizedLearnerId = learnerIdInput.trim() || fallbackLearnerId;
+    params.set('learner_id', normalizedLearnerId);
+    if (isDeepLinkMode) params.set('lti_mode', 'deep_link');
+    if (launchId) params.set('launch_id', launchId);
+    if (ltiLaunchId) params.set('lti_launch_id', ltiLaunchId);
+    if (ltiUserId) params.set('lti_user_id', ltiUserId);
     return `/${route}/${question.question_id}?${params.toString()}`;
   };
 
@@ -205,7 +301,9 @@ export default function LtiQuestionsPage() {
         <ManageListPanel
           toolbarLeft={(
             <div className="text-sm text-slate-500">
-              {loading ? 'Loading questions...' : `Loaded ${questions.length} question${questions.length === 1 ? '' : 's'}`}
+              {loading
+                ? 'Loading questions...'
+                : loadError || `Loaded ${questions.length} question${questions.length === 1 ? '' : 's'}`}
             </div>
           )}
           toolbarRight={(
@@ -239,6 +337,13 @@ export default function LtiQuestionsPage() {
                   </option>
                 ))}
               </select>
+              <input
+                type="text"
+                value={learnerIdInput}
+                onChange={(e) => setLearnerIdInput(e.target.value)}
+                placeholder="learner_id (optional)"
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-slate-300 md:w-56"
+              />
               <ActionButton
                 onClick={() => fetchQuestions()}
                 variant="neutral"
@@ -323,34 +428,24 @@ export default function LtiQuestionsPage() {
                             {formatCreatedAt(question.created_at)}
                           </td>
                           <td className="px-4 py-3 align-middle">
-                            <div className="flex min-w-[320px] flex-col items-end gap-2">
+                            <div className="flex min-w-[360px] flex-col items-end gap-2">
                               <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
                                 <select
-                                  value={getSelectedFeedback(question.question_id)}
+                                  value={getSelectedCompositionId(question.question_id)}
                                   onChange={(e) =>
-                                    setFeedbackSelectionByQuestion((prev) => ({
+                                    setCompositionSelectionByQuestion((prev) => ({
                                       ...prev,
-                                      [question.question_id]: e.target.value as FeedbackOptionKey,
+                                      [question.question_id]: e.target.value,
                                     }))
                                   }
-                                  className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-700 shadow-sm outline-none focus:border-slate-300 sm:w-[150px]"
-                                >
-                                  <option value="no_feedback">No Feedback</option>
-                                  <option value="test_feedback">Test Feedback</option>
-                                </select>
-                                <select
-                                  value={getSelectedSlideMode(question.question_id)}
-                                  onChange={(e) =>
-                                    setSlideModeByQuestion((prev) => ({
-                                      ...prev,
-                                      [question.question_id]: e.target.value as SlideModeKey,
-                                    }))
-                                  }
-                                  className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-700 shadow-sm outline-none focus:border-slate-300 sm:w-[170px]"
-                                >
-                                  <option value="no_slide">No Slide</option>
-                                  <option value="full_slide">Full Slide</option>
-                                  <option value="retrieved_slide_page">Retrieved Slide Page</option>
+                                  className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-700 shadow-sm outline-none focus:border-slate-300 sm:w-[220px]"
+                                  >
+                                    <option value="">No Composition</option>
+                                    {compositions.map((composition) => (
+                                      <option key={`composition-${composition.composition_id}`} value={composition.composition_id}>
+                                        {composition.title || composition.composition_id}
+                                      </option>
+                                    ))}
                                 </select>
                                 <Link
                                   href={getQuestionPlayerHref(question)}
@@ -360,9 +455,10 @@ export default function LtiQuestionsPage() {
                                   </ActionButton>
                                 </Link>
                               </div>
-                              {getSelectedFeedback(question.question_id) === 'test_feedback' ? (
-                                <p className="max-w-[320px] text-right text-xs leading-relaxed text-slate-500">
-                                  {TEST_FEEDBACK_PLACEHOLDER}
+                              {getSelectedComposition(question.question_id) ? (
+                                <p className="max-w-[500px] text-right text-xs leading-relaxed text-slate-500">
+                                  Composition: <span className="font-mono">{getSelectedComposition(question.question_id)?.composition_id}</span>
+                                  {' '}| Rule-1 slide mode: {getSelectedSlideMode(question.question_id)}
                                 </p>
                               ) : null}
                             </div>
@@ -387,7 +483,7 @@ export default function LtiQuestionsPage() {
           summary={(
             <p className="text-center text-sm text-slate-500">
               Showing {pagedQuestions.length} item{pagedQuestions.length === 1 ? '' : 's'} of {sortedQuestions.length} filtered
-              {' '}({normalizedSearch || typeFilter !== 'all' ? 'filters active, ' : ''}page {currentPage} of {totalPages}, {PAGE_SIZE} per page)
+              {' '}({normalizedSearch || typeFilter !== 'all' ? 'filters active, ' : ''}page {currentPage} of {totalPages}, {PAGE_SIZE} per page, {compositions.length} composition{compositions.length === 1 ? '' : 's'})
             </p>
           )}
         />

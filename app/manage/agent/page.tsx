@@ -7,10 +7,22 @@ import ActionButton from '@/app/components/ActionButton';
 import ManageDataTable, { ManageTableColumn } from '@/app/components/manage/ManageDataTable';
 import ManageListPanel from '@/app/components/manage/ManageListPanel';
 import { useManagePermissionGuard } from '@/app/manage/hooks/useManagePermissionGuard';
+import {
+  COMPOSITION_LITERAL_TOKENS,
+  COMPOSITION_VARIABLE_TOKENS,
+  createDefaultCompositionRule,
+  createRuleId,
+  FeedbackComposition,
+  FeedbackCompositionRule,
+  loadFeedbackCompositions,
+  removeFeedbackComposition,
+  saveFeedbackCompositions,
+  upsertFeedbackComposition,
+} from '@/app/lib/feedbackCompositions';
+import { formatDateTimeForUser } from '@/app/utils/datetime';
 import { buildStaticPageTitle } from '@/app/utils/title';
 
 type AgentRole = 'human' | 'ai';
-type AgentExecutionMode = 'static' | 'dynamic';
 type AgentScope = 'private' | 'public';
 type RetrievalPreferredInfoType = 'text' | 'vision' | 'mixed';
 type RetrievalSelectionMode = 'top_k' | 'all' | 'threshold' | 'threshold_then_top_k';
@@ -34,7 +46,6 @@ interface FeedbackAgent {
   agent_id: string;
   title?: string;
   role?: string;
-  execution_mode?: string;
   is_structured?: boolean;
   provider?: string;
   model?: string;
@@ -54,7 +65,6 @@ interface FeedbackAgent {
 interface AgentFormState {
   title: string;
   role: AgentRole;
-  execution_mode: AgentExecutionMode;
   is_structured: boolean;
   provider: string;
   model: string;
@@ -63,11 +73,18 @@ interface AgentFormState {
   llm_params_json: string;
 }
 
+interface CompositionFormState {
+  composition_id: string;
+  title: string;
+  description: string;
+  question_id: string;
+  question_type: 'mcq' | 'oeq' | '';
+  rules: FeedbackCompositionRule[];
+}
+
 const DEFAULT_INPUT_KEYS = [
   'question_content_blocks',
   'answer_text',
-  'all_options',
-  'selected_option_index',
   'retrieved_slide_pages',
 ] as const;
 let cachedInputOptionKeys: string[] | null = null;
@@ -82,7 +99,6 @@ const DEFAULT_RETRIEVED_SLIDE_PAGES_RULE: RetrievalRule = {
 const defaultFormState = (): AgentFormState => ({
   title: '',
   role: 'human',
-  execution_mode: 'static',
   is_structured: false,
   provider: '',
   model: '',
@@ -91,14 +107,23 @@ const defaultFormState = (): AgentFormState => ({
   llm_params_json: '',
 });
 
-const formatDateTime = (value?: string) => {
-  if (!value) return '-';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(date);
+const defaultCompositionFormState = (): CompositionFormState => ({
+  composition_id: '',
+  title: '',
+  description: '',
+  question_id: '',
+  question_type: '',
+  rules: [createDefaultCompositionRule()],
+});
+
+const formatDateTime = (value?: string) => formatDateTimeForUser(value);
+const COMPOSITION_ID_REGEX = /^[a-zA-Z0-9][a-zA-Z0-9_-]{1,63}$/;
+const compositionFeedbackModeLabel = (mode: FeedbackCompositionRule['feedback_mode']) =>
+  mode === 'runtime_generate' ? 'Runtime Generate' : 'Use Latest Version';
+const compositionSlideModeLabel = (mode: FeedbackCompositionRule['slide_mode']) => {
+  if (mode === 'slide_file') return 'Slide File';
+  if (mode === 'no_slide') return 'No Slide';
+  return 'Most Relevant Slide Page';
 };
 
 const looksLikeEmail = (value?: string | null) => Boolean(value && value.includes('@'));
@@ -179,7 +204,7 @@ const escapeHtml = (value: string) =>
     .replace(/'/g, '&#39;');
 
 const buildPromptHighlightHtml = (text: string, allowedPromptKeys: Set<string>) => {
-  if (!text) return '<span class="text-slate-400">Use {{{answer_text}}}, {{{question_content_blocks}}}, etc.</span>';
+  if (!text) return '<span class="text-slate-400">Use {{{question_content_blocks}}}, {{{answer_text}}}, {{{retrieved_slide_pages}}}.</span>';
   let html = '';
   let lastIndex = 0;
   PROMPT_VAR_REGEX.lastIndex = 0;
@@ -285,7 +310,6 @@ const normalizeAgent = (raw: any): FeedbackAgent => ({
   agent_id: String(raw?.agent_id ?? raw?.id ?? ''),
   title: raw?.title ?? raw?.name ?? '',
   role: raw?.role,
-  execution_mode: raw?.execution_mode,
   is_structured: raw?.is_structured,
   provider: raw?.provider,
   model: raw?.model,
@@ -321,17 +345,9 @@ const buildFormStateFromAgent = (agent: FeedbackAgent): AgentFormState => {
     .map((key) => `{{{${key}}}}`)
     .join('\n');
   const role = agent.role === 'ai' ? 'ai' : 'human';
-  const execution_mode =
-    agent.execution_mode === 'dynamic'
-      ? 'dynamic'
-      : role === 'human'
-        ? 'static'
-        : 'static';
-
   return {
     title: agent.title ?? '',
     role,
-    execution_mode: role === 'human' ? 'static' : execution_mode,
     is_structured: role === 'human' ? false : Boolean(agent.is_structured),
     provider: agent.provider ?? '',
     model: agent.model ?? '',
@@ -358,6 +374,12 @@ export default function AgentManagementPage() {
   const [editingSourceAgentId, setEditingSourceAgentId] = useState<string | null>(null);
   const [actingAgentId, setActingAgentId] = useState<string | null>(null);
   const [isAdvancedLlmOpen, setIsAdvancedLlmOpen] = useState(false);
+  const [compositions, setCompositions] = useState<FeedbackComposition[]>([]);
+  const [isCompositionPanelOpen, setIsCompositionPanelOpen] = useState(false);
+  const [compositionPanelMode, setCompositionPanelMode] = useState<'create' | 'edit'>('create');
+  const [compositionForm, setCompositionForm] = useState<CompositionFormState>(defaultCompositionFormState);
+  const [editingCompositionId, setEditingCompositionId] = useState<string | null>(null);
+  const [compositionError, setCompositionError] = useState<string | null>(null);
   const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const promptHighlightRef = useRef<HTMLDivElement | null>(null);
 
@@ -373,6 +395,21 @@ export default function AgentManagementPage() {
     document.title = buildStaticPageTitle('Agent Management');
   }, []);
 
+  useEffect(() => {
+    const hydrated = loadFeedbackCompositions();
+    setCompositions(hydrated);
+  }, []);
+
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (!event.key || event.key === 'ai_feedback_compositions_v1') {
+        setCompositions(loadFeedbackCompositions());
+      }
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
+
   const fetchInputOptions = useCallback(async () => {
     if (cachedInputOptionKeys?.length) {
       setInputOptionKeys(cachedInputOptionKeys);
@@ -384,7 +421,9 @@ export default function AgentManagementPage() {
     setInputOptionsError(null);
     try {
       const res = await axios.get('/api/feedback-agents/input-options');
-      const keys = parseInputOptionKeys(res.data);
+      const keys = parseInputOptionKeys(res.data).filter(
+        (key) => key !== 'all_options' && key !== 'selected_option_index'
+      );
       if (keys.length > 0) {
         cachedInputOptionKeys = keys;
         setInputOptionKeys(keys);
@@ -464,7 +503,6 @@ export default function AgentManagementPage() {
       const haystack = [
         agent.title,
         agent.role,
-        agent.execution_mode,
         agent.provider,
         agent.model,
         creatorHaystack,
@@ -532,7 +570,6 @@ export default function AgentManagementPage() {
         return {
           ...prev,
           role: 'human',
-          execution_mode: 'static',
           is_structured: false,
           prompt_text: '',
           provider: '',
@@ -544,10 +581,160 @@ export default function AgentManagementPage() {
       return {
         ...prev,
         role: 'ai',
-        execution_mode: prev.execution_mode,
         provider: prev.provider || 'openai',
       };
     });
+  };
+
+  const openCreateCompositionPanel = () => {
+    setCompositionPanelMode('create');
+    setEditingCompositionId(null);
+    setCompositionForm(defaultCompositionFormState());
+    setCompositionError(null);
+    setIsCompositionPanelOpen(true);
+  };
+
+  const openEditCompositionPanel = (composition: FeedbackComposition) => {
+    setCompositionPanelMode('edit');
+    setEditingCompositionId(composition.composition_id);
+    setCompositionForm({
+      composition_id: composition.composition_id,
+      title: composition.title,
+      description: composition.description ?? '',
+      question_id: composition.question_id ?? '',
+      question_type: composition.question_type === 'mcq' || composition.question_type === 'oeq' ? composition.question_type : '',
+      rules: composition.rules.length > 0 ? composition.rules.map((rule) => ({ ...rule })) : [createDefaultCompositionRule()],
+    });
+    setCompositionError(null);
+    setIsCompositionPanelOpen(true);
+  };
+
+  const setCompositionField = <K extends keyof CompositionFormState>(key: K, value: CompositionFormState[K]) => {
+    setCompositionForm((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const updateCompositionRule = (ruleId: string, patch: Partial<FeedbackCompositionRule>) => {
+    setCompositionForm((prev) => ({
+      ...prev,
+      rules: prev.rules.map((rule) => (rule.rule_id === ruleId ? { ...rule, ...patch } : rule)),
+    }));
+  };
+
+  const addCompositionRule = () => {
+    setCompositionForm((prev) => ({
+      ...prev,
+      rules: [...prev.rules, { ...createDefaultCompositionRule(), rule_id: createRuleId() }],
+    }));
+  };
+
+  const removeCompositionRuleById = (ruleId: string) => {
+    setCompositionForm((prev) => {
+      if (prev.rules.length <= 1) return prev;
+      return { ...prev, rules: prev.rules.filter((rule) => rule.rule_id !== ruleId) };
+    });
+  };
+
+  const appendTokenToRuleExpression = (ruleId: string, token: string) => {
+    setCompositionForm((prev) => ({
+      ...prev,
+      rules: prev.rules.map((rule) => {
+        if (rule.rule_id !== ruleId) return rule;
+        const base = rule.condition_expression.trim();
+        return { ...rule, condition_expression: `${base}${base ? ' ' : ''}${token}` };
+      }),
+    }));
+  };
+
+  const handleSubmitComposition = () => {
+    setCompositionError(null);
+    setError(null);
+    setMessage(null);
+
+    const compositionId = compositionForm.composition_id.trim();
+    if (!compositionId) {
+      setCompositionError('Composition ID is required.');
+      return;
+    }
+    if (!COMPOSITION_ID_REGEX.test(compositionId)) {
+      setCompositionError('Composition ID must be 2-64 chars, and use only letters, numbers, "_" or "-".');
+      return;
+    }
+
+    const title = compositionForm.title.trim();
+    if (!title) {
+      setCompositionError('Composition title is required.');
+      return;
+    }
+    if (compositionForm.rules.length === 0) {
+      setCompositionError('At least one rule is required.');
+      return;
+    }
+    if (!compositionForm.question_id.trim()) {
+      setCompositionError('Question ID is required for Go To Question.');
+      return;
+    }
+    if (!compositionForm.question_type) {
+      setCompositionError('Question type is required for Go To Question.');
+      return;
+    }
+
+    for (const rule of compositionForm.rules) {
+      if (!rule.condition_expression.trim()) {
+        setCompositionError('Each rule must include a condition expression.');
+        return;
+      }
+      if (!rule.feedback_agent_id.trim()) {
+        setCompositionError('Each rule must select a feedback agent.');
+        return;
+      }
+    }
+
+    if (
+      compositionPanelMode === 'create' &&
+      compositions.some((composition) => composition.composition_id.toLowerCase() === compositionId.toLowerCase())
+    ) {
+      setCompositionError(`Composition ID "${compositionId}" already exists.`);
+      return;
+    }
+
+    if (
+      compositionPanelMode === 'edit' &&
+      editingCompositionId &&
+      compositionId !== editingCompositionId
+    ) {
+      setCompositionError('Composition ID cannot be changed in edit mode. Duplicate then create a new ID instead.');
+      return;
+    }
+
+    const next = upsertFeedbackComposition(compositions, {
+      composition_id: compositionId,
+      title,
+      description: compositionForm.description.trim(),
+      question_id: compositionForm.question_id.trim(),
+      question_type: compositionForm.question_type,
+      rules: compositionForm.rules.map((rule) => ({
+        ...rule,
+        condition_expression: rule.condition_expression.trim(),
+        feedback_agent_id: rule.feedback_agent_id.trim(),
+      })),
+    });
+    setCompositions(next);
+    saveFeedbackCompositions(next);
+    setIsCompositionPanelOpen(false);
+    setEditingCompositionId(null);
+    setCompositionForm(defaultCompositionFormState());
+    setMessage(compositionPanelMode === 'edit' ? 'Composition updated successfully.' : 'Composition created successfully.');
+  };
+
+  const handleDeleteComposition = (composition: FeedbackComposition) => {
+    const confirmed = window.confirm(`Delete composition "${composition.composition_id}"?`);
+    if (!confirmed) return;
+    const next = removeFeedbackComposition(compositions, composition.composition_id);
+    setCompositions(next);
+    saveFeedbackCompositions(next);
+    setMessage('Composition deleted.');
+    setCompositionError(null);
+    setError(null);
   };
 
   const insertPromptVariable = (key: string) => {
@@ -626,7 +813,6 @@ export default function AgentManagementPage() {
         name: title,
         title,
         role: 'human',
-        execution_mode: 'static',
         prompt_text: '',
         is_structured: false,
         provider: null,
@@ -640,11 +826,11 @@ export default function AgentManagementPage() {
       return { payload };
     }
 
-    if (form.execution_mode === 'dynamic' && !form.provider.trim()) {
-      return { errorMessage: 'Provider is required for AI dynamic agent.' };
+    if (!form.provider.trim()) {
+      return { errorMessage: 'Provider is required for AI agent.' };
     }
-    if (form.execution_mode === 'dynamic' && !form.model.trim()) {
-      return { errorMessage: 'Model is required for AI dynamic agent.' };
+    if (!form.model.trim()) {
+      return { errorMessage: 'Model is required for AI agent.' };
     }
 
     let parsedLlmParams: Record<string, unknown> | null = null;
@@ -664,7 +850,6 @@ export default function AgentManagementPage() {
       name: title,
       title,
       role: 'ai',
-      execution_mode: form.execution_mode,
       prompt_text: form.prompt_text.trim() || null,
       is_structured: Boolean(form.is_structured),
       provider: form.provider.trim(),
@@ -822,13 +1007,6 @@ export default function AgentManagementPage() {
       ),
     },
     {
-      id: 'execution_mode',
-      headerClassName: 'w-[1%] whitespace-nowrap px-4 py-3 text-left font-semibold text-slate-700',
-      header: 'Execution',
-      cellClassName: 'w-[1%] whitespace-nowrap px-4 py-3 align-middle text-slate-600',
-      renderCell: (agent) => agent.execution_mode || '-',
-    },
-    {
       id: 'scope',
       headerClassName: 'w-[1%] whitespace-nowrap px-4 py-3 text-left font-semibold text-slate-700',
       header: 'Scope',
@@ -922,6 +1100,67 @@ export default function AgentManagementPage() {
     },
   ];
 
+  const sortedCompositions = [...compositions].sort((a, b) =>
+    String(b.updated_at ?? '').localeCompare(String(a.updated_at ?? ''))
+  );
+
+  const compositionColumns: ManageTableColumn<FeedbackComposition>[] = [
+    {
+      id: 'composition',
+      header: 'Composition',
+      headerClassName: 'px-4 py-3 text-left font-semibold text-slate-700',
+      cellClassName: 'px-4 py-3 align-middle',
+      renderCell: (composition) => (
+        <div className="min-w-[220px]">
+          <div className="font-medium text-slate-900">{composition.title || composition.composition_id}</div>
+          <div className="mt-1 font-mono text-xs text-slate-500">{composition.composition_id}</div>
+        </div>
+      ),
+    },
+    {
+      id: 'rules',
+      header: 'Rules',
+      headerClassName: 'px-4 py-3 text-left font-semibold text-slate-700',
+      cellClassName: 'px-4 py-3 align-middle text-slate-600',
+      renderCell: (composition) => `${composition.rules.length} rule${composition.rules.length === 1 ? '' : 's'}`,
+    },
+    {
+      id: 'updated_at',
+      header: 'Updated At',
+      headerClassName: 'w-[1%] whitespace-nowrap px-4 py-3 text-left font-semibold text-slate-700',
+      cellClassName: 'w-[1%] whitespace-nowrap px-4 py-3 align-middle text-slate-600',
+      renderCell: (composition) => formatDateTime(composition.updated_at),
+    },
+    {
+      id: 'actions',
+      header: 'Actions',
+      headerClassName: 'w-[1%] whitespace-nowrap px-4 py-3 text-right font-semibold text-slate-700',
+      cellClassName: 'w-[1%] whitespace-nowrap px-4 py-3 align-middle',
+      renderCell: (composition) => (
+        <div className="flex justify-end gap-2">
+          <ActionButton
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="rounded-lg"
+            onClick={() => openEditCompositionPanel(composition)}
+          >
+            Edit
+          </ActionButton>
+          <ActionButton
+            type="button"
+            variant="danger"
+            size="sm"
+            className="rounded-lg"
+            onClick={() => handleDeleteComposition(composition)}
+          >
+            Delete
+          </ActionButton>
+        </div>
+      ),
+    },
+  ];
+
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top_right,_rgba(59,130,246,0.08),_transparent_45%),radial-gradient(circle_at_top_left,_rgba(14,165,233,0.06),_transparent_40%),linear-gradient(to_bottom,_#f8fafc,_#ffffff)] p-8">
       <div className="mx-auto flex w-full max-w-[1500px] flex-col gap-8 p-4 md:p-6">
@@ -956,7 +1195,7 @@ export default function AgentManagementPage() {
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search... (supports creator:xxx)"
+                  placeholder="Search..."
                   className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 pr-9 text-sm text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-slate-300"
                 />
                 <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400">
@@ -1118,6 +1357,67 @@ export default function AgentManagementPage() {
           )}
         />
 
+        <ManageListPanel
+          toolbarLeft={(
+            <div className="flex items-center gap-2">
+              <ActionButton onClick={openCreateCompositionPanel} variant="primary" className="rounded-lg px-3.5 py-2">
+                Create Composition
+              </ActionButton>
+            </div>
+          )}
+          table={(
+            <div className="space-y-3">
+              {compositionError && (
+                <div className="whitespace-pre-wrap rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
+                  {compositionError}
+                </div>
+              )}
+              <ManageDataTable
+                rows={sortedCompositions}
+                rowKey={(composition) => composition.composition_id}
+                columns={compositionColumns}
+                rowClassName="transition-colors hover:bg-slate-50/70"
+                emptyContent="No compositions yet."
+                expandableRows={{
+                  getRowId: (composition) => composition.composition_id,
+                  isRowExpandable: (composition) => composition.rules.length > 0 || Boolean(composition.description),
+                  toggleAriaLabel: (composition, _index, isExpanded) =>
+                    `${isExpanded ? 'Collapse' : 'Expand'} rules for ${composition.composition_id}`,
+                  renderExpandedContent: (composition) => (
+                    <div className="space-y-3">
+                      {composition.description ? (
+                        <p className="text-sm text-slate-700">{composition.description}</p>
+                      ) : (
+                        <p className="text-sm text-slate-400">(no description)</p>
+                      )}
+                      <p className="text-xs text-slate-600">
+                        Target: {composition.question_type || '-'} / {composition.question_id || '-'}
+                      </p>
+                      <div className="space-y-2">
+                        {composition.rules.map((rule, index) => (
+                          <div key={rule.rule_id} className="rounded-lg border border-slate-200 bg-white p-3">
+                            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Rule {index + 1}</p>
+                            <p className="mt-1 font-mono text-xs text-slate-700">{rule.condition_expression}</p>
+                            <p className="mt-1 text-xs text-slate-600">
+                              {compositionFeedbackModeLabel(rule.feedback_mode)} | Agent: {rule.feedback_agent_id || '-'} | Slide:{' '}
+                              {compositionSlideModeLabel(rule.slide_mode)}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ),
+                }}
+              />
+            </div>
+          )}
+          summary={(
+            <p className="text-center text-sm text-slate-500">
+              Showing {sortedCompositions.length} composition{sortedCompositions.length === 1 ? '' : 's'}
+            </p>
+          )}
+        />
+
         {isPanelOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
             <div className="flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl">
@@ -1155,7 +1455,7 @@ export default function AgentManagementPage() {
                   />
                 </div>
 
-                <div className="grid gap-4 md:grid-cols-2">
+                <div className="grid gap-4 md:grid-cols-1">
                   <div>
                     <label className="mb-1 block text-sm font-medium text-slate-700">Role</label>
                     <select
@@ -1165,21 +1465,6 @@ export default function AgentManagementPage() {
                     >
                       <option value="human">human</option>
                       <option value="ai">AI</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="mb-1 block text-sm font-medium text-slate-700">Execution Mode</label>
-                    <select
-                      value={form.execution_mode}
-                      onChange={(e) =>
-                        setFormField('execution_mode', e.target.value === 'dynamic' ? 'dynamic' : 'static')
-                      }
-                      disabled={form.role === 'human'}
-                      className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none disabled:bg-slate-50 disabled:text-slate-500 focus:border-slate-300"
-                    >
-                      <option value="static">static</option>
-                      <option value="dynamic">dynamic</option>
                     </select>
                   </div>
                 </div>
@@ -1307,7 +1592,7 @@ export default function AgentManagementPage() {
                   )}
                   {form.role === 'human' && (
                     <p className="mt-1 text-xs text-slate-500">
-                      Human agent rules enforced: `execution_mode=static`, `prompt_text=''`, `is_structured=false`.
+                      Human agent rules enforced: `prompt_text=&quot;&quot;`, `is_structured=false`.
                     </p>
                   )}
                 </div>
@@ -1430,6 +1715,233 @@ export default function AgentManagementPage() {
                   </ActionButton>
                 </div>
               </form>
+            </div>
+          </div>
+        )}
+
+        {isCompositionPanelOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-sm">
+            <div className="flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl">
+              <div className="mb-4 flex shrink-0 items-start justify-between gap-4">
+                <div>
+                  <h2 className="text-xl font-semibold text-slate-900">
+                    {compositionPanelMode === 'edit' ? 'Edit Composition' : 'Create Composition'}
+                  </h2>
+                  <p className="mt-1 text-sm text-slate-500">
+                    Build ordered IF rules to decide feedback agent strategy and slide display mode.
+                  </p>
+                </div>
+                <ActionButton
+                  type="button"
+                  variant="ghost"
+                  className="rounded-lg"
+                  onClick={() => setIsCompositionPanelOpen(false)}
+                >
+                  Close
+                </ActionButton>
+              </div>
+
+              <div className="min-h-0 space-y-5 overflow-y-auto pr-1">
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-slate-700">Composition ID</label>
+                    <input
+                      type="text"
+                      value={compositionForm.composition_id}
+                      onChange={(e) => setCompositionField('composition_id', e.target.value)}
+                      disabled={compositionPanelMode === 'edit'}
+                      placeholder="e.g. comp_mcq_v1"
+                      className="w-full rounded-xl border border-slate-200 px-3 py-2 font-mono text-sm text-slate-900 shadow-sm outline-none disabled:bg-slate-50 disabled:text-slate-500 focus:border-slate-300"
+                    />
+                    <p className="mt-1 text-xs text-slate-500">
+                      Use this ID in URL, e.g. <code>composition_id=comp_mcq_v1</code>.
+                    </p>
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-slate-700">Title</label>
+                    <input
+                      type="text"
+                      value={compositionForm.title}
+                      onChange={(e) => setCompositionField('title', e.target.value)}
+                      className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-slate-300"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-slate-700">Description</label>
+                  <textarea
+                    rows={2}
+                    value={compositionForm.description}
+                    onChange={(e) => setCompositionField('description', e.target.value)}
+                    className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-slate-300"
+                  />
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-slate-700">Question ID</label>
+                    <input
+                      type="text"
+                      value={compositionForm.question_id}
+                      onChange={(e) => setCompositionField('question_id', e.target.value)}
+                      placeholder="e.g. 12345"
+                      className="w-full rounded-xl border border-slate-200 px-3 py-2 font-mono text-sm text-slate-900 shadow-sm outline-none focus:border-slate-300"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-sm font-medium text-slate-700">Question Type</label>
+                    <select
+                      value={compositionForm.question_type}
+                      onChange={(e) => setCompositionField('question_type', e.target.value as CompositionFormState['question_type'])}
+                      className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-slate-300"
+                    >
+                      <option value="">Select type</option>
+                      <option value="mcq">mcq</option>
+                      <option value="oeq">oeq</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  {compositionForm.rules.map((rule, index) => (
+                    <div key={rule.rule_id} className="rounded-2xl border border-slate-200 p-4">
+                      <div className="mb-3 flex items-center justify-between gap-2">
+                        <p className="text-sm font-semibold text-slate-900">IF Rule {index + 1}</p>
+                        <ActionButton
+                          type="button"
+                          variant="danger"
+                          size="sm"
+                          className="rounded-lg"
+                          onClick={() => removeCompositionRuleById(rule.rule_id)}
+                          disabled={compositionForm.rules.length <= 1}
+                        >
+                          Remove
+                        </ActionButton>
+                      </div>
+
+                      <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">
+                        Condition Expression
+                      </label>
+                      <textarea
+                        rows={2}
+                        value={rule.condition_expression}
+                        onChange={(e) =>
+                          updateCompositionRule(rule.rule_id, { condition_expression: e.target.value })
+                        }
+                        className="w-full rounded-xl border border-slate-200 px-3 py-2 font-mono text-sm text-slate-900 shadow-sm outline-none focus:border-slate-300"
+                      />
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {COMPOSITION_VARIABLE_TOKENS.map((token) => (
+                          <ActionButton
+                            key={`${rule.rule_id}-var-${token}`}
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="rounded-lg"
+                            onClick={() => appendTokenToRuleExpression(rule.rule_id, token)}
+                          >
+                            + {token}
+                          </ActionButton>
+                        ))}
+                        {COMPOSITION_LITERAL_TOKENS.map((token) => (
+                          <ActionButton
+                            key={`${rule.rule_id}-lit-${token}`}
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="rounded-lg"
+                            onClick={() => appendTokenToRuleExpression(rule.rule_id, token)}
+                          >
+                            + {token}
+                          </ActionButton>
+                        ))}
+                      </div>
+
+                      <div className="mt-3 grid gap-3 md:grid-cols-3">
+                        <div>
+                          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">
+                            Feedback Strategy
+                          </label>
+                          <select
+                            value={rule.feedback_mode}
+                            onChange={(e) =>
+                              updateCompositionRule(rule.rule_id, {
+                                feedback_mode: e.target.value as FeedbackCompositionRule['feedback_mode'],
+                              })
+                            }
+                            className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-slate-300"
+                          >
+                            <option value="use_latest_version">Use feedback agent (latest version)</option>
+                            <option value="runtime_generate">Use feedback agent (runtime generate)</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">
+                            Feedback Agent
+                          </label>
+                          <select
+                            value={rule.feedback_agent_id}
+                            onChange={(e) =>
+                              updateCompositionRule(rule.rule_id, { feedback_agent_id: e.target.value })
+                            }
+                            className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-slate-300"
+                          >
+                            <option value="">Select agent</option>
+                            {agents.map((agent) => (
+                              <option key={`rule-agent-${rule.rule_id}-${agent.agent_id}`} value={agent.agent_id}>
+                                {(agent.title || agent.agent_id).trim()} ({agent.agent_id})
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">
+                            Slide Display
+                          </label>
+                          <select
+                            value={rule.slide_mode}
+                            onChange={(e) =>
+                              updateCompositionRule(rule.rule_id, {
+                                slide_mode: e.target.value as FeedbackCompositionRule['slide_mode'],
+                              })
+                            }
+                            className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-slate-300"
+                          >
+                            <option value="most_relevant_slide_page">Most Relevant Slide Page</option>
+                            <option value="slide_file">Slide File</option>
+                            <option value="no_slide">No Slide</option>
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+
+                  <ActionButton type="button" variant="ghost" className="rounded-lg" onClick={addCompositionRule}>
+                    + Add IF Rule
+                  </ActionButton>
+                </div>
+
+                {compositionError && (
+                  <div className="whitespace-pre-wrap rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
+                    {compositionError}
+                  </div>
+                )}
+
+                <div className="flex justify-end gap-2">
+                  <ActionButton
+                    type="button"
+                    variant="ghost"
+                    className="rounded-lg"
+                    onClick={() => setIsCompositionPanelOpen(false)}
+                  >
+                    Cancel
+                  </ActionButton>
+                  <ActionButton type="button" variant="primary" className="rounded-lg" onClick={handleSubmitComposition}>
+                    {compositionPanelMode === 'edit' ? 'Update Composition' : 'Create Composition'}
+                  </ActionButton>
+                </div>
+              </div>
             </div>
           </div>
         )}
