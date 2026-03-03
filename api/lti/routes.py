@@ -16,6 +16,7 @@ import requests
 from jose import jwt
 
 from api.config import Settings, get_settings
+import textwrap
 
 from .deep_linking import (
     build_auto_post_html,
@@ -301,9 +302,11 @@ async def lti_login(request: Request, settings: Settings = Depends(get_settings)
         state=state,
         nonce=nonce,
     )
-    print("LTI Go to:", redirect_url)
-    # 303 like the Simon test (302 also acceptable, but match the test)
-    return RedirectResponse(url=redirect_url, status_code=303)
+    print("LTI Go to:")
+    for line in textwrap.wrap(redirect_url, 120):
+        print(line)
+        # 303 like the Simon test (302 also acceptable, but match the test)
+        return RedirectResponse(url=redirect_url, status_code=303)
 
 
 @router.api_route("/launch", methods=["GET", "POST"])
