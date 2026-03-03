@@ -6,8 +6,6 @@ import {
   Loader2,
   ZoomIn,
   Volume2,
-  Mic,
-  MicOff,
 } from "lucide-react";
 import DynamicImage from "@/app/components/DynamicImage";
 import {
@@ -34,7 +32,6 @@ interface ReferenceAreaProps {
   question?: string | Array<{ text?: string; [key: string]: unknown }>; // The question being asked (can be text or array of content)
   options?: string[]; // Multiple choice options if applicable
   correctAnswer?: string; // The correct answer for MCQ
-  course_version?: string; // Course version to determine display behavior
   recordId?: number | null;
   sessionId?: string;
   participantId?: string | null;
@@ -53,12 +50,29 @@ export default function ReferenceArea({
   question,
   options,
   correctAnswer,
-  course_version,
   recordId,
   sessionId,
   participantId,
 }: ReferenceAreaProps) {
   const validImages = useMemo(() => images ?? [], [images]);
+  const slideEmbedUrl = useMemo(() => {
+    if (!reference) return "";
+    const backendEmbedUrl = String(
+      reference.most_relevant_slide_embed_url ??
+      reference.slide_embed_url ??
+      ""
+    ).trim();
+    if (backendEmbedUrl) return backendEmbedUrl;
+    if (!reference.slide_google_id) return "";
+    return `https://docs.google.com/presentation/d/${reference.slide_google_id}/embed`;
+  }, [reference]);
+  const slideEmbedUrlError = useMemo(
+    () => String(reference?.most_relevant_slide_embed_url_error ?? "").trim(),
+    [reference?.most_relevant_slide_embed_url_error]
+  );
+  const slideOpenUrl = useMemo(() => {
+    return slideEmbedUrl;
+  }, [slideEmbedUrl]);
   const [audioError, setAudioError] = useState<string | null>(null);
   const [isRealtimeSessionActive, setIsRealtimeSessionActive] = useState(false);
   const [isMuted, setIsMuted] = useState(true); // Default to muted
@@ -558,128 +572,68 @@ export default function ReferenceArea({
           </div>
         </div>
 
-        {/* Voice Chat Button - Hidden for v2a */}
-        {course_version !== "v2a" && (
-          <div className="flex items-center gap-2">
-            {/* Realtime Voice Session Button */}
-            {reference && !isReferenceLoading && (
-              <>
-                <div
-                  className="relative"
-                  onMouseEnter={() => setIsAudioTooltipVisible(true)}
-                  onMouseLeave={() => setIsAudioTooltipVisible(false)}
+        <div className="flex items-center gap-2">
+          {/* Realtime Voice Session Button */}
+          {reference && !isReferenceLoading && (
+            <>
+              <div
+                className="relative"
+                onMouseEnter={() => setIsAudioTooltipVisible(true)}
+                onMouseLeave={() => setIsAudioTooltipVisible(false)}
+              >
+                <button
+                  onClick={() => {
+                    setIsAudioTooltipVisible(false);
+                    handleRealtimeSession();
+                  }}
+                  className={`
+                     flex items-center gap-2 px-3 py-2 rounded-lg transition-all duration-200
+                     ${
+                       isRealtimeSessionActive
+                         ? "bg-red-100 text-red-700 hover:bg-red-200"
+                         : "bg-green-100 text-green-700 hover:bg-green-200"
+                     }
+                   `}
+                  aria-label={
+                    isRealtimeSessionActive
+                      ? "End AI narration"
+                      : "May ask for microphone permission to activate the AI, but we will NOT collect your audio data."
+                  }
+                  aria-describedby={
+                    isAudioTooltipVisible ? audioTooltipId : undefined
+                  }
+                  onFocus={() => setIsAudioTooltipVisible(true)}
+                  onBlur={() => setIsAudioTooltipVisible(false)}
                 >
-                  <button
-                    onClick={() => {
-                      setIsAudioTooltipVisible(false);
-                      handleRealtimeSession();
-                    }}
-                    className={`
-                       flex items-center gap-2 px-3 py-2 rounded-lg transition-all duration-200
-                       ${
-                         isRealtimeSessionActive
-                           ? "bg-red-100 text-red-700 hover:bg-red-200"
-                           : "bg-green-100 text-green-700 hover:bg-green-200"
-                       }
-                     `}
-                    aria-label={
-                      isRealtimeSessionActive
-                        ? "End AI narration"
-                        : "May ask for microphone permission to activate the AI, but we will NOT collect your audio data."
-                    }
-                    aria-describedby={
-                      isAudioTooltipVisible ? audioTooltipId : undefined
-                    }
-                    onFocus={() => setIsAudioTooltipVisible(true)}
-                    onBlur={() => setIsAudioTooltipVisible(false)}
+                  <Volume2 className="w-4 h-4" />
+                  <span className="text-sm font-medium">
+                    {isRealtimeSessionActive
+                      ? "End AI Narration"
+                      : "AI Narration"}
+                  </span>
+                </button>
+                {isAudioTooltipVisible && (
+                  <div
+                    id={audioTooltipId}
+                    role="tooltip"
+                    className="pointer-events-none absolute left-1/2 top-full z-[9999] mt-3 min-w-60 -translate-x-44 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-700 shadow-lg"
                   >
-                    <Volume2 className="w-4 h-4" />
-                    <span className="text-sm font-medium">
-                      {isRealtimeSessionActive
-                        ? "End AI Narration"
-                        : "AI Narration"}
+                    <span className="block text-left">
+                      {audioNarrationTooltipText}
                     </span>
-                  </button>
-                  {isAudioTooltipVisible && (
-                    <div
-                      id={audioTooltipId}
-                      role="tooltip"
-                      className="pointer-events-none absolute left-1/2 top-full z-[9999] mt-3 min-w-60 -translate-x-44 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-700 shadow-lg"
-                    >
-                      <span className="block text-left">
-                        {audioNarrationTooltipText}
-                      </span>
-                      <div className="pointer-events-none absolute left-3/4 -top-[6px] -translate-x-1/2">
-                        <div className="h-0 w-0 border-x-4 border-b-[6px] border-x-transparent border-b-slate-300"></div>
-                        <div className="absolute left-1/2 top-[1px] -translate-x-1/2 h-0 w-0 border-x-[3px] border-b-[5px] border-x-transparent border-b-white"></div>
-                      </div>
+                    <div className="pointer-events-none absolute left-3/4 -top-[6px] -translate-x-1/2">
+                      <div className="h-0 w-0 border-x-4 border-b-[6px] border-x-transparent border-b-slate-300"></div>
+                      <div className="absolute left-1/2 top-[1px] -translate-x-1/2 h-0 w-0 border-x-[3px] border-b-[5px] border-x-transparent border-b-white"></div>
                     </div>
-                  )}
-                </div>
-
-                {/* Mute Button - Always shown alongside voice chat button */}
-                {
-                  // <div className="relative">
-                  //   <button
-                  //     onClick={handleMuteToggle}
-                  //     onMouseEnter={() => setShowDeviceList(true)}
-                  //     onMouseLeave={() => setShowDeviceList(false)}
-                  //     disabled={true}
-                  //     className={`
-                  //        flex items-center gap-2 px-3 py-2 rounded-lg transition-all duration-200 disabled:opacity-75 disabled:cursor-not-allowed
-                  //        bg-orange-100 text-orange-700
-                  //      `}
-                  //     title="Audio input is disabled for now"
-                  //   >
-                  //     <MicOff className="w-4 h-4" />
-                  //     <span className="text-sm font-medium">Muted</span>
-                  //   </button>
-                  //   {/* Audio Device List Dropdown */}
-                  //   {showDeviceList && audioDevices.length > 0 && (
-                  //     <div
-                  //       className="absolute top-full left-0 mt-1 w-64 bg-white border border-gray-200 rounded-lg shadow-lg z-10"
-                  //       onMouseEnter={() => setShowDeviceList(true)}
-                  //       onMouseLeave={() => setShowDeviceList(false)}
-                  //     >
-                  //       <div className="p-2">
-                  //         <div className="text-xs font-medium text-gray-700 mb-2">
-                  //           Audio Input Devices
-                  //         </div>
-                  //         {audioDevices.map((device) => (
-                  //           <button
-                  //             key={device.deviceId}
-                  //             onClick={() => {
-                  //               setSelectedDeviceId(device.deviceId);
-                  //               setShowDeviceList(false);
-                  //             }}
-                  //             className={`w-full text-left px-2 py-1 text-xs rounded hover:bg-gray-100 transition-colors ${
-                  //               selectedDeviceId === device.deviceId
-                  //                 ? "bg-blue-50 text-blue-700"
-                  //                 : "text-gray-600"
-                  //             }`}
-                  //           >
-                  //             <div className="truncate">
-                  //               {device.label ||
-                  //                 `Microphone ${device.deviceId.slice(
-                  //                   0,
-                  //                   8
-                  //                 )}...`}
-                  //             </div>
-                  //           </button>
-                  //         ))}
-                  //       </div>
-                  //     </div>
-                  //   )}
-                  // </div>
-                }
-              </>
-            )}
-          </div>
-        )}
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+        </div>
       </div>
 
-      {/* Voice Chat Hint Popup - Hidden for v2a */}
-      {showVoiceChatHint && course_version !== "v2a" && (
+      {showVoiceChatHint && (
         <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg animate-pulse">
           <div className="flex items-start gap-2">
             <Volume2 className="w-5 h-5 text-blue-600 mt-0.5" />
@@ -696,8 +650,7 @@ export default function ReferenceArea({
         </div>
       )}
 
-      {/* Audio Error Message - Hidden for v2a */}
-      {audioError && course_version !== "v2a" && (
+      {audioError && (
         <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg">
           <p className="text-sm text-red-600">{audioError}</p>
           {audioError.includes("blocked by browser") && (
@@ -721,10 +674,7 @@ export default function ReferenceArea({
       ) : reference ? (
         <div className="space-y-6">
           <div className="p-6 bg-blue-50 rounded-xl border border-blue-200">
-            {/* Slide Images with text as alt text - Hidden for v2a */}
-            {course_version !== "v2a" &&
-            validImages.length > 0 &&
-            !isImageLoading ? (
+            {validImages.length > 0 && !isImageLoading ? (
               <div className="space-y-4 mb-6">
                 <div className="grid grid-cols-1 gap-4">
                   {validImages.map((src, index) => (
@@ -748,7 +698,7 @@ export default function ReferenceArea({
                   ))}
                 </div>
               </div>
-            ) : course_version !== "v2a" && isImageLoading ? (
+            ) : isImageLoading ? (
               <div className="text-center py-6 mb-6">
                 <div className="space-y-3">
                   <Loader2 className="w-8 h-8 text-blue-400 animate-spin mx-auto" />
@@ -763,8 +713,6 @@ export default function ReferenceArea({
                 </div>
               </div>
             ) : (
-              /* Show text content only when no images are available - Hidden for v2a */
-              course_version !== "v2a" &&
               reference.display && (
                 <div className="prose prose-sm max-w-none mb-6">
                   <div className="text-xs text-slate-500 leading-relaxed italic">
@@ -775,32 +723,45 @@ export default function ReferenceArea({
             )}
 
             {/* Footer with page info and link */}
-            <div
-              className={`${
-                course_version === "v2a"
-                  ? "mt-6"
-                  : "mt-6 pt-4 border-t border-blue-200"
-              }`}
-            >
-              <div
-                className={`flex items-center ${
-                  course_version === "v2a" ? "justify-start" : "justify-between"
-                } text-sm text-slate-600`}
-              >
-                {/* Only show page number for non-v2a versions */}
-                {course_version !== "v2a" && (
-                  <span>Page {reference.page_number + 1}</span>
-                )}
-                <a
-                  href={`https://docs.google.com/presentation/d/${reference.slide_google_id}/edit`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex items-center gap-1 text-blue-600 hover:text-blue-700 transition-colors duration-200"
-                >
-                  <span>{reference.slide_title}</span>
-                  <ExternalLink className="w-3 h-3" />
-                </a>
+            {/* Inline slide file preview (anchored to most relevant page when available) */}
+              {slideEmbedUrl ? (
+                <div className="mt-4 rounded-lg border border-blue-200 bg-white p-2">
+                  <iframe
+                    key={`slide-preview-${reference.slide_google_id}-${reference.most_relevant_page_number ?? "na"}`}
+                    src={slideEmbedUrl}
+                    title={reference.slide_title || "Reference slide preview"}
+                    className="h-[420px] w-full rounded"
+                    allowFullScreen
+                  />
               </div>
+            ) : null}
+
+            <div className="mt-6 pt-4 border-t border-blue-200">
+              <div
+                className="flex items-center justify-between text-sm text-slate-600"
+              >
+                <div className="flex flex-wrap items-center gap-3">
+                  {slideEmbedUrlError ? (
+                    <span className="text-rose-600">
+                      Embed URL error: {slideEmbedUrlError}
+                    </span>
+                  ) : null}
+                </div>
+                {reference.slide_google_id ? (
+                  <a
+                    href={slideOpenUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center gap-1 text-blue-600 hover:text-blue-700 transition-colors duration-200"
+                  >
+                    <span>{reference.slide_title || "Open slide"}</span>
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                ) : (
+                  <span className="text-slate-500">Resource unavailable</span>
+                )}
+              </div>
+
             </div>
           </div>
         </div>

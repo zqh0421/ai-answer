@@ -74,10 +74,10 @@ export const buildStaticPageTitle = (pageName?: string) => {
 };
 
 const fallbackTitleFromPathname = (pathname: string) => {
-  const mcqMatch = pathname.match(/\/v2\/mcq\/([^/]+)/i);
+  const mcqMatch = pathname.match(/\/mcq\/([^/]+)/i);
   if (mcqMatch) return truncate(`MCQ ${mcqMatch[1]}`, MAX_RESOURCE_TITLE_LENGTH);
 
-  const oeqMatch = pathname.match(/\/v2\/oeq\/([^/]+)/i);
+  const oeqMatch = pathname.match(/\/oeq\/([^/]+)/i);
   if (oeqMatch) return truncate(`OEQ ${oeqMatch[1]}`, MAX_RESOURCE_TITLE_LENGTH);
 
   return "SlideItRight Resource";

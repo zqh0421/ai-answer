@@ -40,10 +40,18 @@ export interface Slide {
 export interface Reference {
   text: string;
   image_text: string;
-  page_number: number;
+  page_number: number; // legacy field for backward compatibility
+  page_start?: number | null;
+  page_end?: number | null;
+  most_relevant_page_number?: number | null;
+  slide_total_pages?: number | null;
+  slide_id?: string;
   slide_google_id: string;
   slide_title: string;
   display: string;
+  most_relevant_slide_embed_url?: string | null;
+  slide_embed_url?: string | null;
+  most_relevant_slide_embed_url_error?: string | null;
 }
 
 export interface modulesNslides {
@@ -76,16 +84,26 @@ export type RecordResultInput = {
 }
 
 export interface StructuredFeedback {
-  score: string;
-  feedback: string;
-  structured_feedback: string;
+  is_structured?: boolean;
+  score?: string | number;
+  max_score?: string | number;
+  feedback?: string;
+  structured_feedback?: string;
+  text_feedback?: string;
 }
 
 // Union type for all possible feedback formats
 export type FeedbackResult = 
   | string 
   | StructuredFeedback 
-  | { feedback?: string; score?: string; structured_feedback?: string };
+  | {
+      feedback?: string;
+      is_structured?: boolean;
+      score?: string | number;
+      max_score?: string | number;
+      structured_feedback?: string;
+      text_feedback?: string;
+    };
 
 // Helper type for the processed feedback data
 export type ProcessedFeedbackData = 

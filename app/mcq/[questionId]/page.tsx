@@ -46,8 +46,17 @@ const stringifyIfObject = (value: unknown): string => {
   return String(value);
 };
 
-const resolveRuntimeFeedbackContent = (raw: any): { feedbackText: string; structuredFeedback: string } => {
-  const feedbackText = readFirstString(
+const resolveRuntimeFeedbackContent = (
+  raw: any
+): {
+  isStructured: boolean | null;
+  feedbackText: string;
+  structuredFeedback: string;
+  textFeedback: string;
+  score?: number;
+  maxScore?: number;
+} => {
+  const baseFeedbackText = readFirstString(
     raw?.feedback,
     raw?.output,
     raw?.result,
@@ -56,29 +65,88 @@ const resolveRuntimeFeedbackContent = (raw: any): { feedbackText: string; struct
     raw?.question_feedback_text,
     raw?.message
   );
-  const structuredFeedback = readFirstString(
+  const structuredFeedbackRaw = readFirstString(
     raw?.structured_feedback,
     raw?.feedback_html,
+    raw?.static_feedback_text,
+    raw?.question_feedback_text
+  );
+  const textFeedbackRaw = readFirstString(
+    raw?.text_feedback,
     raw?.feedback,
     raw?.output,
     raw?.result,
+    raw?.text,
     raw?.static_feedback_text,
     raw?.question_feedback_text
   );
   const fallbackFeedback = stringifyIfObject(raw?.feedback || raw?.output || raw?.result);
+  const isStructured =
+    typeof raw?.is_structured === "boolean"
+      ? raw.is_structured
+      : structuredFeedbackRaw && !textFeedbackRaw
+      ? true
+      : textFeedbackRaw && !structuredFeedbackRaw
+      ? false
+      : null;
+  const scoreCandidate =
+    typeof raw?.score === "number" ? raw.score : typeof raw?.score === "string" ? Number(raw.score) : NaN;
+  const maxScoreCandidate =
+    typeof raw?.max_score === "number"
+      ? raw.max_score
+      : typeof raw?.max_score === "string"
+      ? Number(raw.max_score)
+      : NaN;
+  const aiScoreResult =
+    raw?.ai_score_result && typeof raw.ai_score_result === "object" ? raw.ai_score_result : null;
+  const aiHasScore = Boolean(aiScoreResult?.has_score);
+  const aiScoreRaw = aiScoreResult?.score;
+  const aiMaxScoreRaw = aiScoreResult?.max_score;
+  const aiScoreCandidate =
+    typeof aiScoreRaw === "number" ? aiScoreRaw : typeof aiScoreRaw === "string" ? Number(aiScoreRaw) : NaN;
+  const aiMaxScoreCandidate =
+    typeof aiMaxScoreRaw === "number"
+      ? aiMaxScoreRaw
+      : typeof aiMaxScoreRaw === "string"
+      ? Number(aiMaxScoreRaw)
+      : NaN;
+  const effectiveScoreCandidate = Number.isFinite(scoreCandidate)
+    ? scoreCandidate
+    : aiHasScore
+    ? aiScoreCandidate
+    : NaN;
+  const effectiveMaxScoreCandidate = Number.isFinite(maxScoreCandidate)
+    ? maxScoreCandidate
+    : aiHasScore
+    ? aiMaxScoreCandidate
+    : NaN;
+  const feedbackText = baseFeedbackText || textFeedbackRaw || structuredFeedbackRaw || fallbackFeedback;
+  const resolvedStructuredFeedback = structuredFeedbackRaw || feedbackText || fallbackFeedback;
+  const resolvedTextFeedback = textFeedbackRaw || feedbackText || fallbackFeedback;
+
   return {
-    feedbackText: feedbackText || fallbackFeedback,
-    structuredFeedback: structuredFeedback || feedbackText || fallbackFeedback,
+    isStructured,
+    feedbackText,
+    structuredFeedback: resolvedStructuredFeedback,
+    textFeedback: resolvedTextFeedback,
+    ...(Number.isFinite(effectiveScoreCandidate) ? { score: effectiveScoreCandidate } : {}),
+    ...(Number.isFinite(effectiveMaxScoreCandidate) ? { maxScore: effectiveMaxScoreCandidate } : {}),
   };
 };
 
 const extractExplicitScore = (value: unknown): Pick<RecordResultInput, "score_given" | "score_maximum"> => {
   const parsed = parseJsonLikeFeedback(value);
   const rawScore = parsed?.score;
+  const rawMaxScore = parsed?.max_score;
   const numericScore =
     typeof rawScore === "number" ? rawScore : typeof rawScore === "string" ? Number(rawScore) : NaN;
+  const numericMaxScore =
+    typeof rawMaxScore === "number" ? rawMaxScore : typeof rawMaxScore === "string" ? Number(rawMaxScore) : NaN;
   if (!Number.isFinite(numericScore)) return {};
-  return { score_given: numericScore, score_maximum: 1 };
+  if (!Number.isFinite(numericMaxScore) || numericMaxScore <= 0) {
+    return { score_given: numericScore, score_maximum: 1 };
+  }
+  return { score_given: numericScore, score_maximum: numericMaxScore };
 };
 
 const scoreFromIsCorrect = (isCorrect: unknown): Pick<RecordResultInput, "score_given" | "score_maximum"> => {
@@ -104,6 +172,43 @@ const extractQuestionPayload = (raw: any) => {
 
 const normalizeQuestionPresetFromApi = (raw: any): Question => {
   const payload = extractQuestionPayload(raw);
+  const rawSlideScope = payload?.slide_scope ?? payload?.current_version?.slide_scope;
+  const normalizedSlideScope = Array.isArray(rawSlideScope)
+    ? rawSlideScope
+        .map((entry: any) => {
+          const slideId = String(entry?.slide_id ?? entry?.id ?? "").trim();
+          if (!slideId) return null;
+          const pageStartRaw = entry?.page_start ?? entry?.start_page;
+          const pageEndRaw = entry?.page_end ?? entry?.end_page;
+          const pageStart = typeof pageStartRaw === "number" ? pageStartRaw : Number(pageStartRaw);
+          const pageEnd = typeof pageEndRaw === "number" ? pageEndRaw : Number(pageEndRaw);
+          return {
+            ...entry,
+            slide_id: slideId,
+            slide_google_id: String(
+              entry?.slide_google_id ??
+              (entry?.slide && typeof entry.slide === "object" ? (entry.slide as any)?.slide_google_id : "") ??
+              ""
+            ).trim() || undefined,
+            page_start: Number.isFinite(pageStart) ? pageStart : null,
+            page_end: Number.isFinite(pageEnd) ? pageEnd : null,
+          };
+        })
+        .filter(Boolean)
+    : [];
+  const normalizedSlideIds = (() => {
+    const directIds = Array.isArray(payload?.slide_ids)
+      ? payload.slide_ids.filter((item: unknown): item is string => typeof item === "string" && item.trim().length > 0)
+      : [];
+    if (directIds.length > 0) return directIds;
+    if (normalizedSlideScope.length > 0) {
+      return normalizedSlideScope
+        .map((entry: any) => String(entry?.slide_id ?? "").trim())
+        .filter(Boolean);
+    }
+    return [];
+  })();
+
   const normalizeOption = (option: any) => {
     if (typeof option === "string") {
       return { text: option, isCorrect: false };
@@ -148,6 +253,8 @@ const normalizeQuestionPresetFromApi = (raw: any): Question => {
     ...payload,
     type: String(payload?.type ?? payload?.question_type ?? ""),
     content: Array.isArray(payload?.content) && payload.content.length > 0 ? payload.content : contentFromBlocks,
+    slide_ids: normalizedSlideIds,
+    slide_scope: normalizedSlideScope as any,
     options: optionsFromTopLevel.length > 0 ? optionsFromTopLevel : optionsFromInteractions,
   };
 };
@@ -160,6 +267,18 @@ type CompositionResolveResponse = {
   slide_mode?: string;
   feedback_agent_id?: string;
 };
+
+type CompositionSlideMode = "slide_file" | "no_slide" | "most_relevant_slide_page" | "";
+const normalizeCompositionSlideMode = (raw?: string): CompositionSlideMode => {
+  const value = String(raw ?? "").trim().toLowerCase();
+  if (!value) return "";
+  if (value === "no_slide" || value === "no-slide") return "no_slide";
+  if (value === "slide_file" || value === "full_slide" || value === "slide-file" || value === "slidefile") {
+    return "slide_file";
+  }
+  return "most_relevant_slide_page";
+};
+
 const createFallbackLearnerId = () => `test_learner_${Math.random().toString(36).slice(2, 10)}`;
 
 function PageChildren({ 
@@ -188,6 +307,9 @@ function PageChildren({
   const compositionId = (searchParams?.composition_id as string) || undefined;
   const learnerIdFromUrl = (searchParams?.learner_id as string) || undefined;
   const isLtiMode = Boolean(searchParams?.lti_mode || launchId || ltiLaunchId);
+  const compositionDebugEnabled =
+    String(searchParams?.debug_composition ?? "").toLowerCase() === "1" ||
+    String(searchParams?.debug_composition ?? "").toLowerCase() === "true";
 
   const dispatch = useDispatch<AppDispatch>();
 
@@ -230,7 +352,6 @@ function PageChildren({
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [availableModules, setAvailableModules] = useState<Module[]>([]);
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [availableSlides, setAvailableSlides] = useState<Slide[]>([]);
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -242,6 +363,8 @@ function PageChildren({
     content: [],
   });
   const [questionLoading, setQuestionLoading] = useState(false);
+  const [compositionDebugInfo, setCompositionDebugInfo] = useState<any>(null);
+  const [hasSubmitted, setHasSubmitted] = useState(false);
   const [enlargedImage, setEnlargedImage] = useState<string | null>(null);
   const [currentImageIndex, setCurrentImageIndex] = useState<number>(0);
 
@@ -278,6 +401,162 @@ function PageChildren({
     }
   }, [compositionId, effectiveLearnerId]);
 
+  const buildQuestionLevelReference = useCallback((): Reference | undefined => {
+    const slideScopeEntry = Array.isArray((questionPreset as any)?.slide_scope)
+      ? (questionPreset as any).slide_scope[0]
+      : undefined;
+    const rawSlideId = String(
+      slideScopeEntry?.slide_id ??
+      questionPreset?.slide_ids?.[0] ??
+      ""
+    ).trim();
+    if (!rawSlideId) return undefined;
+
+    const questionSlides = Array.isArray((questionPreset as any)?.slides)
+      ? (questionPreset as any).slides
+      : Array.isArray((questionPreset as any)?.current_version?.slides)
+        ? (questionPreset as any).current_version.slides
+        : [];
+    const matchedQuestionSlide = questionSlides.find((item: any) => {
+      const candidateId = String(item?.id ?? item?.slide_id ?? "").trim();
+      const candidateGoogleId = String(item?.slide_google_id ?? "").trim();
+      return candidateId === rawSlideId || candidateGoogleId === rawSlideId;
+    });
+    const matchedSlide = availableSlides.find((item) => item.id === rawSlideId || item.slide_google_id === rawSlideId);
+    const scopedSlideRecord =
+      slideScopeEntry?.slide && typeof slideScopeEntry.slide === "object"
+        ? (slideScopeEntry.slide as Record<string, unknown>)
+        : undefined;
+    const slideGoogleId = String(
+      matchedSlide?.slide_google_id ??
+      matchedQuestionSlide?.slide_google_id ??
+      slideScopeEntry?.slide_google_id ??
+      scopedSlideRecord?.slide_google_id ??
+      ""
+    ).trim();
+
+    const pageStartRaw = slideScopeEntry?.page_start;
+    const pageEndRaw = slideScopeEntry?.page_end;
+    const pageStart =
+      pageStartRaw === null || pageStartRaw === undefined
+        ? null
+        : typeof pageStartRaw === "number"
+          ? pageStartRaw
+          : Number.isFinite(Number(pageStartRaw))
+            ? Number(pageStartRaw)
+            : null;
+    const pageEnd =
+      pageEndRaw === null || pageEndRaw === undefined
+        ? null
+        : typeof pageEndRaw === "number"
+          ? pageEndRaw
+          : Number.isFinite(Number(pageEndRaw))
+            ? Number(pageEndRaw)
+            : null;
+    const mostRelevantPageRaw = slideScopeEntry?.most_relevant_page_number;
+    const mostRelevantPage =
+      mostRelevantPageRaw === null || mostRelevantPageRaw === undefined
+        ? null
+        : typeof mostRelevantPageRaw === "number"
+          ? mostRelevantPageRaw
+          : Number.isFinite(Number(mostRelevantPageRaw))
+            ? Number(mostRelevantPageRaw)
+            : null;
+    const slideTotalPagesRaw = slideScopeEntry?.slide_total_pages;
+    const slideTotalPages =
+      slideTotalPagesRaw === null || slideTotalPagesRaw === undefined
+        ? null
+        : typeof slideTotalPagesRaw === "number"
+          ? slideTotalPagesRaw
+          : Number.isFinite(Number(slideTotalPagesRaw))
+            ? Number(slideTotalPagesRaw)
+            : null;
+    const slideEmbedUrl = String(
+      slideScopeEntry?.most_relevant_slide_embed_url ??
+      scopedSlideRecord?.most_relevant_slide_embed_url ??
+      slideScopeEntry?.slide_embed_url ??
+      scopedSlideRecord?.slide_embed_url ??
+      slideScopeEntry?.most_relevant_slide_url ??
+      scopedSlideRecord?.most_relevant_slide_url ??
+      ""
+    ).trim();
+    const slideEmbedUrlError = String(
+      slideScopeEntry?.most_relevant_slide_embed_url_error ??
+      scopedSlideRecord?.most_relevant_slide_embed_url_error ??
+      ""
+    ).trim();
+    const hasMostRelevantPage = Number.isFinite(mostRelevantPage as number) && Number(mostRelevantPage) > 0;
+
+    return {
+      text: "",
+      image_text: "",
+      display: "",
+      page_number: hasMostRelevantPage ? Number(mostRelevantPage) : -1,
+      page_start: pageStart,
+      page_end: pageEnd,
+      most_relevant_page_number: hasMostRelevantPage ? Number(mostRelevantPage) : null,
+      slide_total_pages: slideTotalPages,
+      slide_id: rawSlideId,
+      slide_google_id: slideGoogleId,
+      most_relevant_slide_embed_url: slideEmbedUrl || null,
+      slide_embed_url: slideEmbedUrl || null,
+      most_relevant_slide_embed_url_error: slideEmbedUrlError || null,
+      slide_title: String(
+        matchedSlide?.slide_title ??
+        matchedQuestionSlide?.slide_title ??
+        slideScopeEntry?.slide_title ??
+        scopedSlideRecord?.slide_title ??
+        "Open slide"
+      ),
+    };
+  }, [availableSlides, questionPreset]);
+
+  useEffect(() => {
+    if (!hasSubmitted) return;
+    if (!compositionId || !questionPreset?.question_id) return;
+    let active = true;
+
+    const hydrateCompositionSlideReference = async () => {
+      const resolved = await resolveCompositionForQuestion(questionPreset.question_id);
+      if (!active) return;
+
+      const normalizedSlideMode = normalizeCompositionSlideMode(resolved?.slide_mode);
+      const questionLevelReference = buildQuestionLevelReference();
+      if (compositionDebugEnabled) {
+        setCompositionDebugInfo({
+          composition_id: compositionId,
+          question_id: questionPreset.question_id,
+          raw_slide_mode: resolved?.slide_mode ?? null,
+          normalized_slide_mode: normalizedSlideMode,
+          resolved,
+          question_slide_ids: questionPreset?.slide_ids ?? [],
+          question_slide_scope_first:
+            Array.isArray((questionPreset as any)?.slide_scope) && (questionPreset as any)?.slide_scope?.length > 0
+              ? (questionPreset as any).slide_scope[0]
+              : null,
+        });
+      }
+
+      if (normalizedSlideMode === "no_slide") {
+        return;
+      }
+    };
+
+    void hydrateCompositionSlideReference();
+    return () => {
+      active = false;
+    };
+  }, [buildQuestionLevelReference, compositionId, hasSubmitted, questionPreset?.question_id, resolveCompositionForQuestion]);
+
+  useEffect(() => {
+    setHasSubmitted(false);
+    setReference(undefined);
+    setImages(null);
+    setSlideTextArr([""]);
+    setTotalCount(-1);
+    setLoadedCount(-1);
+  }, [question_id, questionPreset?.question_id]);
+
   useEffect(() => {
     const resourceTitle = buildQuestionResourceTitle({
       questionId: questionPreset?.question_id || question_id,
@@ -311,29 +590,6 @@ function PageChildren({
     setAnswer(selectedAnswer);
     setSaveStatus("Saving...");
     debouncedSaveAnswer(selectedAnswer);
-    
-    // For MCQ, automatically fetch feedback when option is selected
-    const normalizedType = String((questionPreset as any)?.question_type ?? questionPreset?.type ?? "").toLowerCase();
-    const isMcqLikeType =
-      normalizedType.includes("choice") ||
-      normalizedType.includes("dropdown") ||
-      normalizedType.includes("true_false") ||
-      normalizedType.includes("mcq");
-    console.log("MCQ Check - Question type:", normalizedType, "Has options:", !!questionPreset?.options);
-    if (isMcqLikeType && questionPreset?.options) {
-      // Find the index of the selected option
-      const selectedIndex = questionPreset.options.findIndex((opt: any) => {
-        const optionText =
-          typeof opt === 'string'
-            ? opt
-            : (opt.text ?? opt.option_text ?? opt.option_label ?? opt.option_value ?? opt.label ?? "");
-        return optionText === selectedAnswer;
-      });
-      
-      if (selectedIndex !== -1) {
-        await fetchMCQFeedback(selectedIndex);
-      }
-    }
   };
   
   const fetchMCQFeedback = async (optionIndex: number) => {
@@ -345,6 +601,7 @@ function PageChildren({
     // learner_id should come from URL; fallback is generated with test_learner_* prefix.
     const effectiveParticipantId = effectiveLearnerId;
     
+    setHasSubmitted(true);
     setIsFeedbackLoading(true);
     setIsReferenceLoading(true);
     
@@ -368,7 +625,8 @@ function PageChildren({
         }
       );
       const feedbackData = feedbackResponse.data || {};
-      const { feedbackText, structuredFeedback } = resolveRuntimeFeedbackContent(feedbackData);
+      const { feedbackText, structuredFeedback, textFeedback, isStructured, score, maxScore } =
+        resolveRuntimeFeedbackContent(feedbackData);
       const legacyHumanFeedback = Array.isArray((questionPreset as any)?.mcq_human_feedback)
         ? String((questionPreset as any).mcq_human_feedback?.[optionIndex] ?? "").trim()
         : "";
@@ -388,20 +646,29 @@ function PageChildren({
         shouldFallbackToLegacy
           ? (legacyHumanFeedback || legacyAiFeedback || feedbackText || "No feedback is available for this option yet.")
           : feedbackText;
-      const displayStructuredFeedback =
-        structuredFeedback ||
-        displayFeedbackText;
+      const displayStructuredFeedback = structuredFeedback || displayFeedbackText;
+      const displayTextFeedback = textFeedback || displayFeedbackText;
       if (!feedbackText) {
         console.warn("feedback-runtime returned empty feedback payload:", feedbackData);
       }
       
       // Format the result for display in the feedback panel
-      // The feedback is already structured from backend
-      const formattedResult = {
-        feedback: displayFeedbackText,
-        score: "",
-        structured_feedback: displayStructuredFeedback
-      };
+      const formattedResult =
+        isStructured === false
+          ? {
+              feedback: displayFeedbackText,
+              is_structured: false,
+              text_feedback: displayTextFeedback,
+              ...(Number.isFinite(score) ? { score } : {}),
+              ...(Number.isFinite(maxScore) ? { max_score: maxScore } : {}),
+            }
+          : {
+              feedback: displayFeedbackText,
+              ...(isStructured === true ? { is_structured: true } : {}),
+              structured_feedback: displayStructuredFeedback,
+              ...(Number.isFinite(score) ? { score } : {}),
+              ...(Number.isFinite(maxScore) ? { max_score: maxScore } : {}),
+            };
       
       setResult(formattedResult);
       
@@ -413,7 +680,20 @@ function PageChildren({
       } else {
         setPromptVersion("human_feedback");
       }
-      await applyReferenceFromRuntimeResponse(feedbackData);
+      const hasRuntimeReference = await applyReferenceFromRuntimeResponse(feedbackData);
+      if (!hasRuntimeReference) {
+        const normalizedSlideMode = normalizeCompositionSlideMode(resolvedComposition?.slide_mode);
+        if (normalizedSlideMode !== "no_slide") {
+          const questionLevelReference = buildQuestionLevelReference();
+          if (questionLevelReference) {
+            setReference(questionLevelReference);
+            setImages(null);
+            setIsImageLoading(false);
+            setTotalCount(-1);
+            setLoadedCount(-1);
+          }
+        }
+      }
       
       // Record MCQ result to database
       const endTime = Date.now();
@@ -421,12 +701,13 @@ function PageChildren({
         typeof selectedOption === 'object'
           ? Boolean((selectedOption as any).isCorrect ?? (selectedOption as any).is_correct ?? (selectedOption as any).correct)
           : false;
+      const explicitScore = extractExplicitScore(formattedResult);
       
       const recordPayload: RecordResultInput = {
         learner_id: effectiveParticipantId,
         study_id: studyId || "unidentifiable_study",
         session_id: sessionId || "unidentifiable_session",
-        ...scoreFromIsCorrect(isCorrect),
+        ...(Object.keys(explicitScore).length > 0 ? explicitScore : scoreFromIsCorrect(isCorrect)),
         question_id: questionPreset.question_id,
         answer: selectedText,
         feedback: displayFeedbackText,
@@ -454,7 +735,7 @@ function PageChildren({
       
       setResult({
         feedback: errorMessage,
-        score: "",
+        text_feedback: errorMessage,
         structured_feedback: `<div class="error-feedback">
           <statement>Error</statement>
           <explanation>${errorMessage}</explanation>
@@ -473,6 +754,7 @@ function PageChildren({
 
   // Load initial courses (for selectors)
   useEffect(() => {
+    if (!hasSubmitted) return;
     axios
       .get("/api/courses/public")
       .then((response) => setCourses(response.data))
@@ -480,15 +762,17 @@ function PageChildren({
         console.error("Error fetching the courses:", error);
         setMessage("Failed to load courses.");
       });
-  }, []);
+  }, [hasSubmitted]);
 
   // Auto-pick the first course when courses arrive
   useEffect(() => {
+    if (!hasSubmitted) return;
     if (courses.length > 0 && !course) setCourse(courses[0].course_id);
-  }, [courses, course]);
+  }, [courses, course, hasSubmitted]);
 
   // Load modules for the selected course
   useEffect(() => {
+    if (!hasSubmitted) return;
     if (!course) return;
     axios
       .get(`/api/courses/by_id/${course}/modules`)
@@ -500,10 +784,14 @@ function PageChildren({
         console.error("Error fetching modules:", error);
         setMessage("Failed to load courses.");
       });
-  }, [course]);
+  }, [course, hasSubmitted]);
 
   // Load slides for selected modules
   useEffect(() => {
+    if (!hasSubmitted) {
+      setAvailableSlides([]);
+      return;
+    }
     if (!module.length) {
       setAvailableSlides([]);
       return;
@@ -520,14 +808,18 @@ function PageChildren({
       }
     };
     fetchSlides();
-  }, [module]);
+  }, [hasSubmitted, module]);
 
   // 🔑 Fetch question data from DB using dynamic route param question_id
   useEffect(() => {
     if (!question_id) return;
     setQuestionLoading(true);
     axios
-      .get(`/api/questions/${question_id}`)
+      .get(`/api/questions/${question_id}`, {
+        params: {
+          include: "current_version,content_blocks,interactions,options,interaction_options",
+        },
+      })
       .then((res) => {
         const normalizedQuestion = normalizeQuestionPresetFromApi(res.data);
         setQuestionPreset(normalizedQuestion);
@@ -580,20 +872,66 @@ function PageChildren({
     e.target.style.height = `${e.target.scrollHeight}px`;
   }
 
-  const applyReferenceFromRuntimeResponse = async (feedbackData: any) => {
+  const applyReferenceFromRuntimeResponse = async (feedbackData: any): Promise<boolean> => {
     const preferred = String(feedbackData?.preferred_info_type ?? preferredInfoType ?? "text").toLowerCase();
     const runtimeReference = feedbackData?.reference && typeof feedbackData.reference === "object" ? feedbackData.reference : null;
-    const slideId = String(
+    const slideGoogleId = String(
       runtimeReference?.slide_google_id ??
-      runtimeReference?.slide_id ??
-      feedbackData?.reference_slide_id ??
+      feedbackData?.reference_slide_google_id ??
+      feedbackData?.slide_google_id ??
       ""
     ).trim();
-    const pageNumberRaw =
+    const slideId = String(
+      runtimeReference?.slide_id ??
+      feedbackData?.reference_slide_id ??
+      feedbackData?.slide_id ??
+      ""
+    ).trim();
+    const slideTitle = String(
+      runtimeReference?.slide_title ??
+      feedbackData?.reference_slide_title ??
+      feedbackData?.slide_title ??
+      "Open slide"
+    ).trim();
+    const pageStartRaw =
+      runtimeReference?.page_start ??
+      feedbackData?.reference_page_start ??
+      feedbackData?.page_start;
+    const pageEndRaw =
+      runtimeReference?.page_end ??
+      feedbackData?.reference_page_end ??
+      feedbackData?.page_end;
+    const pageStart =
+      pageStartRaw === null || pageStartRaw === undefined
+        ? null
+        : typeof pageStartRaw === "number"
+          ? pageStartRaw
+          : Number.isFinite(Number(pageStartRaw))
+            ? Number(pageStartRaw)
+            : null;
+    const pageEnd =
+      pageEndRaw === null || pageEndRaw === undefined
+        ? null
+        : typeof pageEndRaw === "number"
+          ? pageEndRaw
+          : Number.isFinite(Number(pageEndRaw))
+            ? Number(pageEndRaw)
+            : null;
+    const mostRelevantPageRaw =
+      runtimeReference?.most_relevant_page_number ??
+      feedbackData?.most_relevant_page_number ??
       runtimeReference?.page_number ??
       runtimeReference?.reference_slide_page_number ??
       feedbackData?.reference_slide_page_number;
-    const pageNumber = typeof pageNumberRaw === "number" ? pageNumberRaw : Number(pageNumberRaw);
+    const mostRelevantPage =
+      mostRelevantPageRaw === null || mostRelevantPageRaw === undefined
+        ? null
+        : typeof mostRelevantPageRaw === "number"
+          ? mostRelevantPageRaw
+          : Number.isFinite(Number(mostRelevantPageRaw))
+            ? Number(mostRelevantPageRaw)
+            : null;
+    const hasMostRelevantPage = Number.isFinite(mostRelevantPage as number) && (mostRelevantPage as number) > 0;
     const imageText = String(
       runtimeReference?.image_text ??
       (preferred === "vision" ? feedbackData?.reference_slide_content : "") ??
@@ -602,20 +940,55 @@ function PageChildren({
     const text = String(runtimeReference?.text ?? feedbackData?.reference_slide_content ?? "");
     const displayText = imageText.trim() || text.trim();
 
-    if (!slideId || !Number.isFinite(pageNumber) || pageNumber <= 0 || !displayText) {
+    if (!slideGoogleId && !slideId && !displayText) {
       setReference(undefined);
       setImages(null);
       setSlideTextArr([""]);
       setTotalCount(-1);
       setLoadedCount(-1);
       setIsImageLoading(false);
-      return;
+      return false;
     }
 
     const nextReference: Reference = {
       ...(runtimeReference ?? {}),
-      page_number: pageNumber,
-      slide_google_id: slideId,
+      page_number: hasMostRelevantPage ? Number(mostRelevantPage) : -1,
+      page_start: pageStart,
+      page_end: pageEnd,
+      most_relevant_page_number: hasMostRelevantPage ? Number(mostRelevantPage) : null,
+      slide_total_pages:
+        runtimeReference?.slide_total_pages ??
+        feedbackData?.slide_total_pages ??
+        null,
+      slide_id: slideId || undefined,
+      slide_google_id: slideGoogleId,
+      most_relevant_slide_embed_url:
+        String(
+          runtimeReference?.most_relevant_slide_embed_url ??
+          feedbackData?.most_relevant_slide_embed_url ??
+          runtimeReference?.slide_embed_url ??
+          feedbackData?.slide_embed_url ??
+          runtimeReference?.most_relevant_slide_url ??
+          feedbackData?.most_relevant_slide_url ??
+          ""
+        ).trim() || null,
+      slide_embed_url:
+        String(
+          runtimeReference?.most_relevant_slide_embed_url ??
+          feedbackData?.most_relevant_slide_embed_url ??
+          runtimeReference?.slide_embed_url ??
+          feedbackData?.slide_embed_url ??
+          runtimeReference?.most_relevant_slide_url ??
+          feedbackData?.most_relevant_slide_url ??
+          ""
+        ).trim() || null,
+      most_relevant_slide_embed_url_error:
+        String(
+          runtimeReference?.most_relevant_slide_embed_url_error ??
+          feedbackData?.most_relevant_slide_embed_url_error ??
+          ""
+        ).trim() || null,
+      slide_title: slideTitle,
       text,
       image_text: imageText,
       display: displayText,
@@ -625,12 +998,20 @@ function PageChildren({
     const retrievalRange = Array.isArray(feedbackData?.slide_retrieval_range)
       ? feedbackData.slide_retrieval_range.filter((item: unknown): item is string => typeof item === "string")
       : [];
-    setSlideTextArr(retrievalRange.length > 0 ? retrievalRange : [displayText]);
+    setSlideTextArr(retrievalRange.length > 0 ? retrievalRange : (displayText ? [displayText] : [""]));
+
+    if (!hasMostRelevantPage) {
+      setImages(null);
+      setTotalCount(-1);
+      setLoadedCount(-1);
+      setIsImageLoading(false);
+      return true;
+    }
 
     setIsImageLoading(true);
     setTotalCount(1);
     setLoadedCount(0);
-    const image = await handlePdfImage(pageNumber, slideId);
+    const image = await handlePdfImage(Number(mostRelevantPage), slideGoogleId);
     if (image) {
       setImages([image]);
       setLoadedCount(1);
@@ -639,6 +1020,7 @@ function PageChildren({
       setLoadedCount(0);
     }
     setIsImageLoading(false);
+    return true;
   };
 
   const recordResultToDatabase = async (payload: RecordResultInput) => {
@@ -731,8 +1113,8 @@ function PageChildren({
       .filter(Boolean)
       .join(" ");
     if (text) return text;
-    return questionLoading ? "Question is loading..." : "No question content available.";
-  }, [questionPreset?.content, question, questionLoading]);
+    return "No question content available.";
+  }, [questionPreset?.content, question]);
 
   return (
     <div className="px-3 pb-3 pt-4 md:px-4 md:pb-4 md:pt-5">
@@ -756,8 +1138,24 @@ function PageChildren({
             </div>
           ) : null}
         </div>
-        <p className="mt-1 text-sm text-slate-900">{questionDisplayText}</p>
+        {questionLoading ? (
+          <div className="mt-2 space-y-2">
+            <div className="h-3 w-11/12 animate-pulse rounded bg-slate-200" />
+            <div className="h-3 w-3/4 animate-pulse rounded bg-slate-200" />
+          </div>
+        ) : (
+          <p className="mt-1 text-sm text-slate-900">{questionDisplayText}</p>
+        )}
       </section>
+
+      {compositionDebugEnabled && compositionId ? (
+        <section className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+          <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">Composition Debug</p>
+          <pre className="mt-2 max-h-56 overflow-auto text-xs text-amber-900">
+            {JSON.stringify(compositionDebugInfo, null, 2)}
+          </pre>
+        </section>
+      ) : null}
 
       <div className="grid h-full grid-cols-11 gap-2">
         <LeftFeedbackPanel
@@ -770,13 +1168,12 @@ function PageChildren({
           totalCount={totalCount}
           onImageClick={handleImageClick}
           studentAnswer={answer}
-          showFeedback={true}
-          showReference={true}
+          showFeedback={hasSubmitted}
+          showReference={hasSubmitted}
           isStreaming={isStreaming}
           streamingContent={streamingContent}
           isFeedbackLoading={isFeedbackLoading}
           promptVersion={promptVersion}
-          course_version={course_version}
           question={questionPreset?.content || question}
           options={questionPreset?.options}
           correctAnswer={questionPreset?.options?.filter((opt: { text: string; isCorrect: boolean } | string) => typeof opt === 'object' && opt.isCorrect).map((opt: { text: string; isCorrect: boolean } | string) => typeof opt === 'string' ? opt : opt.text).join(', ')}
@@ -843,7 +1240,23 @@ export default function Page({
   const resolvedSearchParams = use(searchParams);
   
   return (
-    <Suspense fallback={<div>Loading...</div>}>
+    <Suspense
+      fallback={
+        <div className="px-3 pb-3 pt-4 md:px-4 md:pb-4 md:pt-5">
+          <section className="mb-3 rounded-xl border border-slate-200 bg-white px-4 py-3">
+            <div className="h-3 w-24 animate-pulse rounded bg-slate-200" />
+            <div className="mt-3 space-y-2">
+              <div className="h-3 w-11/12 animate-pulse rounded bg-slate-200" />
+              <div className="h-3 w-4/5 animate-pulse rounded bg-slate-200" />
+            </div>
+          </section>
+          <div className="grid h-full grid-cols-11 gap-2">
+            <div className="col-span-11 h-56 animate-pulse rounded-xl border border-slate-200 bg-white md:col-span-6" />
+            <div className="col-span-11 h-56 animate-pulse rounded-xl border border-slate-200 bg-white md:col-span-5" />
+          </div>
+        </div>
+      }
+    >
       <PageChildren 
         questionId={resolvedParams?.questionId} 
         searchParams={resolvedSearchParams}

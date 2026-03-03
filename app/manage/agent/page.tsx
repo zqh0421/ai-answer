@@ -22,6 +22,14 @@ import { buildStaticPageTitle } from '@/app/utils/title';
 
 type AgentRole = 'human' | 'ai';
 type AgentScope = 'private' | 'public';
+type ApplyQuestionType =
+  | 'single_choice'
+  | 'multi_choice'
+  | 'dropdown'
+  | 'true_false'
+  | 'free_text'
+  | 'essay'
+  | 'all';
 type RetrievalPreferredInfoType = 'text' | 'vision' | 'mixed';
 type RetrievalSelectionMode = 'top_k' | 'all' | 'threshold' | 'threshold_then_top_k';
 
@@ -40,10 +48,22 @@ interface FeedbackAgentInput {
   retrieval_rule?: RetrievalRule | null;
 }
 
+interface DryRunQuestionLite {
+  question_id: string;
+  title: string;
+  question_type: string;
+  access_scope: string;
+  content: Array<{ type: 'text' | 'image'; content: string }>;
+  options: Array<{ text: string; isCorrect: boolean }>;
+}
+
 interface FeedbackAgent {
   agent_id: string;
   title?: string;
   role?: string;
+  apply_question_type?: ApplyQuestionType;
+  if_score?: boolean;
+  score_ai_agent_id?: string | null;
   is_structured?: boolean;
   provider?: string;
   model?: string;
@@ -63,12 +83,28 @@ interface FeedbackAgent {
 interface AgentFormState {
   title: string;
   role: AgentRole;
+  apply_question_type: ApplyQuestionType;
+  if_score: boolean;
+  score_ai_agent_id: string;
   is_structured: boolean;
   provider: string;
   model: string;
   prompt_text: string;
+  feedback_generation_block: string;
+  additional_formatting_instructions_block: string;
   retrieved_slide_pages_rule?: RetrievalRule;
   llm_params_json: string;
+}
+
+interface PromptBlockMeta {
+  label?: string;
+  description?: string;
+  placeholder?: string;
+}
+
+interface PromptBlocksMeta {
+  feedback_generation_block?: PromptBlockMeta;
+  additional_formatting_instructions_block?: PromptBlockMeta;
 }
 
 interface CompositionFormState {
@@ -84,6 +120,7 @@ const DEFAULT_INPUT_KEYS = [
   'retrieved_slide_pages',
 ] as const;
 let cachedInputOptionKeys: string[] | null = null;
+let cachedPromptBlocksMeta: PromptBlocksMeta | null = null;
 const DEFAULT_RETRIEVED_SLIDE_PAGES_RULE: RetrievalRule = {
   preferred_info_type: 'vision',
   selection_mode: 'top_k',
@@ -95,10 +132,15 @@ const DEFAULT_RETRIEVED_SLIDE_PAGES_RULE: RetrievalRule = {
 const defaultFormState = (): AgentFormState => ({
   title: '',
   role: 'human',
+  apply_question_type: 'all',
+  if_score: false,
+  score_ai_agent_id: '',
   is_structured: false,
   provider: '',
   model: '',
   prompt_text: '',
+  feedback_generation_block: '',
+  additional_formatting_instructions_block: '',
   retrieved_slide_pages_rule: undefined,
   llm_params_json: '',
 });
@@ -162,6 +204,173 @@ type AgentFormInputRow = {
   retrieval_rule?: RetrievalRule;
 };
 
+const readFirstString = (...candidates: unknown[]): string => {
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
+  }
+  return '';
+};
+
+const extractQuestionTypeText = (raw: any): string => {
+  const rawType = readFirstString(
+    raw?.question_type,
+    raw?.type,
+    raw?.current_version?.question_type,
+    raw?.current_version?.type
+  );
+  if (!rawType) return '';
+  return rawType.toLowerCase().replace(/[_-]+/g, ' ');
+};
+
+const normalizeQuestionTypeForApply = (raw: any): ApplyQuestionType | 'unknown' => {
+  const typeText = extractQuestionTypeText(raw);
+  if (!typeText) return 'unknown';
+  if (typeText.includes('single choice') || typeText.includes('single_choice')) return 'single_choice';
+  if (typeText.includes('multi choice') || typeText.includes('multiple choice') || typeText.includes('multi_choice') || typeText.includes('mcq')) {
+    return 'multi_choice';
+  }
+  if (typeText.includes('dropdown')) return 'dropdown';
+  if (typeText.includes('true false') || typeText.includes('true/false') || typeText.includes('true_false')) {
+    return 'true_false';
+  }
+  if (typeText.includes('free text') || typeText.includes('short answer') || typeText.includes('open ended') || typeText.includes('open-ended')) {
+    return 'free_text';
+  }
+  if (typeText.includes('essay')) return 'essay';
+  return 'unknown';
+};
+
+const extractQuestionContentBlocks = (raw: any): Array<{ type: 'text' | 'image'; content: string }> => {
+  const blocks = Array.isArray(raw?.content_blocks)
+    ? raw.content_blocks
+    : Array.isArray(raw?.current_version?.content_blocks)
+      ? raw.current_version.content_blocks
+      : [];
+
+  return blocks
+    .map((block: any) => {
+      const typeRaw = String(block?.block_type ?? block?.type ?? '').toLowerCase();
+      const text = readFirstString(block?.text_content, block?.content, block?.text);
+      const media = readFirstString(block?.media_url, block?.image_url, block?.src, block?.url);
+      if (typeRaw.includes('image') && media) return { type: 'image' as const, content: media };
+      if (text) return { type: 'text' as const, content: text };
+      if (media) return { type: 'image' as const, content: media };
+      return null;
+    })
+    .filter(Boolean) as Array<{ type: 'text' | 'image'; content: string }>;
+};
+
+const extractInteractionPromptText = (raw: any): string => {
+  const interactions = Array.isArray(raw?.interactions)
+    ? raw.interactions
+    : Array.isArray(raw?.current_version?.interactions)
+      ? raw.current_version.interactions
+      : [];
+  const firstInteraction = interactions[0] ?? {};
+  return readFirstString(
+    firstInteraction?.prompt,
+    firstInteraction?.prompt_text,
+    firstInteraction?.question_text,
+    firstInteraction?.text,
+    firstInteraction?.label,
+    firstInteraction?.stem
+  );
+};
+
+const extractQuestionOptions = (raw: any): Array<{ text: string; isCorrect: boolean }> => {
+  const interactions = Array.isArray(raw?.interactions)
+    ? raw.interactions
+    : Array.isArray(raw?.current_version?.interactions)
+      ? raw.current_version.interactions
+      : [];
+  const firstInteraction = interactions[0] ?? {};
+  const direct = Array.isArray(raw?.options) ? raw.options : [];
+  const interactionOptions = Array.isArray(raw?.interaction_options) ? raw.interaction_options : [];
+  const nested =
+    Array.isArray(firstInteraction?.options)
+      ? firstInteraction.options
+      : Array.isArray(firstInteraction?.interaction_options)
+        ? firstInteraction.interaction_options
+        : [];
+  const source = direct.length > 0 ? direct : interactionOptions.length > 0 ? interactionOptions : nested;
+  return source
+    .map((option: any) => ({
+      text: String(
+        option?.text ??
+          option?.option_text ??
+          option?.label ??
+          option?.option_label ??
+          option?.option_value ??
+          option?.content ??
+          ''
+      ).trim(),
+      isCorrect: Boolean(option?.is_correct ?? option?.isCorrect ?? option?.correct),
+    }))
+    .filter((row: { text: string; isCorrect: boolean }) => row.text || row.isCorrect);
+};
+
+const parseDryRunQuestion = (raw: any): DryRunQuestionLite => {
+  const contentBlocks = extractQuestionContentBlocks(raw);
+  const interactionPromptText = extractInteractionPromptText(raw);
+  const content =
+    contentBlocks.length > 0
+      ? contentBlocks
+      : interactionPromptText
+        ? [{ type: 'text' as const, content: interactionPromptText }]
+        : [];
+  return {
+    question_id: String(raw?.question_id ?? raw?.id ?? ''),
+    title: readFirstString(raw?.title, raw?.name) || '',
+    question_type: readFirstString(raw?.question_type, raw?.type, raw?.current_version?.question_type, raw?.current_version?.type),
+    access_scope: readFirstString(raw?.access_scope, raw?.current_version?.access_scope) || '',
+    content,
+    options: extractQuestionOptions(raw),
+  };
+};
+
+const getDryRunQuestionLabel = (question: DryRunQuestionLite): string => {
+  const firstText = question.content.find((item) => item.type === 'text' && item.content.trim())?.content?.trim() ?? '';
+  const preview = firstText || question.title || '(No question text)';
+  const compactPreview = preview.length > 90 ? `${preview.slice(0, 90)}...` : preview;
+  return `${compactPreview} [${question.question_type || 'unknown'}]`;
+};
+
+const getQuestionsPageItems = (payload: any): any[] => {
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.items)) return payload.items;
+  if (Array.isArray(payload?.questions)) return payload.questions;
+  if (Array.isArray(payload?.results)) return payload.results;
+  if (Array.isArray(payload?.data)) return payload.data;
+  return [];
+};
+
+const buildFormattedQuestionTextForDryRun = (question: DryRunQuestionLite | null): string => {
+  if (!question) return '';
+  const questionText = (question.content ?? [])
+    .map((item) => {
+      const value = String(item?.content ?? '').trim();
+      if (!value) return '';
+      if (item.type === 'image') return `[Image] ${value}`;
+      return value;
+    })
+    .filter(Boolean)
+    .join('\n\n')
+    .trim();
+
+  const normalizedType = normalizeQuestionTypeForApply(question);
+  const isChoiceLike =
+    normalizedType === 'single_choice' || normalizedType === 'multi_choice' || (question.options?.length ?? 0) > 0;
+  if (!isChoiceLike) return questionText;
+
+  const options = (question.options ?? [])
+    .map((option, idx) => `${idx + 1}. ${String(option.text ?? '').trim() || '(Empty option)'}`)
+    .join('\n');
+  const correct = (question.options ?? []).find((option) => option.isCorrect)?.text?.trim() || '(not set)';
+  return ['Question:', questionText || '(empty)', '', 'Options:', options || '(no options)', '', `Correct Answer: ${correct}`]
+    .join('\n')
+    .trim();
+};
+
 const PROMPT_VAR_REGEX = /\{\{\{\s*([a-zA-Z0-9_]+)\s*\}\}\}/g;
 
 const extractPromptVariables = (text: string, allowedPromptKeys: Set<string>) => {
@@ -212,6 +421,30 @@ const buildPromptHighlightHtml = (text: string, allowedPromptKeys: Set<string>) 
   }
   html += escapeHtml(text.slice(lastIndex));
   return html.replace(/\n$/g, '\n ');
+};
+
+const buildPromptAssemblyPreview = (
+  feedbackGenerationBlock: string,
+  additionalFormattingInstructionsBlock: string
+) => {
+  const task1Block = feedbackGenerationBlock.trim() || '{{feedback_generation_block}}';
+  const additionalFormattingBlock =
+    additionalFormattingInstructionsBlock.trim() || '{{additional_formatting_instructions_block}}';
+
+  return [
+    "You are tasked with generating clear, effective feedback for a student's {{question_type}} answer and then formatting it into a structured JSON output. Complete both tasks in sequence.",
+    '',
+    '### Task 1: Generate Feedback',
+    task1Block,
+    '',
+    '### Task 2: Format Output',
+    'After generating the feedback, format your response as a JSON object with this exact structure:',
+    '{{json_schema_block_by_mode}}',
+    '',
+    '#### Formatting Instructions:',
+    '{{base_formatting_instructions}}',
+    additionalFormattingBlock,
+  ].join('\n');
 };
 
 const parseInputOptionKeys = (data: unknown): string[] => {
@@ -300,10 +533,79 @@ const parseInputOptionKeys = (data: unknown): string[] => {
   return keys;
 };
 
+const parsePromptBlocksMeta = (data: unknown): PromptBlocksMeta => {
+  const targetKeys = new Set([
+    'feedback_generation_block',
+    'additional_formatting_instructions_block',
+  ]);
+  const visited = new Set<unknown>();
+  let candidate: Record<string, unknown> | null = null;
+
+  const toMeta = (value: unknown): PromptBlockMeta => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+    const obj = value as Record<string, unknown>;
+    const pickString = (...fields: string[]) => {
+      for (const field of fields) {
+        const raw = obj[field];
+        if (typeof raw === 'string' && raw.trim()) return raw.trim();
+      }
+      return undefined;
+    };
+    return {
+      label: pickString('label', 'title', 'name'),
+      description: pickString('description', 'help_text', 'help', 'hint'),
+      placeholder: pickString('placeholder', 'default_value', 'default', 'value'),
+    };
+  };
+
+  const visit = (node: unknown, depth: number) => {
+    if (!node || depth > 6 || visited.has(node)) return;
+    if (typeof node !== 'object') return;
+    visited.add(node);
+
+    if (Array.isArray(node)) {
+      for (const item of node) visit(item, depth + 1);
+      return;
+    }
+
+    const obj = node as Record<string, unknown>;
+    const promptBlocks = obj.prompt_blocks;
+    if (
+      promptBlocks &&
+      typeof promptBlocks === 'object' &&
+      !Array.isArray(promptBlocks)
+    ) {
+      const blockObj = promptBlocks as Record<string, unknown>;
+      const hasKnownBlock = Array.from(targetKeys).some((key) => key in blockObj);
+      if (hasKnownBlock) {
+        candidate = blockObj;
+        return;
+      }
+    }
+
+    for (const value of Object.values(obj)) {
+      visit(value, depth + 1);
+      if (candidate) return;
+    }
+  };
+
+  visit(data, 0);
+  if (!candidate) return {};
+
+  return {
+    feedback_generation_block: toMeta(candidate.feedback_generation_block),
+    additional_formatting_instructions_block: toMeta(candidate.additional_formatting_instructions_block),
+  };
+};
+
 const normalizeAgent = (raw: any): FeedbackAgent => ({
   agent_id: String(raw?.agent_id ?? raw?.id ?? ''),
   title: raw?.title ?? raw?.name ?? '',
   role: raw?.role,
+  apply_question_type: raw?.apply_question_type,
+  if_score: Boolean(raw?.if_score),
+  score_ai_agent_id:
+    typeof raw?.score_ai_agent_id === 'string' ? raw.score_ai_agent_id : raw?.score_ai_agent_id ?? null,
   is_structured: raw?.is_structured,
   provider: raw?.provider,
   model: raw?.model,
@@ -339,15 +641,34 @@ const buildFormStateFromAgent = (agent: FeedbackAgent): AgentFormState => {
     .map((key) => `{{{${key}}}}`)
     .join('\n');
   const role = agent.role === 'ai' ? 'ai' : 'human';
+  const llmParams = agent.llm_params && typeof agent.llm_params === 'object' ? { ...agent.llm_params } : null;
+  const feedbackGenerationBlock =
+    llmParams && typeof llmParams.feedback_generation_block === 'string'
+      ? llmParams.feedback_generation_block
+      : '';
+  const additionalFormattingInstructionsBlock =
+    llmParams && typeof llmParams.additional_formatting_instructions_block === 'string'
+      ? llmParams.additional_formatting_instructions_block
+      : '';
+  if (llmParams) {
+    delete llmParams.feedback_generation_block;
+    delete llmParams.additional_formatting_instructions_block;
+  }
   return {
     title: agent.title ?? '',
     role,
+    apply_question_type: (agent.apply_question_type as ApplyQuestionType) || 'all',
+    if_score: role === 'human' ? Boolean(agent.if_score) : false,
+    score_ai_agent_id: role === 'human' ? String(agent.score_ai_agent_id ?? '') : '',
     is_structured: role === 'human' ? false : Boolean(agent.is_structured),
     provider: agent.provider ?? '',
     model: agent.model ?? '',
     prompt_text: role === 'human' ? '' : (agent.prompt_text ?? '').trim() || promptTextFromInputs,
+    feedback_generation_block: role === 'human' ? '' : feedbackGenerationBlock,
+    additional_formatting_instructions_block: role === 'human' ? '' : additionalFormattingInstructionsBlock,
     retrieved_slide_pages_rule: retrievedSlideInput?.retrieval_rule ? { ...retrievedSlideInput.retrieval_rule } : undefined,
-    llm_params_json: agent.llm_params ? JSON.stringify(agent.llm_params, null, 2) : '',
+    llm_params_json:
+      llmParams && Object.keys(llmParams).length > 0 ? JSON.stringify(llmParams, null, 2) : '',
   };
 };
 
@@ -368,6 +689,21 @@ export default function AgentManagementPage() {
   const [editingSourceAgentId, setEditingSourceAgentId] = useState<string | null>(null);
   const [actingAgentId, setActingAgentId] = useState<string | null>(null);
   const [isAdvancedLlmOpen, setIsAdvancedLlmOpen] = useState(false);
+  const [promptBlocksMeta, setPromptBlocksMeta] = useState<PromptBlocksMeta>({});
+  const [dryRunQuestions, setDryRunQuestions] = useState<DryRunQuestionLite[]>([]);
+  const [isFetchingDryRunQuestions, setIsFetchingDryRunQuestions] = useState(false);
+  const [dryRunQuestionError, setDryRunQuestionError] = useState<string | null>(null);
+  const [selectedDryRunAgentId, setSelectedDryRunAgentId] = useState('');
+  const [selectedDryRunQuestionId, setSelectedDryRunQuestionId] = useState('');
+  const [dryRunLearnerAnswer, setDryRunLearnerAnswer] = useState('');
+  const [isDryRunRunning, setIsDryRunRunning] = useState(false);
+  const [dryRunError, setDryRunError] = useState<string | null>(null);
+  const [dryRunResolvedInputValues, setDryRunResolvedInputValues] = useState<Record<string, unknown> | null>(null);
+  const [dryRunResolvedSystemPrompt, setDryRunResolvedSystemPrompt] = useState('');
+  const [dryRunResolvedUserText, setDryRunResolvedUserText] = useState('');
+  const [dryRunOutput, setDryRunOutput] = useState('');
+  const [dryRunAiScoreResult, setDryRunAiScoreResult] = useState<Record<string, unknown> | null>(null);
+  const [dryRunStructuredFeedbackText, setDryRunStructuredFeedbackText] = useState('');
   const [compositions, setCompositions] = useState<FeedbackComposition[]>([]);
   const [isCompositionPanelOpen, setIsCompositionPanelOpen] = useState(false);
   const [compositionPanelMode, setCompositionPanelMode] = useState<'create' | 'edit'>('create');
@@ -376,8 +712,8 @@ export default function AgentManagementPage() {
   const [compositionError, setCompositionError] = useState<string | null>(null);
   const [isFetchingCompositions, setIsFetchingCompositions] = useState(false);
   const [isSubmittingComposition, setIsSubmittingComposition] = useState(false);
-  const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const promptHighlightRef = useRef<HTMLDivElement | null>(null);
+  const feedbackBlockTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const feedbackBlockHighlightRef = useRef<HTMLDivElement | null>(null);
 
   const { data: session, status: sessionStatus } = useSession();
   const { hasManagePermission, isPermissionChecking, manageUserId } = useManagePermissionGuard();
@@ -414,6 +750,7 @@ export default function AgentManagementPage() {
   const fetchInputOptions = useCallback(async () => {
     if (cachedInputOptionKeys?.length) {
       setInputOptionKeys(cachedInputOptionKeys);
+      setPromptBlocksMeta(cachedPromptBlocksMeta ?? {});
       setInputOptionsError(null);
       return;
     }
@@ -422,6 +759,9 @@ export default function AgentManagementPage() {
     setInputOptionsError(null);
     try {
       const res = await axios.get('/api/feedback-agents/input-options');
+      const parsedPromptBlocksMeta = parsePromptBlocksMeta(res.data);
+      cachedPromptBlocksMeta = parsedPromptBlocksMeta;
+      setPromptBlocksMeta(parsedPromptBlocksMeta);
       const keys = parseInputOptionKeys(res.data).filter(
         (key) => key !== 'all_options' && key !== 'selected_option_index'
       );
@@ -436,6 +776,7 @@ export default function AgentManagementPage() {
     } catch (err) {
       console.error('Error fetching feedback agent input options:', err);
       setInputOptionKeys((prev) => (prev.length ? prev : [...DEFAULT_INPUT_KEYS]));
+      setPromptBlocksMeta(cachedPromptBlocksMeta ?? {});
       setInputOptionsError('Failed to load input options. Using fallback defaults.');
     } finally {
       setIsFetchingInputOptions(false);
@@ -470,10 +811,52 @@ export default function AgentManagementPage() {
     }
   }, [queryUserId]);
 
+  const fetchDryRunQuestions = useCallback(async () => {
+    if (!hasManagePermission || !actorUserId) return;
+    setIsFetchingDryRunQuestions(true);
+    setDryRunQuestionError(null);
+    try {
+      const limit = 100;
+      let offset = 0;
+      let allRows: any[] = [];
+      while (true) {
+        const res = await axios.get('/api/questions', {
+          params: {
+            user_id: actorUserId,
+            include_public: true,
+            limit,
+            offset,
+            include: 'current_version,content_blocks,interactions,options,interaction_options',
+          },
+        });
+        const pageItems = getQuestionsPageItems(res.data);
+        allRows = allRows.concat(pageItems);
+        if (pageItems.length < limit) break;
+        offset += limit;
+      }
+      const parsed = allRows.map(parseDryRunQuestion).filter((question) => question.question_id);
+      setDryRunQuestions(parsed);
+      setSelectedDryRunQuestionId((prev) =>
+        prev && parsed.some((question) => question.question_id === prev) ? prev : (parsed[0]?.question_id ?? '')
+      );
+    } catch (err) {
+      console.error('Error fetching dry-run questions:', err);
+      setDryRunQuestions([]);
+      setDryRunQuestionError('Failed to load questions for dry run.');
+    } finally {
+      setIsFetchingDryRunQuestions(false);
+    }
+  }, [actorUserId, hasManagePermission]);
+
   useEffect(() => {
     if (sessionStatus === 'loading' || isPermissionChecking || !hasManagePermission) return;
     fetchAgents();
   }, [fetchAgents, hasManagePermission, isPermissionChecking, sessionStatus]);
+
+  useEffect(() => {
+    if (sessionStatus === 'loading' || isPermissionChecking || !hasManagePermission || !actorUserId) return;
+    void fetchDryRunQuestions();
+  }, [actorUserId, fetchDryRunQuestions, hasManagePermission, isPermissionChecking, sessionStatus]);
 
   useEffect(() => {
     if (sessionStatus === 'loading' || isPermissionChecking || !hasManagePermission) return;
@@ -512,6 +895,9 @@ export default function AgentManagementPage() {
       const haystack = [
         agent.title,
         agent.role,
+        agent.apply_question_type,
+        agent.score_ai_agent_id,
+        agent.if_score ? 'if_score' : '',
         agent.provider,
         agent.model,
         creatorHaystack,
@@ -526,12 +912,20 @@ export default function AgentManagementPage() {
   const availableInputKeys = inputOptionKeys.length > 0 ? inputOptionKeys : [...DEFAULT_INPUT_KEYS];
   const allowedPromptKeySet = useMemo(() => new Set<string>(availableInputKeys), [availableInputKeys]);
   const promptVariables = useMemo(
-    () => extractPromptVariables(form.prompt_text, allowedPromptKeySet),
-    [allowedPromptKeySet, form.prompt_text]
+    () => extractPromptVariables(form.feedback_generation_block, allowedPromptKeySet),
+    [allowedPromptKeySet, form.feedback_generation_block]
   );
-  const promptHighlightHtml = useMemo(
-    () => buildPromptHighlightHtml(form.prompt_text, allowedPromptKeySet),
-    [allowedPromptKeySet, form.prompt_text]
+  const feedbackBlockHighlightHtml = useMemo(
+    () => buildPromptHighlightHtml(form.feedback_generation_block, allowedPromptKeySet),
+    [allowedPromptKeySet, form.feedback_generation_block]
+  );
+  const promptAssemblyPreview = useMemo(
+    () =>
+      buildPromptAssemblyPreview(
+        form.feedback_generation_block,
+        form.additional_formatting_instructions_block
+      ),
+    [form.additional_formatting_instructions_block, form.feedback_generation_block]
   );
   const effectiveRetrievedSlidePagesRule = useMemo(
     () => getEffectiveRetrievedSlidePagesRule(form.retrieved_slide_pages_rule),
@@ -542,6 +936,50 @@ export default function AgentManagementPage() {
     if (sessionUserName && sessionUserEmail) return `${sessionUserName} (${sessionUserEmail})`;
     return sessionUserName || sessionUserEmail || actorUserId || '-';
   }, [actorUserId, sessionUserEmail, sessionUserName]);
+  const aiAgents = useMemo(
+    () => agents.filter((agent) => String(agent.role ?? '').toLowerCase() === 'ai'),
+    [agents]
+  );
+  const dryRunAgents = useMemo(
+    () =>
+      agents.filter((agent) => {
+        const role = String(agent.role ?? '').toLowerCase();
+        return role === 'ai' || role === 'human';
+      }),
+    [agents]
+  );
+  const selectedDryRunAgent = useMemo(
+    () => dryRunAgents.find((agent) => agent.agent_id === selectedDryRunAgentId) ?? null,
+    [dryRunAgents, selectedDryRunAgentId]
+  );
+  const selectedDryRunQuestion = useMemo(
+    () => dryRunQuestions.find((question) => question.question_id === selectedDryRunQuestionId) ?? null,
+    [dryRunQuestions, selectedDryRunQuestionId]
+  );
+  const dryRunAutoSampleAnswer = useMemo(
+    () => selectedDryRunQuestion?.options.find((option) => option.isCorrect)?.text?.trim() ?? '',
+    [selectedDryRunQuestion]
+  );
+  const visibleDryRunQuestions = dryRunQuestions;
+
+  useEffect(() => {
+    setSelectedDryRunAgentId((prev) => {
+      if (prev && dryRunAgents.some((agent) => agent.agent_id === prev)) return prev;
+      return dryRunAgents[0]?.agent_id ?? '';
+    });
+  }, [dryRunAgents]);
+
+  useEffect(() => {
+    if (!dryRunAutoSampleAnswer) return;
+    setDryRunLearnerAnswer((prev) => (prev.trim() ? prev : dryRunAutoSampleAnswer));
+  }, [dryRunAutoSampleAnswer]);
+
+  useEffect(() => {
+    setSelectedDryRunQuestionId((prev) => {
+      if (prev && visibleDryRunQuestions.some((question) => question.question_id === prev)) return prev;
+      return visibleDryRunQuestions[0]?.question_id ?? '';
+    });
+  }, [visibleDryRunQuestions]);
 
   if (isPermissionChecking || !hasManagePermission) {
     return null;
@@ -565,7 +1003,13 @@ export default function AgentManagementPage() {
     setForm(next);
     setMessage(null);
     setError(null);
-    setIsAdvancedLlmOpen(Boolean(next.llm_params_json.trim()));
+    setIsAdvancedLlmOpen(
+      Boolean(
+        next.llm_params_json.trim() ||
+          next.feedback_generation_block.trim() ||
+          next.additional_formatting_instructions_block.trim()
+      )
+    );
     setIsPanelOpen(true);
   };
 
@@ -579,17 +1023,24 @@ export default function AgentManagementPage() {
         return {
           ...prev,
           role: 'human',
+          if_score: false,
+          score_ai_agent_id: '',
           is_structured: false,
           prompt_text: '',
           provider: '',
           model: '',
           retrieved_slide_pages_rule: undefined,
+          feedback_generation_block: '',
+          additional_formatting_instructions_block: '',
           llm_params_json: '',
         };
       }
       return {
         ...prev,
         role: 'ai',
+        apply_question_type: prev.apply_question_type || 'all',
+        if_score: false,
+        score_ai_agent_id: '',
         provider: prev.provider || 'openai',
       };
     });
@@ -830,20 +1281,195 @@ export default function AgentManagementPage() {
   const insertPromptVariable = (key: string) => {
     if (form.role === 'human') return;
     const token = `{{{${key}}}}`;
-    const el = promptTextareaRef.current;
+    const el = feedbackBlockTextareaRef.current;
     if (!el) {
-      setForm((prev) => ({ ...prev, prompt_text: `${prev.prompt_text}${prev.prompt_text ? ' ' : ''}${token}` }));
+      setForm((prev) => ({
+        ...prev,
+        feedback_generation_block: `${prev.feedback_generation_block}${prev.feedback_generation_block ? ' ' : ''}${token}`,
+      }));
       return;
     }
-    const start = el.selectionStart ?? form.prompt_text.length;
-    const end = el.selectionEnd ?? form.prompt_text.length;
-    const next = `${form.prompt_text.slice(0, start)}${token}${form.prompt_text.slice(end)}`;
-    setForm((prev) => ({ ...prev, prompt_text: next }));
+    const start = el.selectionStart ?? form.feedback_generation_block.length;
+    const end = el.selectionEnd ?? form.feedback_generation_block.length;
+    const next = `${form.feedback_generation_block.slice(0, start)}${token}${form.feedback_generation_block.slice(end)}`;
+    setForm((prev) => ({ ...prev, feedback_generation_block: next }));
     requestAnimationFrame(() => {
       el.focus();
       const caret = start + token.length;
       el.setSelectionRange(caret, caret);
     });
+  };
+
+  const buildDryRunInputValues = (
+    agent: FeedbackAgent,
+    question: DryRunQuestionLite,
+    answerText: string
+  ): Record<string, unknown> => {
+    const keys = (agent.inputs ?? [])
+      .map((input) => (typeof input === 'string' ? input : String(input?.input_key ?? '')))
+      .map((value) => value.trim())
+      .filter(Boolean);
+    const values: Record<string, unknown> = {};
+    for (const key of keys) {
+      if (key === 'question_content_blocks') {
+        values[key] = buildFormattedQuestionTextForDryRun(question);
+        continue;
+      }
+      if (key === 'all_options') {
+        values[key] = buildFormattedQuestionTextForDryRun(question);
+        continue;
+      }
+      if (key === 'selected_option_index') {
+        values[key] = null;
+        continue;
+      }
+      if (key === 'answer_text') {
+        values[key] = answerText;
+        continue;
+      }
+      if (key === 'retrieved_slide_pages') {
+        continue;
+      }
+      values[key] = null;
+    }
+    const isHumanAgent = String(agent.role ?? '').toLowerCase() === 'human';
+    if (isHumanAgent && Boolean(agent.if_score)) {
+      if (!('answer_text' in values)) {
+        values.answer_text = answerText;
+      }
+      if (!('question_content_blocks' in values)) {
+        values.question_content_blocks = buildFormattedQuestionTextForDryRun(question);
+      }
+    }
+    return values;
+  };
+
+  const runAgentDryRun = async () => {
+    if (!selectedDryRunAgent) {
+      setDryRunError('Please select a feedback agent.');
+      return;
+    }
+    if (!selectedDryRunQuestion) {
+      setDryRunError('Please select a question.');
+      return;
+    }
+    if (!actorUserId) {
+      setDryRunError('Unable to identify current user from session.');
+      return;
+    }
+    const answerText = dryRunLearnerAnswer.trim();
+    const inputValues = buildDryRunInputValues(selectedDryRunAgent, selectedDryRunQuestion, answerText);
+    setDryRunResolvedInputValues(inputValues);
+    setDryRunResolvedSystemPrompt('');
+    setDryRunResolvedUserText('');
+    setDryRunOutput('');
+    setDryRunAiScoreResult(null);
+    setDryRunStructuredFeedbackText('');
+    setDryRunError(null);
+    setIsDryRunRunning(true);
+    try {
+      // Ensure the selected agent is attached to the selected question before dry run.
+      await axios.post(`/api/questions/${selectedDryRunQuestion.question_id}/attached-agents`, {
+        agent_id: selectedDryRunAgent.agent_id,
+        updated_by: actorUserId,
+      });
+    } catch (attachErr) {
+      if (axios.isAxiosError(attachErr)) {
+        const status = attachErr.response?.status;
+        const detail = (attachErr.response?.data as any)?.detail;
+        const detailText =
+          detail === undefined
+            ? ''
+            : typeof detail === 'object' && detail !== null
+              ? JSON.stringify(detail)
+              : String(detail);
+        const alreadyAttached =
+          status === 409 ||
+          (status === 422 && /already/i.test(detailText)) ||
+          /already/i.test(detailText);
+        if (!alreadyAttached) {
+          setDryRunError(
+            detail !== undefined
+              ? typeof detail === 'object' && detail !== null
+                ? JSON.stringify(detail, null, 2)
+                : String(detail)
+              : 'Failed to attach agent to question before dry run.'
+          );
+          setIsDryRunRunning(false);
+          return;
+        }
+      } else {
+        setDryRunError('Failed to attach agent to question before dry run.');
+        setIsDryRunRunning(false);
+        return;
+      }
+    }
+
+    try {
+      const res = await axios.post(
+        `/api/questions/${selectedDryRunQuestion.question_id}/attached-agents/${selectedDryRunAgent.agent_id}/dry-run`,
+        { dryRun: true, inputValues }
+      );
+      const response = res.data ?? {};
+      const resolvedFromBackend =
+        response?.resolved_input_values ?? response?.resolvedInputValues ?? response?.resolved_inputs ?? null;
+      const effectiveResolvedInputs =
+        resolvedFromBackend && typeof resolvedFromBackend === 'object' && !Array.isArray(resolvedFromBackend)
+          ? (resolvedFromBackend as Record<string, unknown>)
+          : inputValues;
+      setDryRunResolvedInputValues(effectiveResolvedInputs);
+      const renderedPrompt =
+        response?.rendered_prompt && typeof response.rendered_prompt === 'object'
+          ? response.rendered_prompt
+          : null;
+      setDryRunResolvedSystemPrompt(
+        readFirstString(
+          renderedPrompt?.system_prompt,
+          response?.resolved_system_prompt,
+          response?.resolvedSystemPrompt
+        )
+      );
+      setDryRunResolvedUserText(
+        readFirstString(
+          renderedPrompt?.user_text,
+          response?.resolved_user_text,
+          response?.resolvedUserText
+        )
+      );
+      const aiScoreResult =
+        response?.ai_score_result && typeof response.ai_score_result === 'object'
+          ? (response.ai_score_result as Record<string, unknown>)
+          : null;
+      setDryRunAiScoreResult(aiScoreResult);
+      const structuredFeedbackText = readFirstString(response?.structured_feedback_text);
+      setDryRunStructuredFeedbackText(structuredFeedbackText);
+      const output = readFirstString(
+        response?.static_feedback_text,
+        response?.structured_feedback_text,
+        response?.output,
+        response?.result,
+        response?.feedback,
+        response?.text,
+        response?.static_feedback_text
+      );
+      setDryRunOutput(output || JSON.stringify(response, null, 2));
+    } catch (err) {
+      console.error('Error running agent dry run:', err);
+      if (axios.isAxiosError(err)) {
+        const detail = (err.response?.data as any)?.detail;
+        if (detail !== undefined) {
+          setDryRunError(
+            typeof detail === 'object' && detail !== null ? JSON.stringify(detail, null, 2) : String(detail)
+          );
+        } else {
+          setDryRunError('Dry run failed.');
+        }
+      } else {
+        setDryRunError('Dry run failed.');
+      }
+    } finally {
+      setIsDryRunRunning(false);
+    }
   };
 
   const validateAndBuildPayload = () => {
@@ -860,7 +1486,7 @@ export default function AgentManagementPage() {
     const hasRetrievedSlidePagesVariable = promptVariables.validKeys.includes('retrieved_slide_pages');
     const hasRetrievedSlidePagesRuleConfig = hasMeaningfulRetrievalRuleConfig(form.retrieved_slide_pages_rule);
     if (hasRetrievedSlidePagesRuleConfig && !hasRetrievedSlidePagesVariable) {
-      return { errorMessage: 'retrieved_slide_pages rule is configured, but {{{retrieved_slide_pages}}} is missing in prompt_text.' };
+      return { errorMessage: 'retrieved_slide_pages rule is configured, but {{{retrieved_slide_pages}}} is missing in feedback_generation_block.' };
     }
 
     const derivedInputs = promptVariables.validKeys.map((key) => ({
@@ -898,11 +1524,31 @@ export default function AgentManagementPage() {
       return { errorMessage: 'retrieved_slide_pages.similarity_threshold must be between 0 and 1.' };
     }
 
+    const normalizedScoreAiAgentId =
+      typeof form.score_ai_agent_id === 'string' ? form.score_ai_agent_id.trim() : '';
+
     if (form.role === 'human') {
+      const humanIfScore = Boolean(form.if_score);
+      const humanScoreAiAgentId = normalizedScoreAiAgentId;
+      if (humanIfScore && !humanScoreAiAgentId) {
+        return { errorMessage: 'score_ai_agent_id is required when if_score=true' };
+      }
+      if (!humanIfScore && humanScoreAiAgentId) {
+        return { errorMessage: 'score_ai_agent_id must be null when if_score=false' };
+      }
+      if (humanIfScore) {
+        const selectedScoreAgent = agents.find((agent) => agent.agent_id === humanScoreAiAgentId);
+        if (!selectedScoreAgent || String(selectedScoreAgent.role ?? '').toLowerCase() !== 'ai') {
+          return { errorMessage: 'score_ai_agent_id must reference an ai agent' };
+        }
+      }
       const payload = {
         name: title,
         title,
         role: 'human',
+        apply_question_type: form.apply_question_type || 'all',
+        if_score: humanIfScore,
+        score_ai_agent_id: humanIfScore ? humanScoreAiAgentId : null,
         prompt_text: '',
         is_structured: false,
         provider: null,
@@ -922,6 +1568,12 @@ export default function AgentManagementPage() {
     if (!form.model.trim()) {
       return { errorMessage: 'Model is required for AI agent.' };
     }
+    if (form.if_score) {
+      return { errorMessage: 'if_score is only supported for human agents' };
+    }
+    if (normalizedScoreAiAgentId) {
+      return { errorMessage: 'score_ai_agent_id is only supported for human agents' };
+    }
 
     let parsedLlmParams: Record<string, unknown> | null = null;
     if (form.llm_params_json.trim()) {
@@ -936,11 +1588,30 @@ export default function AgentManagementPage() {
       }
     }
 
+    const feedbackGenerationBlock = form.feedback_generation_block.trim();
+    const additionalFormattingInstructionsBlock = form.is_structured
+      ? form.additional_formatting_instructions_block.trim()
+      : '';
+    const llmParams: Record<string, unknown> = { ...(parsedLlmParams ?? {}) };
+    if (feedbackGenerationBlock) {
+      llmParams.feedback_generation_block = feedbackGenerationBlock;
+    }
+    if (additionalFormattingInstructionsBlock) {
+      llmParams.additional_formatting_instructions_block = additionalFormattingInstructionsBlock;
+    }
+    if (!feedbackGenerationBlock) {
+      delete llmParams.feedback_generation_block;
+    }
+    if (!additionalFormattingInstructionsBlock) {
+      delete llmParams.additional_formatting_instructions_block;
+    }
+
     const payload = {
       name: title,
       title,
       role: 'ai',
-      prompt_text: form.prompt_text.trim() || null,
+      apply_question_type: form.apply_question_type || 'all',
+      prompt_text: form.feedback_generation_block.trim() || null,
       is_structured: Boolean(form.is_structured),
       provider: form.provider.trim(),
       model: form.model.trim(),
@@ -949,7 +1620,7 @@ export default function AgentManagementPage() {
       created_by: actorUserId,
       updated_by: actorUserId,
       inputs: derivedInputs,
-      ...(parsedLlmParams ? { llm_params: parsedLlmParams } : {}),
+      ...(Object.keys(llmParams).length > 0 ? { llm_params: llmParams } : {}),
     };
     return { payload };
   };
@@ -1348,13 +2019,21 @@ export default function AgentManagementPage() {
                     const retrievedSlidePagesInput = normalizedInputs.find(
                       (input) => input.input_key === 'retrieved_slide_pages'
                     );
-                    const promptText = agent.prompt_text?.trim() || '';
-                    const promptTokens = extractPromptVariables(promptText, allowedPromptKeySet);
-                    const promptHtml = promptText ? buildPromptHighlightHtml(promptText, allowedPromptKeySet) : '';
+                    const llmParams = agent.llm_params && typeof agent.llm_params === 'object' ? agent.llm_params : null;
+                    const feedbackGenerationBlock =
+                      (typeof llmParams?.feedback_generation_block === 'string'
+                        ? llmParams.feedback_generation_block
+                        : '') ||
+                      agent.prompt_text?.trim() ||
+                      '';
+                    const promptTokens = extractPromptVariables(feedbackGenerationBlock, allowedPromptKeySet);
+                    const promptHtml = feedbackGenerationBlock
+                      ? buildPromptHighlightHtml(feedbackGenerationBlock, allowedPromptKeySet)
+                      : '';
 
                     return (
                       <div className="space-y-4">
-                        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                           <div>
                             <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
                               Structured
@@ -1373,13 +2052,19 @@ export default function AgentManagementPage() {
                             </div>
                             <div className="mt-1 text-slate-700">{agent.model || '-'}</div>
                           </div>
+                          <div>
+                            <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                              Apply Question Type
+                            </div>
+                            <div className="mt-1 text-slate-700">{agent.apply_question_type || 'all'}</div>
+                          </div>
                         </div>
 
                         <div>
                           <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                            Prompt Template
+                            Prompt Template (Task 1)
                           </div>
-                          {promptText ? (
+                          {feedbackGenerationBlock ? (
                             <div className="mt-1 rounded-lg border border-slate-200 bg-white p-3">
                               <div
                                 className="whitespace-pre-wrap break-words font-mono text-sm text-slate-700"
@@ -1455,6 +2140,213 @@ export default function AgentManagementPage() {
             <p className="text-center text-sm text-slate-500">
               Showing {filteredAgents.length} agent{filteredAgents.length === 1 ? '' : 's'}
               {queryUserId ? ' (mine + public)' : ' (public only)'}
+            </p>
+          )}
+        />
+
+        <ManageListPanel
+          toolbarLeft={(
+            <div className="flex items-center gap-2">
+              <div>
+                <p className="text-sm font-semibold text-slate-900">Agent Dry Run</p>
+                <p className="text-xs text-slate-500">
+                  Select a feedback agent and question (own private + public), then run a dry run in this page.
+                </p>
+              </div>
+            </div>
+          )}
+          toolbarRight={(
+            <ActionButton
+              type="button"
+              variant="neutral"
+              size="sm"
+              className="rounded-xl"
+              onClick={fetchDryRunQuestions}
+              disabled={isFetchingDryRunQuestions}
+            >
+              {isFetchingDryRunQuestions ? 'Loading Questions...' : 'Refresh Questions'}
+            </ActionButton>
+          )}
+          table={(
+            <div className="space-y-4">
+              {dryRunQuestionError && (
+                <div className="whitespace-pre-wrap rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
+                  {dryRunQuestionError}
+                </div>
+              )}
+              <div className="grid gap-4 md:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-slate-700">Feedback Agent</label>
+                  <select
+                    value={selectedDryRunAgentId}
+                    onChange={(e) => setSelectedDryRunAgentId(e.target.value)}
+                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-slate-300"
+                  >
+                    <option value="">Select an agent</option>
+                    {dryRunAgents.map((agent) => (
+                      <option key={`dry-run-agent-${agent.agent_id}`} value={agent.agent_id}>
+                        {`${agent.title || agent.agent_id} (${String(agent.role ?? 'unknown')})`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1 block text-sm font-medium text-slate-700">Question</label>
+                  <select
+                    value={selectedDryRunQuestionId}
+                    onChange={(e) => setSelectedDryRunQuestionId(e.target.value)}
+                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-slate-300"
+                  >
+                    <option value="">Select a question</option>
+                    {visibleDryRunQuestions.map((question) => (
+                      <option key={`dry-run-question-${question.question_id}`} value={question.question_id}>
+                        {getDryRunQuestionLabel(question)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-white p-3">
+                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Selected Question Preview
+                </div>
+                {selectedDryRunQuestion ? (
+                  <div className="mt-2 space-y-3 text-sm text-slate-700">
+                    <div>
+                      <div className="text-xs font-semibold text-slate-600">Question Text</div>
+                      <div className="mt-1 whitespace-pre-wrap rounded border border-slate-200 bg-slate-50 px-2 py-1">
+                        {selectedDryRunQuestion.content
+                          .filter((item) => item.type === 'text' && item.content.trim())
+                          .map((item) => item.content.trim())
+                          .join('\n\n') || '(empty)'}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs font-semibold text-slate-600">Options Preview</div>
+                      {selectedDryRunQuestion.options.length > 0 ? (
+                        <ul className="mt-1 space-y-1">
+                          {selectedDryRunQuestion.options.map((option, idx) => (
+                            <li
+                              key={`dry-run-option-preview-${selectedDryRunQuestion.question_id}-${idx}`}
+                              className="rounded border border-slate-200 bg-slate-50 px-2 py-1"
+                            >
+                              <span className="mr-2 text-slate-500">{`${idx + 1}.`}</span>
+                              <span>{option.text || '(empty option)'}</span>
+                              {option.isCorrect ? (
+                                <span className="ml-2 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs text-emerald-700">
+                                  Correct
+                                </span>
+                              ) : null}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <div className="mt-1 text-slate-500">(no options)</div>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="mt-2 text-sm text-slate-500">(no question selected)</div>
+                )}
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-white p-3">
+                <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Learner Answer (answer_text)
+                </label>
+                <textarea
+                  rows={4}
+                  value={dryRunLearnerAnswer}
+                  onChange={(e) => setDryRunLearnerAnswer(e.target.value)}
+                  placeholder="Type a sample learner answer for dry run"
+                  className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-slate-300"
+                />
+                {dryRunAutoSampleAnswer ? (
+                  <button
+                    type="button"
+                    className="mt-2 rounded border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-700 hover:bg-slate-100"
+                    onClick={() => setDryRunLearnerAnswer(dryRunAutoSampleAnswer)}
+                  >
+                    Fill sample answer from correct option
+                  </button>
+                ) : null}
+              </div>
+
+              <div className="flex items-center justify-end">
+                <ActionButton
+                  type="button"
+                  variant="primary"
+                  className="rounded-lg"
+                  onClick={runAgentDryRun}
+                  disabled={isDryRunRunning || !selectedDryRunAgentId || !selectedDryRunQuestionId}
+                >
+                  {isDryRunRunning ? 'Running...' : 'Run Dry Run'}
+                </ActionButton>
+              </div>
+
+              {dryRunError && (
+                <div className="whitespace-pre-wrap rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                  {dryRunError}
+                </div>
+              )}
+
+              {dryRunAiScoreResult && (
+                <div className="rounded-xl border border-slate-200 bg-white p-3">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">AI Score Result</div>
+                  {Boolean(dryRunAiScoreResult.enabled) ? (
+                    Boolean(dryRunAiScoreResult.has_score) ? (
+                      <div className="mt-2 text-sm text-slate-700">
+                        <span className="font-semibold">Score:</span>{' '}
+                        {String(dryRunAiScoreResult.score ?? '-')} / {String(dryRunAiScoreResult.max_score ?? '-')}
+                      </div>
+                    ) : (
+                      <div className="mt-2 text-sm text-amber-700">
+                        AI score unavailable{dryRunAiScoreResult.reason ? `: ${String(dryRunAiScoreResult.reason)}` : ''}
+                      </div>
+                    )
+                  ) : (
+                    <div className="mt-2 text-sm text-slate-500">AI scoring not enabled.</div>
+                  )}
+                  <div className="mt-3">
+                    <div className="text-xs font-semibold text-slate-600">Structured Feedback</div>
+                    <pre className="mt-1 max-h-44 overflow-auto whitespace-pre-wrap break-words text-xs text-slate-700">
+                      {dryRunStructuredFeedbackText || '(not returned)'}
+                    </pre>
+                  </div>
+                </div>
+              )}
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="rounded-lg border border-slate-200 bg-white p-3">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Resolved Input Values</div>
+                  <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words text-xs text-slate-700">
+                    {JSON.stringify(dryRunResolvedInputValues ?? {}, null, 2)}
+                  </pre>
+                </div>
+                <div className="rounded-lg border border-slate-200 bg-white p-3">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Rendered Prompt (Backend)</div>
+                  <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-words text-xs text-slate-700">
+                    {(dryRunResolvedSystemPrompt || dryRunResolvedUserText)
+                      ? [dryRunResolvedSystemPrompt, dryRunResolvedUserText].filter(Boolean).join('\n\n')
+                      : '(not returned by backend)'}
+                  </pre>
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-slate-200 bg-white p-3">
+                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Dry Run Output</div>
+                <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words text-xs text-slate-700">
+                  {dryRunOutput || '(no output yet)'}
+                </pre>
+              </div>
+            </div>
+          )}
+          summary={(
+            <p className="text-center text-sm text-slate-500">
+              {isFetchingDryRunQuestions
+                ? 'Loading question list...'
+                : `Questions available for dry run: ${visibleDryRunQuestions.length}`}
             </p>
           )}
         />
@@ -1573,135 +2465,225 @@ export default function AgentManagementPage() {
                       <option value="ai">AI</option>
                     </select>
                   </div>
-                </div>
-
-                <div className="grid gap-4 md:grid-cols-3">
                   <div>
-                    <label className="mb-1 block text-sm font-medium text-slate-700">Provider</label>
+                    <label className="mb-1 block text-sm font-medium text-slate-700">Apply Question Type</label>
                     <select
-                      value={form.provider}
-                      onChange={(e) => setFormField('provider', e.target.value)}
-                      disabled={form.role === 'human'}
-                      className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm outline-none disabled:bg-slate-50 disabled:text-slate-500 focus:border-slate-300"
+                      value={form.apply_question_type}
+                      onChange={(e) => setFormField('apply_question_type', (e.target.value as ApplyQuestionType) || 'all')}
+                      className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-slate-300"
                     >
-                      <option value="">Select provider</option>
-                      <option value="openai">OpenAI</option>
+                      <option value="all">All Question Types</option>
+                      <option value="single_choice">Single Choice</option>
+                      <option value="multi_choice">Multiple Choice</option>
+                      <option value="dropdown">Dropdown</option>
+                      <option value="true_false">True / False</option>
+                      <option value="free_text">Free Text</option>
+                      <option value="essay">Essay</option>
                     </select>
                   </div>
-                  <div>
-                    <label className="mb-1 block text-sm font-medium text-slate-700">Model</label>
-                    <input
-                      type="text"
-                      list="agent-model-suggestions"
-                      value={form.model}
-                      onChange={(e) => setFormField('model', e.target.value)}
-                      disabled={form.role === 'human'}
-                      placeholder={form.role === 'human' ? 'Forced empty for human' : 'e.g. gpt-4.1-mini'}
-                      className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm outline-none disabled:bg-slate-50 disabled:text-slate-500 focus:border-slate-300"
-                    />
-                    <datalist id="agent-model-suggestions">
-                      <option value="gpt-4.1-mini" />
-                      <option value="gpt-4.1" />
-                      <option value="gpt-4o-mini" />
-                      <option value="gpt-4o" />
-                      <option value="o4-mini" />
-                    </datalist>
-                  </div>
-                  <div className="flex items-end">
-                    <label className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700">
-                      <input
-                        type="checkbox"
-                        checked={form.is_structured}
-                        onChange={(e) => setFormField('is_structured', e.target.checked)}
-                        disabled={form.role === 'human'}
-                        className="h-4 w-4 rounded border-slate-300"
-                      />
-                      Structured Output
-                    </label>
-                  </div>
-                </div>
-
-                <div className="rounded-2xl border border-slate-200 p-4">
-                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                      <label className="block text-sm font-medium text-slate-700">Prompt Template</label>
-                      <p className="text-xs text-slate-500">
-                        Insert variables as <code>{'{{{key}}}'}</code>. Only the predefined keys are allowed.
-                      </p>
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      {availableInputKeys.map((key) => (
-                        <ActionButton
-                          key={key}
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          className="rounded-lg"
-                          onClick={() => insertPromptVariable(key)}
-                          disabled={form.role === 'human'}
-                        >
-                          + {key}
-                        </ActionButton>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="relative rounded-xl border border-slate-200 bg-white shadow-sm">
-                    <div
-                      ref={promptHighlightRef}
-                      aria-hidden="true"
-                      className="pointer-events-none absolute inset-0 overflow-auto whitespace-pre-wrap break-words px-3 py-2 font-mono text-sm leading-6 text-slate-800"
-                      dangerouslySetInnerHTML={{ __html: promptHighlightHtml }}
-                    />
-                    <textarea
-                      ref={promptTextareaRef}
-                      rows={6}
-                      value={form.prompt_text}
-                      onChange={(e) => setFormField('prompt_text', e.target.value)}
-                      onScroll={(e) => {
-                        if (promptHighlightRef.current) {
-                          promptHighlightRef.current.scrollTop = e.currentTarget.scrollTop;
-                          promptHighlightRef.current.scrollLeft = e.currentTarget.scrollLeft;
-                        }
-                      }}
-                      disabled={form.role === 'human'}
-                      placeholder=""
-                      spellCheck={false}
-                      className="relative w-full resize-y rounded-xl bg-transparent px-3 py-2 font-mono text-sm leading-6 text-transparent caret-slate-900 outline-none disabled:bg-slate-50 disabled:text-transparent disabled:caret-transparent"
-                    />
-                  </div>
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {promptVariables.validKeys.map((key) => (
-                      <span
-                        key={key}
-                        className="rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-xs text-blue-700"
-                      >
-                        {key}
-                      </span>
-                    ))}
-                    {promptVariables.invalidKeys.map((key) => (
-                      <span
-                        key={key}
-                        className="rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5 text-xs text-rose-700"
-                      >
-                        invalid: {key}
-                      </span>
-                    ))}
-                    {promptVariables.validKeys.length === 0 && promptVariables.invalidKeys.length === 0 && (
-                      <span className="text-xs text-slate-500">No variables detected.</span>
-                    )}
-                  </div>
-                  {(isFetchingInputOptions || inputOptionsError) && (
-                    <p className={`mt-2 text-xs ${inputOptionsError ? 'text-amber-700' : 'text-slate-500'}`}>
-                      {inputOptionsError ?? 'Loading input option whitelist...'}
-                    </p>
-                  )}
                   {form.role === 'human' && (
-                    <p className="mt-1 text-xs text-slate-500">
-                      Human agent rules enforced: `prompt_text=&quot;&quot;`, `is_structured=false`.
-                    </p>
+                    <div className="rounded-xl border border-slate-200 p-3">
+                      <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+                        <input
+                          type="checkbox"
+                          checked={form.if_score}
+                          onChange={(e) =>
+                            setForm((prev) => ({
+                              ...prev,
+                              if_score: e.target.checked,
+                              score_ai_agent_id: e.target.checked ? (prev.score_ai_agent_id ?? '') : '',
+                            }))
+                          }
+                          className="h-4 w-4 rounded border-slate-300"
+                        />
+                        Enable AI Score
+                      </label>
+                      <div className="mt-3">
+                        <label className="mb-1 block text-sm font-medium text-slate-700">AI Scoring Agent</label>
+                        <select
+                          value={form.score_ai_agent_id ?? ''}
+                          onChange={(e) => setFormField('score_ai_agent_id', e.target.value)}
+                          disabled={!form.if_score}
+                          className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none disabled:bg-slate-50 disabled:text-slate-500 focus:border-slate-300"
+                        >
+                          <option value="">{form.if_score ? 'Select an AI scoring agent' : 'Enable AI Score first'}</option>
+                          {aiAgents.map((agent) => (
+                            <option key={`score-ai-agent-${agent.agent_id}`} value={agent.agent_id}>
+                              {agent.title || agent.agent_id}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
                   )}
                 </div>
+
+                {form.role === 'ai' && (
+                  <div className="grid gap-4 md:grid-cols-3">
+                    <div>
+                      <label className="mb-1 block text-sm font-medium text-slate-700">Provider</label>
+                      <select
+                        value={form.provider}
+                        onChange={(e) => setFormField('provider', e.target.value)}
+                        className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-slate-300"
+                      >
+                        <option value="">Select provider</option>
+                        <option value="openai">OpenAI</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-sm font-medium text-slate-700">Model</label>
+                      <input
+                        type="text"
+                        list="agent-model-suggestions"
+                        value={form.model}
+                        onChange={(e) => setFormField('model', e.target.value)}
+                        placeholder="e.g. gpt-4.1-mini"
+                        className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-slate-300"
+                      />
+                      <datalist id="agent-model-suggestions">
+                        <option value="gpt-4.1-mini" />
+                        <option value="gpt-4.1" />
+                        <option value="gpt-4o-mini" />
+                        <option value="gpt-4o" />
+                        <option value="o4-mini" />
+                      </datalist>
+                    </div>
+                    <div className="flex items-end">
+                      <label className="inline-flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-700">
+                        <input
+                          type="checkbox"
+                          checked={form.is_structured}
+                          onChange={(e) => {
+                            const checked = e.target.checked;
+                            setForm((prev) => ({
+                              ...prev,
+                              is_structured: checked,
+                              additional_formatting_instructions_block: checked
+                                ? prev.additional_formatting_instructions_block
+                                : '',
+                            }));
+                          }}
+                          className="h-4 w-4 rounded border-slate-300"
+                        />
+                        Structured Output
+                      </label>
+                    </div>
+                  </div>
+                )}
+
+                {form.role === 'ai' && (
+                  <div className="grid gap-4 md:grid-cols-1">
+                    <div className="rounded-2xl border border-slate-200 p-4">
+                      <label className="block text-sm font-medium text-slate-700">Prompt Template (Task 1)</label>
+                      <p className="mt-1 text-xs text-slate-500">
+                        Write the main prompt used to generate feedback.
+                      </p>
+                      <p className="mt-1 text-xs text-slate-500">
+                        Insert variables as <code>{'{{{key}}}'}</code>. Only predefined keys are allowed.
+                      </p>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {availableInputKeys.map((key) => (
+                          <ActionButton
+                            key={key}
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="rounded-lg"
+                            onClick={() => insertPromptVariable(key)}
+                            disabled={form.role === 'human'}
+                          >
+                            + {key}
+                          </ActionButton>
+                        ))}
+                      </div>
+                      <div className="relative mt-2 rounded-xl border border-slate-200 bg-white shadow-sm">
+                        <div
+                          ref={feedbackBlockHighlightRef}
+                          aria-hidden="true"
+                          className="pointer-events-none absolute inset-0 overflow-auto whitespace-pre-wrap break-words px-3 py-2 font-mono text-sm leading-6 text-slate-800"
+                          dangerouslySetInnerHTML={{ __html: feedbackBlockHighlightHtml }}
+                        />
+                        <textarea
+                          ref={feedbackBlockTextareaRef}
+                          rows={6}
+                          value={form.feedback_generation_block}
+                          onChange={(e) => setFormField('feedback_generation_block', e.target.value)}
+                          onScroll={(e) => {
+                            if (feedbackBlockHighlightRef.current) {
+                              feedbackBlockHighlightRef.current.scrollTop = e.currentTarget.scrollTop;
+                              feedbackBlockHighlightRef.current.scrollLeft = e.currentTarget.scrollLeft;
+                            }
+                          }}
+                          spellCheck={false}
+                          placeholder={
+                            promptBlocksMeta.feedback_generation_block?.placeholder ||
+                            'Your Task 1 rules...'
+                          }
+                          className="relative w-full resize-y rounded-xl bg-transparent px-3 py-2 font-mono text-sm leading-6 text-transparent caret-slate-900 outline-none"
+                        />
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {promptVariables.validKeys.map((key) => (
+                          <span
+                            key={`feedback-block-valid-${key}`}
+                            className="rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-xs text-blue-700"
+                          >
+                            {key}
+                          </span>
+                        ))}
+                        {promptVariables.invalidKeys.map((key) => (
+                          <span
+                            key={`feedback-block-invalid-${key}`}
+                            className="rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5 text-xs text-rose-700"
+                          >
+                            invalid: {key}
+                          </span>
+                        ))}
+                        {promptVariables.validKeys.length === 0 && promptVariables.invalidKeys.length === 0 && (
+                          <span className="text-xs text-slate-500">No variables detected.</span>
+                        )}
+                      </div>
+                      {(isFetchingInputOptions || inputOptionsError) && (
+                        <p className={`mt-2 text-xs ${inputOptionsError ? 'text-amber-700' : 'text-slate-500'}`}>
+                          {inputOptionsError ?? 'Loading input option whitelist...'}
+                        </p>
+                      )}
+                    </div>
+
+                    {form.is_structured && (
+                      <div className="rounded-2xl border border-slate-200 p-4">
+                        <label className="block text-sm font-medium text-slate-700">Additional Formatting Rules (Task 2)</label>
+                        <p className="mt-1 text-xs text-slate-500">
+                          Optional extra rules for how the final feedback should be formatted.
+                        </p>
+                        <textarea
+                          rows={6}
+                          value={form.additional_formatting_instructions_block}
+                          onChange={(e) => setFormField('additional_formatting_instructions_block', e.target.value)}
+                          spellCheck={false}
+                          placeholder={
+                            promptBlocksMeta.additional_formatting_instructions_block?.placeholder ||
+                            'Your additional formatting rules...'
+                          }
+                          className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2 font-mono text-sm text-slate-900 shadow-sm outline-none focus:border-slate-300"
+                        />
+                      </div>
+                    )}
+
+                    <div className="rounded-2xl border border-slate-200 p-4">
+                      <label className="block text-sm font-medium text-slate-700">
+                        Prompt Assembly Preview (Server)
+                      </label>
+                      <p className="mt-1 text-xs text-slate-500">
+                        Read-only preview of how the backend assembles Task 1 and Task 2 into the final prompt.
+                      </p>
+                      <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-xs text-slate-700">
+{promptAssemblyPreview}
+                      </pre>
+                    </div>
+                  </div>
+                )}
 
                 {form.role === 'ai' && (
                   <div className="rounded-2xl border border-slate-200">
@@ -1774,7 +2756,7 @@ export default function AgentManagementPage() {
                           <div className="mb-2">
                             <div className="text-sm font-semibold text-slate-900">Advanced LLM Params</div>
                             <div className="text-xs text-slate-500">
-                              Optional JSON object passed through for model generation settings.
+                              Optional extra JSON object. Fixed block keys above always take precedence.
                             </div>
                           </div>
                           <textarea

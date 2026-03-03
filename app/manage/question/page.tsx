@@ -145,7 +145,7 @@ const USER_ID_REGEX = /^us_[A-Za-z0-9]{13}$/;
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const DEFAULT_PROMPT_TEXT: Record<SemanticQuestionType, string> = {
-  single_choice: "Multiple Choice Question - Select the best option.",
+  single_choice: "Multiple Choice Question - Select the best option, then click Submit to record.",
   multi_choice: "Multiple Choice Question - Choose all that apply.",
   dropdown: "Dropdown Question - Select the best option.",
   true_false: "True/False Question - Select true or false.",
@@ -181,7 +181,6 @@ const getQuestionImagePreview = (question: Question) =>
 
 const formatCreatedAt = (value?: string) => formatDateTimeForUser(value);
 const formatDateTime = (value?: string) => formatDateTimeForUser(value);
-const FEEDBACK_CSV_CELL_MAX_LENGTH = 2000;
 const PASSED_GENERATION_STATUSES = new Set(["finished", "passed", "success", "succeeded"]);
 
 const normalizeFeedbackAgentForQuestionManage = (raw: any): QuestionManageFeedbackAgent => ({
@@ -209,255 +208,6 @@ const parseFeedbackAgentsForQuestionManage = (data: unknown): QuestionManageFeed
   return itemsCandidate.map(normalizeFeedbackAgentForQuestionManage).filter((agent) => agent.agent_id);
 };
 
-const getQuestionContentForFeedbackSheet = (question: Question) => {
-  if (!Array.isArray(question.content) || question.content.length === 0) return "";
-  return question.content
-    .map((item) => {
-      if (item.type === "text") return String(item.content ?? "").trim();
-      if (item.type === "image") return `[image] ${String(item.content ?? "").trim()}`;
-      return `[${item.type}] ${String(item.content ?? "").trim()}`;
-    })
-    .filter(Boolean)
-    .join("\n\n")
-    .slice(0, FEEDBACK_CSV_CELL_MAX_LENGTH);
-};
-
-const sanitizeFeedbackSheetHeader = (raw: string) =>
-  raw
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "");
-
-const toCsvCell = (value: unknown) => {
-  const text = String(value ?? "");
-  const escaped = text.replace(/"/g, '""');
-  return `"${escaped}"`;
-};
-
-const toCsvText = (headers: string[], rows: Array<Record<string, string>>) => {
-  const headerLine = headers.map((h) => toCsvCell(h)).join(",");
-  const bodyLines = rows.map((row) => headers.map((h) => toCsvCell(row[h] ?? "")).join(","));
-  return [headerLine, ...bodyLines].join("\n");
-};
-
-const parseCsvText = (source: string): string[][] => {
-  const rows: string[][] = [];
-  let row: string[] = [];
-  let cell = "";
-  let inQuotes = false;
-
-  const pushCell = () => {
-    row.push(cell);
-    cell = "";
-  };
-  const pushRow = () => {
-    rows.push(row);
-    row = [];
-  };
-
-  for (let i = 0; i < source.length; i += 1) {
-    const ch = source[i];
-    if (ch === '"') {
-      if (inQuotes && source[i + 1] === '"') {
-        cell += '"';
-        i += 1;
-      } else {
-        inQuotes = !inQuotes;
-      }
-      continue;
-    }
-    if (!inQuotes && (ch === "\n" || ch === "\r")) {
-      pushCell();
-      pushRow();
-      if (ch === "\r" && source[i + 1] === "\n") i += 1;
-      continue;
-    }
-    if (!inQuotes && ch === ",") {
-      pushCell();
-      continue;
-    }
-    cell += ch;
-  }
-
-  if (cell.length > 0 || row.length > 0) {
-    pushCell();
-    pushRow();
-  }
-  return rows;
-};
-
-const parseFeedbackSheetCsv = (text: string) => {
-  const matrix = parseCsvText(text);
-  if (matrix.length === 0) {
-    return { headers: [] as string[], rows: [] as Array<Record<string, string>> };
-  }
-  const headers = matrix[0].map((value, idx) => {
-    const base = idx === 0 ? value.replace(/^\uFEFF/, "") : value;
-    return String(base ?? "").trim();
-  });
-  const rows = matrix
-    .slice(1)
-    .filter((cells) => cells.some((cell) => String(cell ?? "").trim().length > 0))
-    .map((cells) => {
-      const row: Record<string, string> = {};
-      headers.forEach((header, idx) => {
-        row[header] = String(cells[idx] ?? "");
-      });
-      return row;
-    });
-  return { headers, rows };
-};
-
-const isFeedbackSheetNullLike = (value: unknown) => {
-  const text = String(value ?? "").trim();
-  if (!text) return true;
-  return /^n\/a$/i.test(text);
-};
-
-const parseManualSlideIdsCell = (value: unknown): string[] => {
-  const raw = String(value ?? "").trim();
-  if (!raw) return [];
-  if (/^n\/a$/i.test(raw)) return [];
-  const normalizeToken = (token: string) =>
-    token
-      .trim()
-      .replace(/^\[+/, "")
-      .replace(/\]+$/, "")
-      .replace(/^['"]+/, "")
-      .replace(/['"]+$/, "")
-      .trim();
-  const maybeJson = raw.startsWith("[") ? raw : "";
-  if (maybeJson) {
-    try {
-      const parsed = JSON.parse(maybeJson);
-      if (Array.isArray(parsed)) {
-        return Array.from(
-          new Set(
-            parsed
-              .map((item) =>
-                String(
-                  typeof item === "string"
-                    ? item
-                    : (item as any)?.slide_id ?? (item as any)?.slideId ?? (item as any)?.id ?? ""
-                )
-                  .trim()
-              )
-              .map(normalizeToken)
-              .filter(Boolean)
-          )
-        );
-      }
-    } catch {
-      // Fallback to delimiter parsing.
-    }
-  }
-  return Array.from(
-    new Set(
-      raw
-        .split(/[,\n;|]/g)
-        .map(normalizeToken)
-        .filter(Boolean)
-    )
-  );
-};
-
-const buildQuestionVersionPayloadWithSlides = (
-  rawDetail: any,
-  createdBy: string,
-  slideIds: string[]
-) => {
-  const currentVersion = rawDetail?.current_version ?? {};
-  const questionType = String(
-    currentVersion?.question_type ??
-      rawDetail?.question_type ??
-      rawDetail?.type ??
-      (Array.isArray(rawDetail?.interactions) ? rawDetail.interactions[0]?.interaction_type : "") ??
-      "free_text"
-  ).trim();
-  const contentBlocksSource = Array.isArray(rawDetail?.content_blocks)
-    ? rawDetail.content_blocks
-    : Array.isArray(currentVersion?.content_blocks)
-      ? currentVersion.content_blocks
-      : [];
-  const interactionsSource = Array.isArray(rawDetail?.interactions)
-    ? rawDetail.interactions
-    : Array.isArray(currentVersion?.interactions)
-      ? currentVersion.interactions
-      : [];
-
-  const content_blocks = contentBlocksSource.map((block: any) => ({
-    block_type: String(block?.block_type ?? block?.type ?? "text"),
-    text_content: block?.text_content ?? block?.content ?? block?.text ?? null,
-    media_url: block?.media_url ?? block?.image_url ?? block?.src ?? null,
-    alt_text: block?.alt_text ?? null,
-  }));
-
-  const interactions = interactionsSource.map((interaction: any, idx: number) => {
-    const optionsSource = Array.isArray(interaction?.options)
-      ? interaction.options
-      : Array.isArray(interaction?.interaction_options)
-        ? interaction.interaction_options
-        : [];
-    const interactionType = String(interaction?.interaction_type ?? interaction?.type ?? questionType ?? "free_text");
-    return {
-      interaction_type: interactionType,
-      interaction_order: Number(interaction?.interaction_order ?? idx + 1),
-      prompt_text: interaction?.prompt_text ?? null,
-      is_required: Boolean(interaction?.is_required ?? true),
-      max_score:
-        typeof interaction?.max_score === "number"
-          ? interaction.max_score
-          : typeof currentVersion?.score_maximum === "number"
-            ? currentVersion.score_maximum
-            : 1,
-      options: optionsSource.map((option: any, optionIdx: number) => ({
-        option_order: Number(option?.option_order ?? optionIdx + 1),
-        option_value: String(option?.option_value ?? option?.option_label ?? option?.text ?? "").trim(),
-        option_label: String(option?.option_label ?? option?.option_value ?? option?.text ?? "").trim(),
-        is_correct: Boolean(option?.is_correct ?? option?.isCorrect ?? option?.correct ?? false),
-      })),
-    };
-  });
-
-  const slide_scope = slideIds.map((slideId) => ({
-    slide_id: slideId,
-    page_start: null,
-    page_end: null,
-  }));
-
-  return {
-    question_type: questionType,
-    title: currentVersion?.title ?? rawDetail?.title ?? null,
-    content_blocks,
-    interactions,
-    slide_scope,
-    scoring_policy: {
-      score_maximum:
-        typeof currentVersion?.score_maximum === "number"
-          ? currentVersion.score_maximum
-          : typeof rawDetail?.score_maximum === "number"
-            ? rawDetail.score_maximum
-            : 1,
-      score_input_format: currentVersion?.score_input_format ?? rawDetail?.score_input_format ?? "fraction",
-      score_normalize_to_maximum:
-        typeof currentVersion?.score_normalize_to_maximum === "boolean"
-          ? currentVersion.score_normalize_to_maximum
-          : typeof rawDetail?.score_normalize_to_maximum === "boolean"
-            ? rawDetail.score_normalize_to_maximum
-            : true,
-      score_rounding_mode: currentVersion?.score_rounding_mode ?? rawDetail?.score_rounding_mode ?? "none",
-      score_rounding_step:
-        typeof currentVersion?.score_rounding_step === "number"
-          ? currentVersion.score_rounding_step
-          : typeof rawDetail?.score_rounding_step === "number"
-            ? rawDetail.score_rounding_step
-            : 1,
-    },
-    created_by: createdBy,
-    change_note: "Update linked slides from feedback sheet upload",
-    copy_feedback_links_from_previous: true,
-  };
-};
 
 const parseAttachedAgentsPayload = (payload: any): Array<{
   attachment_id?: string;
@@ -495,23 +245,6 @@ const parseAttachedAgentsPayload = (payload: any): Array<{
     .filter((item: { agent_id: string }) => item.agent_id);
 };
 
-const parseFeedbackSheetAgentColumn = (header: string, sortedKnownAgentIds: string[]) => {
-  const questionSuffix = "_question_feedback";
-  const optionMatch = header.match(/_option_(\d+)_feedback$/);
-  const suffix = optionMatch ? optionMatch[0] : header.endsWith(questionSuffix) ? questionSuffix : "";
-  if (!suffix) return null;
-  for (const agentId of sortedKnownAgentIds) {
-    if (header.startsWith(`agent_${agentId}_`)) {
-      return {
-        header,
-        agent_id: agentId,
-        type: optionMatch ? ("option" as const) : ("question" as const),
-        optionIndex: optionMatch ? Number(optionMatch[1]) : undefined,
-      };
-    }
-  }
-  return null;
-};
 
 const getFeedbackAgentInputKeys = (agent?: QuestionManageFeedbackAgent | null) => {
   if (!agent?.inputs?.length) return [];
@@ -1286,6 +1019,12 @@ type BatchUploadParsedDraft = {
   sourceTable: Record<string, string>;
 };
 
+type BatchSlideMatchDraftSelection = {
+  slide_id: string;
+  page_start: string;
+  page_end: string;
+};
+
 type BatchAttachedAgentConfig = {
   agent_id: string;
   title?: string;
@@ -1316,10 +1055,10 @@ const DEFAULT_BATCH_UPLOAD_FIELD_MAPPING: BatchUploadFieldMapping = {
   stemKey: "stem",
   loKey: "lo",
   slideIdsKey: "slide_ids",
-  questionFeedbackKey: "feedback",
+  questionFeedbackKey: "one-layer",
   correctKey: "correct",
   choicePrefix: "choice",
-  optionFeedbackPrefix: "feedback",
+  optionFeedbackPrefix: "one-layer-feedback",
 };
 
 const IMAGE_REF_LINE_REGEX = /^!\[\]\[([^\]]+)\]\s*$/;
@@ -1395,6 +1134,47 @@ const parseKeyValueTablesFromMarkdown = (markdown: string): Array<Record<string,
     if (Object.keys(table).length > 0) tables.push(table);
   }
   return tables;
+};
+
+const getSharedOptionFeedbackCandidates = (optionIndex: number): string[] => {
+  if (optionIndex <= 0) return [];
+  const idx = String(optionIndex);
+  return [`feedback${idx}`, `feedback_${idx}`, `feedback-${idx}`];
+};
+
+const getOptionFeedbackCellCandidates = (prefix: string, optionIndex: number): string[] => {
+  const normalizedPrefix = prefix.trim().toLowerCase();
+  if (!normalizedPrefix || optionIndex <= 0) return [];
+  const idx = String(optionIndex);
+  const candidates = [
+    `${normalizedPrefix}${idx}`,
+    `${normalizedPrefix}_${idx}`,
+    `${normalizedPrefix}-${idx}`,
+  ];
+  // If prefix does not already end with "feedback", also try "<prefix>-feedback{n}" forms.
+  if (!/(^|[-_])feedback$/.test(normalizedPrefix)) {
+    candidates.push(`${normalizedPrefix}-feedback${idx}`, `${normalizedPrefix}_feedback${idx}`);
+  }
+  return Array.from(new Set(candidates));
+};
+
+const readOptionFeedbackFromTable = (
+  table: Record<string, string>,
+  prefix: string,
+  optionIndex: number
+): string => {
+  // Priority: agent-specific key -> shared feedback{n} key.
+  const specificCandidates = getOptionFeedbackCellCandidates(prefix, optionIndex);
+  for (const key of specificCandidates) {
+    const value = String(table[key] ?? "").trim();
+    if (value) return value;
+  }
+  const sharedCandidates = getSharedOptionFeedbackCandidates(optionIndex);
+  for (const key of sharedCandidates) {
+    const value = String(table[key] ?? "").trim();
+    if (value) return value;
+  }
+  return "";
 };
 
 const parseBatchMarkdownToDrafts = (
@@ -1496,7 +1276,7 @@ const parseBatchMarkdownToDrafts = (
       const idx = Number(suffix.replace(/\D/g, ""));
       if (!Number.isFinite(idx) || idx <= 0) continue;
       choices.push(String(pair.value ?? "").trim());
-      feedbacks.push(String(table[`${optionFeedbackPrefix}${idx}`] ?? "").trim());
+      feedbacks.push(readOptionFeedbackFromTable(table, optionFeedbackPrefix, idx));
     }
     const correctRaw = String(table[correctKey] ?? "").trim().toLowerCase();
     const correctPattern = new RegExp(`^${choicePrefix}\\d+$`);
@@ -1520,6 +1300,35 @@ const parseBatchMarkdownToDrafts = (
   }
 
   return drafts;
+};
+
+const getValidUuidSlideIds = (slideIds: string[]): string[] => {
+  const deduped = Array.from(new Set((slideIds ?? []).map((value) => String(value).trim()).filter(Boolean)));
+  return deduped.filter((id) => UUID_REGEX.test(id));
+};
+
+const parsePageInput = (raw: string): number | null => {
+  const trimmed = String(raw ?? "").trim();
+  if (!trimmed) return null;
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed)) return null;
+  const rounded = Math.floor(parsed);
+  return rounded > 0 ? rounded : null;
+};
+
+const readSlideTotalPages = (slide: Slide | null | undefined): number | null => {
+  if (!slide) return null;
+  const candidateValues = [
+    (slide as any).pageCount,
+    (slide as any).slide_total_pages,
+    (slide as any).total_pages,
+    (slide as any).page_count,
+  ];
+  for (const value of candidateValues) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed > 0) return Math.floor(parsed);
+  }
+  return null;
 };
 
 const QuestionOverview = () => {
@@ -1583,11 +1392,15 @@ const QuestionOverview = () => {
   const [batchUploadMapping, setBatchUploadMapping] = useState<BatchUploadFieldMapping>(
     DEFAULT_BATCH_UPLOAD_FIELD_MAPPING
   );
-  const feedbackSheetInputRef = useRef<HTMLInputElement | null>(null);
-  const [isUploadingFeedbackSheet, setIsUploadingFeedbackSheet] = useState(false);
-  const [isFeedbackUploadResultModalOpen, setIsFeedbackUploadResultModalOpen] = useState(false);
-  const [feedbackUploadSummary, setFeedbackUploadSummary] = useState<string>("");
-  const [feedbackUploadResultLines, setFeedbackUploadResultLines] = useState<string[]>([]);
+  const [isBatchSlideMatchModalOpen, setIsBatchSlideMatchModalOpen] = useState(false);
+  const [batchSlideMatchTargetIndices, setBatchSlideMatchTargetIndices] = useState<number[]>([]);
+  const [batchSlideMatchCursor, setBatchSlideMatchCursor] = useState(0);
+  const [batchSlideCandidates, setBatchSlideCandidates] = useState<Slide[]>([]);
+  const [isFetchingBatchSlideCandidates, setIsFetchingBatchSlideCandidates] = useState(false);
+  const [batchSlideCandidatesError, setBatchSlideCandidatesError] = useState<string | null>(null);
+  const [batchSlideMatchSelections, setBatchSlideMatchSelections] = useState<
+    Record<number, BatchSlideMatchDraftSelection>
+  >({});
   const [attachedAgentsByQuestionId, setAttachedAgentsByQuestionId] = useState<
     Record<
       string,
@@ -1632,12 +1445,6 @@ const QuestionOverview = () => {
       setTopToastMessage(null);
       topToastTimerRef.current = null;
     }, 2800);
-  }, []);
-
-  const showFeedbackUploadResultModal = useCallback((summary: string, lines: string[] = []) => {
-    setFeedbackUploadSummary(summary);
-    setFeedbackUploadResultLines(lines);
-    setIsFeedbackUploadResultModalOpen(true);
   }, []);
 
   useEffect(() => {
@@ -2180,378 +1987,6 @@ const QuestionOverview = () => {
     setSelectedQuestionIds(new Set());
   };
 
-  const handleDownloadFeedbackSheet = async () => {
-    if (selectedQuestions.length === 0) {
-      showTopToast("Please select at least one question.");
-      return;
-    }
-
-    const sortedQuestions = [...selectedQuestions].sort((a, b) =>
-      String(a.question_id).localeCompare(String(b.question_id), undefined, { numeric: true, sensitivity: "base" })
-    );
-    const maxOptionCount = sortedQuestions.reduce(
-      (max, question) => Math.max(max, question.options?.length ?? 0),
-      0
-    );
-
-    const headers: string[] = [
-      "question_id",
-      "question_type",
-      "question_content",
-      "manual_slide_ids",
-    ];
-    for (let idx = 1; idx <= maxOptionCount; idx += 1) {
-      headers.push(`option_${idx}_id`, `option_${idx}_text`);
-    }
-
-    const attachedHumanAgentMap = new Map<string, { agent_id: string; title?: string }>();
-    try {
-      const attachedAgentResponses = await Promise.allSettled(
-        sortedQuestions.map((question) => axios.get(`/api/questions/${question.question_id}/attached-agents`))
-      );
-      attachedAgentResponses.forEach((result) => {
-        if (result.status !== "fulfilled") return;
-        parseAttachedAgentsPayload(result.value.data).forEach((item) => {
-          const agentId = item.agent_id;
-          const role = item.role ?? "";
-          if (!agentId) return;
-          if (role && role !== "human") return;
-          attachedHumanAgentMap.set(agentId, {
-            agent_id: agentId,
-            title: item.title || undefined,
-          });
-        });
-      });
-    } catch (error) {
-      console.error("Failed to fetch attached agents for feedback sheet:", error);
-    }
-
-    const normalizedAgents = Array.from(attachedHumanAgentMap.values()).map((agent) => ({
-      ...agent,
-      headerPrefix: `agent_${agent.agent_id}_${sanitizeFeedbackSheetHeader(agent.title || "untitled")}`,
-    }));
-    if (normalizedAgents.length === 0) {
-      showTopToast("No attached feedback agents found on selected questions.");
-    }
-
-    normalizedAgents.forEach((agent) => {
-      headers.push(`${agent.headerPrefix}_question_feedback`);
-      for (let idx = 1; idx <= maxOptionCount; idx += 1) {
-        headers.push(`${agent.headerPrefix}_option_${idx}_feedback`);
-      }
-    });
-
-    const rows: Array<Record<string, string>> = sortedQuestions.map((question) => {
-      const optionCount = question.options?.length ?? 0;
-      const isFreeTextQuestion = String(question.question_type_raw || question.type || "")
-        .toLowerCase()
-        .includes("free");
-      const row: Record<string, string> = {
-        question_id: question.question_id,
-        question_type: String(question.question_type_raw || question.type || ""),
-        question_content: getQuestionContentForFeedbackSheet(question),
-        manual_slide_ids: "",
-      };
-
-      for (let idx = 1; idx <= maxOptionCount; idx += 1) {
-        const option = question.options?.[idx - 1];
-        row[`option_${idx}_id`] = option ? String(option.interaction_option_id ?? "") : "N/A";
-        row[`option_${idx}_text`] = option ? String(option.text ?? "") : "N/A";
-      }
-
-      normalizedAgents.forEach((agent) => {
-        row[`${agent.headerPrefix}_question_feedback`] = isFreeTextQuestion ? "" : "N/A";
-        for (let idx = 1; idx <= maxOptionCount; idx += 1) {
-          row[`${agent.headerPrefix}_option_${idx}_feedback`] = idx <= optionCount ? "" : "N/A";
-        }
-      });
-
-      return row;
-    });
-
-    const csv = toCsvText(headers, rows);
-    const blob = new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8;" });
-    const url = window.URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    const now = new Date();
-    const ts = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(
-      now.getDate()
-    ).padStart(2, "0")}_${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}`;
-    anchor.href = url;
-    anchor.download = `feedback_sheet_${ts}.csv`;
-    document.body.appendChild(anchor);
-    anchor.click();
-    document.body.removeChild(anchor);
-    window.URL.revokeObjectURL(url);
-    showTopToast(
-      `Feedback sheet downloaded: ${sortedQuestions.length} question${sortedQuestions.length === 1 ? "" : "s"}, ${normalizedAgents.length} agent${normalizedAgents.length === 1 ? "" : "s"}.`
-    );
-  };
-
-  const handleUploadFeedbackSheet = async (file: File) => {
-    if (!manageUserId) {
-      showFeedbackUploadResultModal("Upload feedback sheet failed.", [
-        "[ERR] Missing user ID. Please refresh and try again.",
-      ]);
-      return;
-    }
-
-    setIsUploadingFeedbackSheet(true);
-    setFeedbackUploadSummary("");
-    setFeedbackUploadResultLines([]);
-    setIsFeedbackUploadResultModalOpen(false);
-    try {
-      const text = await file.text();
-      const { headers, rows } = parseFeedbackSheetCsv(text);
-      if (headers.length === 0 || rows.length === 0) {
-        showFeedbackUploadResultModal("Upload feedback sheet failed.", [
-          "[ERR] Feedback sheet is empty.",
-        ]);
-        return;
-      }
-
-      const lowerHeaderMap = new Map<string, string>();
-      headers.forEach((header) => lowerHeaderMap.set(header.trim().toLowerCase(), header));
-      const questionIdHeader = lowerHeaderMap.get("question_id");
-      const manualSlideIdsHeader = lowerHeaderMap.get("manual_slide_ids");
-      if (!questionIdHeader) {
-        showFeedbackUploadResultModal("Upload feedback sheet failed.", [
-          "[ERR] Invalid sheet: missing question_id column.",
-        ]);
-        return;
-      }
-
-      const optionIdHeaders = new Map<number, string>();
-      headers.forEach((header) => {
-        const match = header.trim().toLowerCase().match(/^option_(\d+)_id$/);
-        if (!match) return;
-        optionIdHeaders.set(Number(match[1]), header);
-      });
-
-      const questionIdsInSheet = Array.from(
-        new Set(
-          rows
-            .map((row) => String(row[questionIdHeader] ?? "").trim())
-            .filter(Boolean)
-        )
-      );
-      if (questionIdsInSheet.length === 0) {
-        showFeedbackUploadResultModal("Upload feedback sheet failed.", [
-          "[ERR] Invalid sheet: no question_id values found.",
-        ]);
-        return;
-      }
-      const perQuestionHumanAgentIds = new Map<string, Set<string>>();
-      const knownHumanAgentIds = new Set<string>();
-      const attachedAgentResults = await Promise.allSettled(
-        questionIdsInSheet.map((questionId) => axios.get(`/api/questions/${questionId}/attached-agents`))
-      );
-      attachedAgentResults.forEach((result, idx) => {
-        const questionId = questionIdsInSheet[idx];
-        const ids = new Set<string>();
-        if (result.status === "fulfilled") {
-          parseAttachedAgentsPayload(result.value.data).forEach((agent) => {
-            if (agent.role && agent.role !== "human") return;
-            ids.add(agent.agent_id);
-            knownHumanAgentIds.add(agent.agent_id);
-          });
-        }
-        perQuestionHumanAgentIds.set(questionId, ids);
-      });
-      const sortedKnownAgentIds = Array.from(knownHumanAgentIds).sort((a, b) => b.length - a.length);
-      if (sortedKnownAgentIds.length === 0 && !manualSlideIdsHeader) {
-        showFeedbackUploadResultModal("Upload feedback sheet failed.", [
-          "[ERR] No attached feedback agents found on selected questions, and manual_slide_ids column is missing.",
-        ]);
-        return;
-      }
-
-      const agentColumns = headers
-        .map((header) => parseFeedbackSheetAgentColumn(header, sortedKnownAgentIds))
-        .filter(Boolean) as Array<{ header: string; agent_id: string; type: "question" | "option"; optionIndex?: number }>;
-      if (agentColumns.length === 0 && !manualSlideIdsHeader) {
-        showFeedbackUploadResultModal("Upload feedback sheet failed.", [
-          "[ERR] No feedback columns found in sheet and manual_slide_ids column is missing.",
-        ]);
-        return;
-      }
-
-      const resultLines: string[] = [];
-      let updatedRowCount = 0;
-      let failedRowCount = 0;
-      let skippedRowCount = 0;
-
-      for (let rowIdx = 0; rowIdx < rows.length; rowIdx += 1) {
-        const row = rows[rowIdx];
-        const displayRow = rowIdx + 2;
-        const questionId = String(row[questionIdHeader] ?? "").trim();
-        if (!questionId) {
-          skippedRowCount += 1;
-          resultLines.push(`[SKIP] Row ${displayRow}: missing question_id.`);
-          continue;
-        }
-
-        const allowedAgentIds = perQuestionHumanAgentIds.get(questionId) ?? new Set<string>();
-
-        try {
-          const manualSlideIds = manualSlideIdsHeader
-            ? parseManualSlideIdsCell(row[manualSlideIdsHeader])
-            : [];
-          const nonUuidSlideIds = manualSlideIds.filter((id) => !UUID_REGEX.test(id));
-          if (nonUuidSlideIds.length > 0) {
-            throw new Error(`manual_slide_ids contains non-UUID values: ${nonUuidSlideIds.slice(0, 5).join(", ")}`);
-          }
-
-          let rowUpdateCalls = 0;
-          if (manualSlideIds.length > 0) {
-            const detailRes = await axios.get(`/api/questions/${questionId}`, {
-              params: {
-                include: "current_version,content_blocks,interactions,options,interaction_options,slide_scope,feedback_links",
-              },
-            });
-            const versionPayload = buildQuestionVersionPayloadWithSlides(detailRes.data, manageUserId, manualSlideIds);
-            await axios.post(`/api/questions/${questionId}/versions`, versionPayload);
-            rowUpdateCalls += 1;
-          }
-
-          const updatesByAgent = new Map<
-            string,
-            { questionFeedbackText?: string; optionFeedbackByIndex: Map<number, string> }
-          >();
-          agentColumns.forEach((column) => {
-            if (!allowedAgentIds.has(column.agent_id)) return;
-            const value = String(row[column.header] ?? "").trim();
-            if (isFeedbackSheetNullLike(value)) return;
-            const existing = updatesByAgent.get(column.agent_id) ?? { optionFeedbackByIndex: new Map<number, string>() };
-            if (column.type === "question") {
-              existing.questionFeedbackText = value;
-            } else if (column.optionIndex && column.optionIndex > 0) {
-              existing.optionFeedbackByIndex.set(column.optionIndex, value);
-            }
-            updatesByAgent.set(column.agent_id, existing);
-          });
-
-          const hasFeedbackUpdates = updatesByAgent.size > 0;
-          if (hasFeedbackUpdates && allowedAgentIds.size === 0) {
-            throw new Error("has feedback values but no attached human agents on this question.");
-          }
-
-          let currentOptionIdByIndex = new Map<number, string>();
-          if (hasFeedbackUpdates) {
-            const latestDetailRes = await axios.get(`/api/questions/${questionId}`, {
-              params: {
-                include: "current_version,content_blocks,interactions,options,interaction_options,slide_scope,feedback_links",
-              },
-            });
-            const latestQuestion = parseSemanticQuestion(latestDetailRes.data);
-            currentOptionIdByIndex = new Map(
-              (latestQuestion.options ?? [])
-                .map((option, idx) => [idx + 1, String(option.interaction_option_id ?? "").trim()] as const)
-                .filter(([, optionId]) => Boolean(optionId))
-            );
-          }
-
-          for (const [agentId, update] of updatesByAgent.entries()) {
-            const hasOptionFeedback = update.optionFeedbackByIndex.size > 0;
-            if (update.questionFeedbackText && !hasOptionFeedback) {
-              await axios.patch(`/api/questions/${questionId}/attached-agents/${agentId}/static-feedback`, {
-                updated_by: manageUserId,
-                question_feedback_text: update.questionFeedbackText,
-              });
-              rowUpdateCalls += 1;
-            }
-
-            if (update.optionFeedbackByIndex.size > 0) {
-              const optionIndices = Array.from(update.optionFeedbackByIndex.keys()).sort((a, b) => a - b);
-              const option_feedback = optionIndices.map((index) => {
-                const interaction_option_id = currentOptionIdByIndex.get(index) ?? "";
-                const feedback_text = String(update.optionFeedbackByIndex.get(index) ?? "").trim();
-                return { interaction_option_id, feedback_text };
-              });
-              if (option_feedback.some((item) => !item.interaction_option_id || !item.feedback_text)) {
-                throw new Error(
-                  `agent ${agentId} option feedback is incomplete, please fill all option feedback cells.`
-                );
-              }
-              await axios.patch(`/api/questions/${questionId}/attached-agents/${agentId}/static-feedback`, {
-                updated_by: manageUserId,
-                expected_option_count: option_feedback.length,
-                option_feedback,
-              });
-              rowUpdateCalls += 1;
-            }
-          }
-
-          if (rowUpdateCalls === 0) {
-            skippedRowCount += 1;
-            resultLines.push(`[SKIP] Row ${displayRow}: ${questionId} has no manual_slide_ids or feedback updates.`);
-            continue;
-          }
-
-          updatedRowCount += 1;
-          resultLines.push(
-            `[OK] Row ${displayRow}: ${questionId} updated (${rowUpdateCalls} request${rowUpdateCalls === 1 ? "" : "s"}).`
-          );
-        } catch (error) {
-          failedRowCount += 1;
-          const text = (() => {
-            if (axios.isAxiosError(error)) {
-              const data = error.response?.data as any;
-              const detail = data?.detail;
-              if (typeof detail === "string" && detail.trim()) return detail;
-              if (detail !== undefined) {
-                try {
-                  return JSON.stringify(detail);
-                } catch {
-                  return String(detail);
-                }
-              }
-              if (typeof data?.message === "string" && data.message.trim()) return data.message;
-              return error.message;
-            }
-            if (error instanceof Error) return error.message;
-            return "Unknown error";
-          })();
-          resultLines.push(`[ERR] Row ${displayRow}: ${questionId} failed (${text}).`);
-        }
-      }
-
-      await fetchQuestions();
-      const summary = `Upload feedback sheet finished: ${updatedRowCount} updated, ${failedRowCount} failed, ${skippedRowCount} skipped.`;
-      showFeedbackUploadResultModal(summary, resultLines);
-    } catch (error) {
-      const detail = (() => {
-        if (axios.isAxiosError(error)) {
-          const data = error.response?.data as any;
-          const message = typeof data?.message === "string" ? data.message.trim() : "";
-          if (message) return message;
-          const rawDetail = data?.detail;
-          if (typeof rawDetail === "string" && rawDetail.trim()) return rawDetail;
-          if (rawDetail !== undefined) {
-            try {
-              return JSON.stringify(rawDetail);
-            } catch {
-              return String(rawDetail);
-            }
-          }
-          return error.message;
-        }
-        if (error instanceof Error) return error.message;
-        return "Unknown error";
-      })();
-      showFeedbackUploadResultModal("Upload feedback sheet failed.", [`[ERR] ${detail}`]);
-    } finally {
-      setIsUploadingFeedbackSheet(false);
-    }
-  };
-
-  const handleFeedbackSheetInputChange = async (e: ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = "";
-    if (!file) return;
-    await handleUploadFeedbackSheet(file);
-  };
-
   const runBatchQuestionMutation = async (endpoint: string, ids: string[], actionLabel: string) => {
     if (!manageUserId) {
       throw new Error("Missing user ID. Please refresh and try again.");
@@ -2630,7 +2065,7 @@ const QuestionOverview = () => {
   const parsedBatchPrefixCandidates = useMemo(() => {
     const prefixes = new Set<string>();
     parsedBatchTableKeys.forEach((key) => {
-      const match = key.match(/^([a-z_]+)\d+$/i);
+      const match = key.match(/^(.+?)(\d+)$/);
       if (match?.[1]) prefixes.add(match[1].toLowerCase());
     });
     return Array.from(prefixes).sort();
@@ -2649,16 +2084,105 @@ const QuestionOverview = () => {
   const isBatchOptionLevelFeedbackEnabled = mappedHumanAgentConfigs.some((agent) =>
     Boolean(agent.optionFeedbackPrefix.trim())
   );
-  const hasBatchDraftIssues = useMemo(
+  const batchDraftSlideBinding = useMemo(
     () =>
-      parsedBatchDrafts.some(
-        (draft) =>
-          getBatchDraftIssues(draft, {
-            requireQuestionLevelFeedback: isBatchQuestionLevelFeedbackEnabled,
-            requireOptionLevelFeedback: isBatchOptionLevelFeedbackEnabled,
-          }).length > 0
-      ),
-    [isBatchOptionLevelFeedbackEnabled, isBatchQuestionLevelFeedbackEnabled, parsedBatchDrafts]
+      parsedBatchDrafts.map((draft) => {
+        const validSlideIds = getValidUuidSlideIds(draft.slideIds ?? []);
+        const invalidSlideIds = Array.from(
+          new Set(
+            (draft.slideIds ?? [])
+              .map((value) => String(value ?? "").trim())
+              .filter((value) => Boolean(value) && !UUID_REGEX.test(value))
+          )
+        );
+        return {
+          validSlideIds,
+          invalidSlideIds,
+          needsManualMatch: validSlideIds.length === 0,
+        };
+      }),
+    [parsedBatchDrafts]
+  );
+  const missingSlideMatchIndices = useMemo(
+    () =>
+      batchDraftSlideBinding
+        .map((item, idx) => (item.needsManualMatch ? idx : -1))
+        .filter((idx) => idx >= 0),
+    [batchDraftSlideBinding]
+  );
+  const slideTotalPagesById = useMemo(() => {
+    const map = new Map<string, number>();
+    batchSlideCandidates.forEach((slide) => {
+      const totalPages = readSlideTotalPages(slide);
+      if (slide.id && totalPages) map.set(String(slide.id), totalPages);
+    });
+    return map;
+  }, [batchSlideCandidates]);
+  const resolvedBatchSlideScopeByIndex = useMemo(
+    () =>
+      parsedBatchDrafts.map((_, idx) => {
+        const binding = batchDraftSlideBinding[idx];
+        if (binding.validSlideIds.length > 0) {
+          return binding.validSlideIds.map((slideId) => ({
+            slide_id: slideId,
+            page_start: null as number | null,
+            page_end: null as number | null,
+          }));
+        }
+        const selection = batchSlideMatchSelections[idx];
+        if (!selection?.slide_id.trim()) return [];
+        const pageStart = parsePageInput(selection.page_start);
+        const pageEnd = parsePageInput(selection.page_end);
+        return [
+          {
+            slide_id: selection.slide_id.trim(),
+            page_start: pageStart,
+            page_end: pageEnd,
+          },
+        ];
+      }),
+    [batchDraftSlideBinding, batchSlideMatchSelections, parsedBatchDrafts]
+  );
+  const getBatchDraftIssuesWithSlideResolution = useCallback(
+    (draft: BatchUploadParsedDraft, idx: number) => {
+      const baseIssues = getBatchDraftIssues(draft, {
+        requireQuestionLevelFeedback: isBatchQuestionLevelFeedbackEnabled,
+        requireOptionLevelFeedback: isBatchOptionLevelFeedbackEnabled,
+      }).filter((issue) => issue !== "contains non-UUID slide_id");
+      const binding = batchDraftSlideBinding[idx];
+      const resolvedScope = resolvedBatchSlideScopeByIndex[idx] ?? [];
+      if (!binding) return baseIssues;
+      if (binding.validSlideIds.length === 0 && resolvedScope.length === 0) {
+        baseIssues.push("missing linked slide (match required)");
+      }
+      if (resolvedScope.length > 0) {
+        const first = resolvedScope[0];
+        const start = first.page_start;
+        const end = first.page_end;
+        const totalPages = slideTotalPagesById.get(first.slide_id);
+        if (start !== null && end !== null && start > end) {
+          baseIssues.push("slide range invalid: page_start > page_end");
+        }
+        if (start !== null && totalPages && start > totalPages) {
+          baseIssues.push(`slide range invalid: page_start > total pages (${totalPages})`);
+        }
+        if (end !== null && totalPages && end > totalPages) {
+          baseIssues.push(`slide range invalid: page_end > total pages (${totalPages})`);
+        }
+      }
+      return baseIssues;
+    },
+    [
+      batchDraftSlideBinding,
+      isBatchOptionLevelFeedbackEnabled,
+      isBatchQuestionLevelFeedbackEnabled,
+      resolvedBatchSlideScopeByIndex,
+      slideTotalPagesById,
+    ]
+  );
+  const hasBatchDraftIssues = useMemo(
+    () => parsedBatchDrafts.some((draft, idx) => getBatchDraftIssuesWithSlideResolution(draft, idx).length > 0),
+    [getBatchDraftIssuesWithSlideResolution, parsedBatchDrafts]
   );
   const availableBatchAttachAgents = useMemo(
     () => attachAgents.filter((agent) => !batchAttachedAgents.some((item) => item.agent_id === agent.agent_id)),
@@ -2677,6 +2201,18 @@ const QuestionOverview = () => {
     if (!stillExists) setBatchAttachAgentCandidateId("");
   }, [availableBatchAttachAgents, batchAttachAgentCandidateId]);
 
+  useEffect(() => {
+    setBatchSlideMatchSelections((prev) => {
+      const next: Record<number, BatchSlideMatchDraftSelection> = {};
+      Object.entries(prev).forEach(([key, value]) => {
+        const idx = Number(key);
+        if (!Number.isFinite(idx) || idx < 0 || idx >= parsedBatchDrafts.length) return;
+        next[idx] = value;
+      });
+      return next;
+    });
+  }, [parsedBatchDrafts.length]);
+
   const handleCloseBatchUploadModal = () => {
     if (batchUploadRunning) return;
     setIsBatchUploadModalOpen(false);
@@ -2690,6 +2226,12 @@ const QuestionOverview = () => {
     setBatchUploadStep(1);
     setBatchUploadMaxStep(1);
     setBatchUploadMapping(DEFAULT_BATCH_UPLOAD_FIELD_MAPPING);
+    setIsBatchSlideMatchModalOpen(false);
+    setBatchSlideMatchTargetIndices([]);
+    setBatchSlideMatchCursor(0);
+    setBatchSlideCandidates([]);
+    setBatchSlideCandidatesError(null);
+    setBatchSlideMatchSelections({});
   };
 
   const handleBatchMarkdownFile = async (file: File) => {
@@ -2697,6 +2239,11 @@ const QuestionOverview = () => {
     setBatchMarkdownContent(text);
     setBatchUploadError(null);
     setBatchUploadResultLines([]);
+    setBatchSlideMatchTargetIndices([]);
+    setBatchSlideMatchCursor(0);
+    setBatchSlideCandidates([]);
+    setBatchSlideCandidatesError(null);
+    setBatchSlideMatchSelections({});
   };
   const updateBatchUploadMapping = (key: keyof BatchUploadFieldMapping, value: string) => {
     setBatchUploadMapping((prev) => ({ ...prev, [key]: value }));
@@ -2711,10 +2258,9 @@ const QuestionOverview = () => {
     prefix: string,
     optionCount: number
   ) => {
-    const normalized = prefix.trim().toLowerCase();
-    if (!normalized || optionCount <= 0) return [];
+    if (!prefix.trim() || optionCount <= 0) return [];
     return Array.from({ length: optionCount }, (_, idx) =>
-      String(draft.sourceTable?.[`${normalized}${idx + 1}`] ?? "").trim()
+      readOptionFeedbackFromTable(draft.sourceTable ?? {}, prefix, idx + 1)
     );
   };
   const goToBatchUploadStep = (step: BatchUploadWizardStep) => {
@@ -2725,6 +2271,123 @@ const QuestionOverview = () => {
     setBatchUploadMaxStep((prev) => (prev > step ? prev : step));
     setBatchUploadStep(step);
   };
+  const fetchBatchSlideCandidatesFromSystem = useCallback(async (): Promise<Slide[]> => {
+    setIsFetchingBatchSlideCandidates(true);
+    setBatchSlideCandidatesError(null);
+    try {
+      const courseRows = Array.isArray(courses) && courses.length > 0
+        ? courses
+        : ((await axios.get("/api/courses/public")).data ?? []);
+      const courseIds = Array.from(
+        new Set(
+          (Array.isArray(courseRows) ? courseRows : [])
+            .map((item: any) => String(item?.course_id ?? item?.id ?? "").trim())
+            .filter(Boolean)
+        )
+      );
+      if (courseIds.length === 0) {
+        setBatchSlideCandidates([]);
+        return [];
+      }
+
+      const moduleResponses = await Promise.allSettled(
+        courseIds.map((courseId) => axios.get(`/api/courses/by_id/${courseId}/modules`))
+      );
+      const moduleIds = Array.from(
+        new Set(
+          moduleResponses.flatMap((result) => {
+            if (result.status !== "fulfilled") return [];
+            const modules = result.value.data?.modules;
+            if (!Array.isArray(modules)) return [];
+            return modules
+              .map((mod: any) => String(mod?.module_id ?? mod?.id ?? "").trim())
+              .filter(Boolean);
+          })
+        )
+      );
+      if (moduleIds.length === 0) {
+        setBatchSlideCandidates([]);
+        return [];
+      }
+
+      const slideResponses = await Promise.allSettled(
+        moduleIds.map((moduleId) => axios.get(`/api/modules/${moduleId}/slides`))
+      );
+      const allSlidesRaw = slideResponses.flatMap((result) => {
+        if (result.status !== "fulfilled") return [];
+        return Array.isArray(result.value.data?.slides) ? result.value.data.slides : [];
+      });
+      const normalized = uniqueById(allSlidesRaw.map(normalizeSlide));
+      setBatchSlideCandidates(normalized as Slide[]);
+      return normalized as Slide[];
+    } catch (error) {
+      console.error("Failed to fetch batch slide candidates from system:", error);
+      setBatchSlideCandidatesError("Failed to load slides from database.");
+      setBatchSlideCandidates([]);
+      return [];
+    } finally {
+      setIsFetchingBatchSlideCandidates(false);
+    }
+  }, [courses]);
+  const openBatchSlideMatchModal = async () => {
+    if (missingSlideMatchIndices.length === 0) return;
+    if (batchSlideCandidates.length === 0) {
+      await fetchBatchSlideCandidatesFromSystem();
+    }
+    setBatchSlideMatchTargetIndices(missingSlideMatchIndices);
+    setBatchSlideMatchCursor(0);
+    setIsBatchSlideMatchModalOpen(true);
+    setBatchUploadError(null);
+  };
+  const closeBatchSlideMatchModal = () => {
+    if (batchUploadRunning) return;
+    setIsBatchSlideMatchModalOpen(false);
+  };
+  const currentBatchSlideMatchDraftIndex =
+    batchSlideMatchTargetIndices[batchSlideMatchCursor] ?? -1;
+  const currentBatchSlideMatchDraft =
+    currentBatchSlideMatchDraftIndex >= 0 ? parsedBatchDrafts[currentBatchSlideMatchDraftIndex] : null;
+  const currentBatchSlideMatchSelection =
+    currentBatchSlideMatchDraftIndex >= 0
+      ? batchSlideMatchSelections[currentBatchSlideMatchDraftIndex] ?? {
+          slide_id: "",
+          page_start: "",
+          page_end: "",
+        }
+      : { slide_id: "", page_start: "", page_end: "" };
+  const currentBatchSlideCandidate = useMemo(
+    () =>
+      batchSlideCandidates.find((slide) => String(slide.id) === currentBatchSlideMatchSelection.slide_id) ??
+      null,
+    [batchSlideCandidates, currentBatchSlideMatchSelection.slide_id]
+  );
+  const currentBatchSlideCandidateTotalPages = readSlideTotalPages(currentBatchSlideCandidate);
+  const updateCurrentBatchSlideMatchSelection = (
+    patch: Partial<BatchSlideMatchDraftSelection>
+  ) => {
+    if (currentBatchSlideMatchDraftIndex < 0) return;
+    setBatchSlideMatchSelections((prev) => ({
+      ...prev,
+      [currentBatchSlideMatchDraftIndex]: {
+        ...(prev[currentBatchSlideMatchDraftIndex] ?? {
+          slide_id: "",
+          page_start: "",
+          page_end: "",
+        }),
+        ...patch,
+      },
+    }));
+  };
+  const batchSlideMatchCompletionCount = useMemo(
+    () =>
+      missingSlideMatchIndices.filter((idx) =>
+        Boolean(batchSlideMatchSelections[idx]?.slide_id?.trim())
+      ).length,
+    [batchSlideMatchSelections, missingSlideMatchIndices]
+  );
+  const isBatchSlideMatchComplete =
+    missingSlideMatchIndices.length > 0 &&
+    missingSlideMatchIndices.every((idx) => Boolean(batchSlideMatchSelections[idx]?.slide_id?.trim()));
 
   const executeBatchUpload = async () => {
     if (!manageUserId) {
@@ -2733,6 +2396,14 @@ const QuestionOverview = () => {
     }
     if (parsedBatchDrafts.length === 0) {
       setBatchUploadError("No valid Notebook/MCQ rows found in markdown.");
+      return;
+    }
+    if (hasBatchDraftIssues) {
+      if (missingSlideMatchIndices.length > 0 && !isBatchSlideMatchComplete) {
+        setBatchUploadError("Please match missing linked slides first.");
+      } else {
+        setBatchUploadError("Please resolve preview issues before importing.");
+      }
       return;
     }
 
@@ -2759,14 +2430,30 @@ const QuestionOverview = () => {
               throw new Error(`MCQ row ${i + 1} has invalid choices/correct mapping.`);
             }
           }
+          const resolvedSlideScope = resolvedBatchSlideScopeByIndex[i] ?? [];
           const normalizedSlideIds = Array.from(
-            new Set((draft.slideIds ?? []).map((value) => String(value).trim()).filter(Boolean))
+            new Set(resolvedSlideScope.map((item) => String(item.slide_id ?? "").trim()).filter(Boolean))
           );
-          const nonUuidSlideIds = normalizedSlideIds.filter((id) => !UUID_REGEX.test(id));
-          if (nonUuidSlideIds.length > 0) {
-            throw new Error(
-              `Row ${i + 1} contains non-UUID slide_id(s): ${nonUuidSlideIds.slice(0, 5).join(", ")}`
-            );
+          if (normalizedSlideIds.length === 0) {
+            throw new Error(`Row ${i + 1} missing linked slide. Open slide matching modal to resolve.`);
+          }
+          const range = resolvedSlideScope[0];
+          if (
+            range &&
+            range.page_start !== null &&
+            range.page_end !== null &&
+            range.page_start > range.page_end
+          ) {
+            throw new Error(`Row ${i + 1} has invalid slide range: page_start > page_end.`);
+          }
+          if (range) {
+            const totalPages = slideTotalPagesById.get(String(range.slide_id ?? ""));
+            if (totalPages && range.page_start !== null && range.page_start > totalPages) {
+              throw new Error(`Row ${i + 1} has invalid slide range: page_start exceeds total pages (${totalPages}).`);
+            }
+            if (totalPages && range.page_end !== null && range.page_end > totalPages) {
+              throw new Error(`Row ${i + 1} has invalid slide range: page_end exceeds total pages (${totalPages}).`);
+            }
           }
 
           const createPayload = {
@@ -2792,11 +2479,15 @@ const QuestionOverview = () => {
               },
             ],
             slide_ids: normalizedSlideIds,
-            slide_scope: normalizedSlideIds.map((slideId) => ({
-              slide_id: slideId,
-              page_start: null,
-              page_end: null,
-            })),
+            slide_scope: normalizedSlideIds.map((slideId) => {
+              const matched =
+                resolvedSlideScope.find((scope) => scope.slide_id === slideId) ?? null;
+              return {
+                slide_id: slideId,
+                page_start: matched?.page_start ?? null,
+                page_end: matched?.page_end ?? null,
+              };
+            }),
             scoring_policy: {
               score_maximum: 1,
               score_input_format: "fraction",
@@ -3491,34 +3182,7 @@ const QuestionOverview = () => {
                       <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
                         Feedback
                       </div>
-                      <input
-                        ref={feedbackSheetInputRef}
-                        type="file"
-                        accept=".csv,text/csv"
-                        className="hidden"
-                        onChange={handleFeedbackSheetInputChange}
-                      />
                       <div className="flex flex-wrap gap-2">
-                        <ActionButton
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          className="rounded-lg"
-                          onClick={handleDownloadFeedbackSheet}
-                          disabled={selectedCount === 0}
-                        >
-                          Download Feedback Sheet
-                        </ActionButton>
-                        <ActionButton
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          className="rounded-lg"
-                          onClick={() => feedbackSheetInputRef.current?.click()}
-                          disabled={isUploadingFeedbackSheet}
-                        >
-                          {isUploadingFeedbackSheet ? "Uploading..." : "Upload Feedback Sheet"}
-                        </ActionButton>
                         <ActionButton
                           type="button"
                           variant="secondary"
@@ -4326,7 +3990,9 @@ const QuestionOverview = () => {
                                           <div className="mt-0.5 text-[11px] text-slate-500">Optional</div>
                                         </td>
                                         <td className="px-3 py-2 text-slate-600">
-                                          Per-option static feedback for `single_choice`. `none` means skip.
+                                          Per-option static feedback for `single_choice`.
+                                          Parse order: selected prefix (e.g., `one-layer-feedback2`) first, then shared `feedback2`.
+                                          `none` means skip.
                                         </td>
                                       </tr>
                                     </tbody>
@@ -4363,14 +4029,41 @@ const QuestionOverview = () => {
                 <div className="mt-3 max-h-56 space-y-2 overflow-auto">
                   {parsedBatchDrafts.length > 0 ? (
                     parsedBatchDrafts.map((draft, idx) => {
-                      const issues = getBatchDraftIssues(draft, {
-                        requireQuestionLevelFeedback: isBatchQuestionLevelFeedbackEnabled,
-                        requireOptionLevelFeedback: isBatchOptionLevelFeedbackEnabled,
-                      });
+                      const issues = getBatchDraftIssuesWithSlideResolution(draft, idx);
                       const choices = draft.choices ?? [];
-                      const optionFeedbacks = draft.optionFeedbacks ?? [];
                       const questionType: CreateQuestionType = draft.kind === "mcq" ? "single_choice" : "free_text";
                       const interactionPromptPreview = `${DEFAULT_PROMPT_TEXT[questionType]}${draft.lo ? ` (${draft.lo})` : ""}`;
+                      const resolvedSlideScope = resolvedBatchSlideScopeByIndex[idx] ?? [];
+                      const previewOptionFeedbackByAgent = mappedHumanAgentConfigs
+                        .filter((agent) => Boolean(agent.optionFeedbackPrefix.trim()))
+                        .map((agent) => ({
+                          agentId: agent.agent_id,
+                          agentTitle: agent.title || agent.agent_id,
+                          feedbacks: getBatchDraftOptionFeedbacksByPrefix(
+                            draft,
+                            agent.optionFeedbackPrefix,
+                            choices.length
+                          ),
+                        }));
+                      const previewQuestionFeedbackByAgent = mappedHumanAgentConfigs
+                        .filter((agent) => Boolean(agent.questionFeedbackKey.trim()))
+                        .map((agent) => ({
+                          agentId: agent.agent_id,
+                          agentTitle: agent.title || agent.agent_id,
+                          feedbackText: getBatchDraftQuestionFeedbackByKey(draft, agent.questionFeedbackKey),
+                        }));
+                      const slideBindingText =
+                        resolvedSlideScope.length > 0
+                          ? resolvedSlideScope
+                              .map((scope) => {
+                                const range =
+                                  scope.page_start || scope.page_end
+                                    ? ` [${scope.page_start ?? "-"}-${scope.page_end ?? "-"}]`
+                                    : "";
+                                return `${scope.slide_id}${range}`;
+                              })
+                              .join(", ")
+                          : "(missing)";
                       return (
                         <div key={`batch-preview-${idx}`} className="rounded-lg border border-slate-200 bg-white px-3 py-2">
                           <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -4393,7 +4086,7 @@ const QuestionOverview = () => {
                           </div>
                           <div className="mt-2 rounded-md border border-slate-100 bg-slate-50 p-2 text-xs text-slate-700">
                             <span className="font-medium text-slate-600">Slide Binding:</span>{" "}
-                            {draft.slideIds.length > 0 ? draft.slideIds.join(", ") : "(none)"}
+                            {slideBindingText}
                           </div>
                           <div className="mt-2 rounded-md border border-slate-100 bg-slate-50 p-2 text-xs text-slate-700">
                             <span className="font-medium text-slate-600">Execution:</span>{" "}
@@ -4415,8 +4108,19 @@ const QuestionOverview = () => {
                                   {choice}
                                   {choiceIdx === draft.correctChoiceIndex ? " ✓" : ""}
                                   {isBatchOptionLevelFeedbackEnabled ? (
-                                    <div className="ml-5 mt-0.5 whitespace-pre-wrap text-slate-500">
-                                      feedback: {optionFeedbacks[choiceIdx]?.trim() || "(missing)"}
+                                    <div className="ml-5 mt-0.5 space-y-0.5 whitespace-pre-wrap text-slate-500">
+                                      {previewOptionFeedbackByAgent.length > 0 ? (
+                                        previewOptionFeedbackByAgent.map((agentPreview) => (
+                                          <div key={`batch-preview-ofb-${idx}-${choiceIdx}-${agentPreview.agentId}`}>
+                                            <span className="font-medium text-slate-600">
+                                              [{agentPreview.agentTitle}]
+                                            </span>{" "}
+                                            {agentPreview.feedbacks[choiceIdx]?.trim() || "(missing)"}
+                                          </div>
+                                        ))
+                                      ) : (
+                                        <div>(option feedback mapping is enabled but no human agent prefix is configured)</div>
+                                      )}
                                     </div>
                                   ) : null}
                                 </div>
@@ -4426,8 +4130,19 @@ const QuestionOverview = () => {
                             isBatchQuestionLevelFeedbackEnabled ? (
                               <div className="mt-2 rounded-md border border-slate-100 bg-slate-50 p-2 text-xs text-slate-700">
                                 <span className="font-medium text-slate-600">Question Feedback:</span>
-                                <div className="mt-1 whitespace-pre-wrap">
-                                  {draft.questionFeedbackText?.trim() || "(missing)"}
+                                <div className="mt-1 space-y-1 whitespace-pre-wrap">
+                                  {previewQuestionFeedbackByAgent.length > 0 ? (
+                                    previewQuestionFeedbackByAgent.map((agentPreview) => (
+                                      <div key={`batch-preview-qfb-${idx}-${agentPreview.agentId}`}>
+                                        <span className="font-medium text-slate-600">
+                                          [{agentPreview.agentTitle}]
+                                        </span>{" "}
+                                        {agentPreview.feedbackText?.trim() || "(missing)"}
+                                      </div>
+                                    ))
+                                  ) : (
+                                    <div>(question feedback mapping is enabled but no human agent key is configured)</div>
+                                  )}
                                 </div>
                               </div>
                             ) : null
@@ -4548,6 +4263,21 @@ const QuestionOverview = () => {
                   >
                     Back
                   </ActionButton>
+                  {missingSlideMatchIndices.length > 0 ? (
+                    <ActionButton
+                      type="button"
+                      variant="primary"
+                      className="rounded-lg"
+                      disabled={batchUploadRunning || isFetchingBatchSlideCandidates}
+                      onClick={() => {
+                        void openBatchSlideMatchModal();
+                      }}
+                    >
+                      {isFetchingBatchSlideCandidates
+                        ? "Loading Slides..."
+                        : `Match Missing Linked Slides (${batchSlideMatchCompletionCount}/${missingSlideMatchIndices.length})`}
+                    </ActionButton>
+                  ) : null}
                   <ActionButton
                     type="button"
                     variant="secondary"
@@ -4568,26 +4298,172 @@ const QuestionOverview = () => {
         </ManageModal>
 
         <ManageModal
-          open={isFeedbackUploadResultModalOpen}
-          onClose={() => setIsFeedbackUploadResultModalOpen(false)}
-          title="Feedback Sheet Upload Result"
-          description={feedbackUploadSummary || "Upload finished."}
+          open={isBatchSlideMatchModalOpen}
+          onClose={closeBatchSlideMatchModal}
+          title="Match Missing Linked Slides"
+          description={`Resolve missing linked slides one by one (${batchSlideMatchCompletionCount}/${missingSlideMatchIndices.length}).`}
           maxWidthClassName="max-w-3xl"
+          disableClose={batchUploadRunning}
         >
-          <div className="space-y-3">
-            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-              <p className="text-sm font-medium text-slate-900">
-                {feedbackUploadSummary || "No summary available."}
-              </p>
+          <div className="space-y-4">
+            {batchSlideCandidatesError ? (
+              <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800">
+                {batchSlideCandidatesError}
+              </div>
+            ) : null}
+            {isFetchingBatchSlideCandidates ? (
+              <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+                Loading slides from database...
+              </div>
+            ) : null}
+            {!isFetchingBatchSlideCandidates && batchSlideCandidates.length === 0 ? (
+              <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+                No slides found in database.
+              </div>
+            ) : null}
+            {currentBatchSlideMatchDraft ? (
+              <div className="rounded-xl border border-slate-200 bg-slate-50/50 p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-sm font-semibold text-slate-900">
+                    Draft {batchSlideMatchCursor + 1} / {batchSlideMatchTargetIndices.length}
+                    <span className="ml-2 text-xs font-normal text-slate-500">
+                      (Row {currentBatchSlideMatchDraftIndex + 1})
+                    </span>
+                  </div>
+                  <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-xs text-slate-600">
+                    {currentBatchSlideMatchDraft.kind === "mcq" ? "MCQ" : "Notebook"}
+                  </span>
+                </div>
+                <div className="mt-2 whitespace-pre-wrap text-xs text-slate-700">
+                  {currentBatchSlideMatchDraft.stem}
+                </div>
+                <div className="mt-2 text-[11px] text-slate-500">
+                  Original parsed slide_ids:{" "}
+                  {currentBatchSlideMatchDraft.slideIds.length > 0
+                    ? currentBatchSlideMatchDraft.slideIds.join(", ")
+                    : "(none)"}
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
+                No target draft selected.
+              </div>
+            )}
+
+            <div className="rounded-xl border border-slate-200 bg-white p-3">
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <div className="text-sm font-semibold text-slate-900">Linked Slide + Range</div>
+                <ActionButton
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="rounded-lg"
+                  disabled={batchUploadRunning || isFetchingBatchSlideCandidates}
+                  onClick={() => {
+                    void fetchBatchSlideCandidatesFromSystem();
+                  }}
+                >
+                  {isFetchingBatchSlideCandidates ? "Refreshing..." : "Refresh DB Slides"}
+                </ActionButton>
+              </div>
+              <div className="grid gap-3 md:grid-cols-3">
+                <div className="md:col-span-3">
+                  <label className="mb-1 block text-xs font-medium text-slate-700">Slide</label>
+                  <select
+                    value={currentBatchSlideMatchSelection.slide_id}
+                    onChange={(e) => updateCurrentBatchSlideMatchSelection({ slide_id: e.target.value })}
+                    disabled={batchSlideCandidates.length === 0 || batchUploadRunning || currentBatchSlideMatchDraftIndex < 0}
+                    className="w-full rounded-md border border-slate-200 px-2 py-2 text-sm"
+                  >
+                    <option value="">Select a slide...</option>
+                    {batchSlideCandidates.map((slide) => (
+                      <option key={`batch-slide-match-${slide.id}`} value={slide.id}>
+                        {slide.slide_title} · {slide.id}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-700">Page Start (optional)</label>
+                  <input
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={currentBatchSlideMatchSelection.page_start}
+                    onChange={(e) => updateCurrentBatchSlideMatchSelection({ page_start: e.target.value })}
+                    disabled={batchUploadRunning || currentBatchSlideMatchDraftIndex < 0}
+                    className="w-full rounded-md border border-slate-200 px-2 py-2 text-sm"
+                    placeholder="e.g. 1"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-slate-700">Page End (optional)</label>
+                  <input
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={currentBatchSlideMatchSelection.page_end}
+                    onChange={(e) => updateCurrentBatchSlideMatchSelection({ page_end: e.target.value })}
+                    disabled={batchUploadRunning || currentBatchSlideMatchDraftIndex < 0}
+                    className="w-full rounded-md border border-slate-200 px-2 py-2 text-sm"
+                    placeholder="e.g. 3"
+                  />
+                </div>
+                <div className="text-xs text-slate-500">
+                  Range rule: both filled then `start {"<="} end`; leave blank for full-slide match.
+                  {currentBatchSlideCandidateTotalPages ? ` Selected slide pages: 1-${currentBatchSlideCandidateTotalPages}.` : ""}
+                </div>
+              </div>
             </div>
-            <div className="max-h-[50vh] overflow-auto rounded-xl border border-slate-200 bg-white p-3">
-              {feedbackUploadResultLines.length > 0 ? (
-                <pre className="whitespace-pre-wrap text-xs leading-relaxed text-slate-700">
-                  {feedbackUploadResultLines.join("\n")}
-                </pre>
-              ) : (
-                <p className="text-xs text-slate-500">No row-level messages.</p>
-              )}
+
+            <div className="flex flex-wrap justify-between gap-2 border-t border-slate-100 pt-3">
+              <div className="flex gap-2">
+                <ActionButton
+                  type="button"
+                  variant="ghost"
+                  className="rounded-lg"
+                  disabled={batchUploadRunning || batchSlideMatchCursor <= 0}
+                  onClick={() => setBatchSlideMatchCursor((prev) => Math.max(0, prev - 1))}
+                >
+                  Prev
+                </ActionButton>
+                <ActionButton
+                  type="button"
+                  variant="ghost"
+                  className="rounded-lg"
+                  disabled={
+                    batchUploadRunning ||
+                    batchSlideMatchCursor >= batchSlideMatchTargetIndices.length - 1
+                  }
+                  onClick={() =>
+                    setBatchSlideMatchCursor((prev) =>
+                      Math.min(batchSlideMatchTargetIndices.length - 1, prev + 1)
+                    )
+                  }
+                >
+                  Next
+                </ActionButton>
+              </div>
+              <div className="flex gap-2">
+                <ActionButton
+                  type="button"
+                  variant="ghost"
+                  className="rounded-lg"
+                  disabled={batchUploadRunning}
+                  onClick={closeBatchSlideMatchModal}
+                >
+                  Close
+                </ActionButton>
+                <ActionButton
+                  type="button"
+                  variant="secondary"
+                  className="rounded-lg"
+                  disabled={batchUploadRunning || !isBatchSlideMatchComplete}
+                  onClick={closeBatchSlideMatchModal}
+                >
+                  Confirm Matches
+                </ActionButton>
+              </div>
             </div>
           </div>
         </ManageModal>

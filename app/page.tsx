@@ -517,7 +517,6 @@ function HomeChildren() {
                 totalCount={totalCount}
                 studentAnswer={answer}
                 feedback={typeof result === 'string' ? result : (result as StructuredFeedback)?.feedback || ''}
-                course_version={course_version || undefined}
                 recordId={currentRecordId}
                 sessionId={sessionId}
                 participantId={participantId || null}

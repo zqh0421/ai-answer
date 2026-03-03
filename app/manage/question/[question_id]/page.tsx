@@ -1207,7 +1207,27 @@ export default function ManageQuestion() {
   };
 
   if (isPermissionChecking || !hasManagePermission) return null;
-  if (loading) return <p className="p-6">Loading...</p>;
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-slate-50 p-6">
+        <div className="mx-auto max-w-5xl space-y-6">
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="h-7 w-56 animate-pulse rounded bg-slate-200" />
+            <div className="mt-4 space-y-3">
+              <div className="h-3 w-28 animate-pulse rounded bg-slate-200" />
+              <div className="h-10 w-44 animate-pulse rounded bg-slate-200" />
+              <div className="h-3 w-24 animate-pulse rounded bg-slate-200" />
+              <div className="h-20 w-full animate-pulse rounded bg-slate-200" />
+            </div>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="h-5 w-48 animate-pulse rounded bg-slate-200" />
+            <div className="mt-3 h-48 w-full animate-pulse rounded bg-slate-200" />
+          </div>
+        </div>
+      </div>
+    );
+  }
   if (!question) return <p className="p-6">Question not found</p>;
 
   return (

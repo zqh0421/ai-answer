@@ -12,7 +12,8 @@ import {
 interface HTMLFeedbackAreaProps {
   html: string;
   isFeedbackLoading: boolean;
-  score?: string; // 0, 1, or 2 for color coding (incorrect, correct, partially correct)
+  score?: string | number;
+  maxScore?: string | number;
   isStreaming?: boolean;
   promptVersion?: string | null;
   recordId?: number | null; // Record ID for saving rating
@@ -23,6 +24,7 @@ const HTMLFeedbackArea: React.FC<HTMLFeedbackAreaProps> = ({
   html,
   isFeedbackLoading,
   score,
+  maxScore,
   isStreaming = false,
   promptVersion = null, // eslint-disable-line @typescript-eslint/no-unused-vars
   recordId,
@@ -199,24 +201,55 @@ const HTMLFeedbackArea: React.FC<HTMLFeedbackAreaProps> = ({
 
   // Determine icon color and icon based on score and feedback type
   const getIconStyle = () => {
-    // For both learner and corrective feedback, show score-based icons when score is available
-    if (score === "1") {
-      return {
-        color: "bg-gradient-to-r from-green-500 to-emerald-500",
-        icon: <CheckCircle className="w-4 h-4 text-white" />,
-      };
-    } else if (score === "0") {
-      return {
-        color: "bg-gradient-to-r from-red-500 to-pink-500",
-        icon: <XCircle className="w-4 h-4 text-white" />,
-      };
-    } else if (score === "2") {
-      return {
-        color: "bg-gradient-to-r from-yellow-500 to-amber-500",
-        icon: <AlertCircle className="w-4 h-4 text-white" />,
-      };
+    const scoreNumber =
+      typeof score === "number" ? score : typeof score === "string" && score.trim() ? Number(score) : NaN;
+    const maxScoreNumber =
+      typeof maxScore === "number"
+        ? maxScore
+        : typeof maxScore === "string" && maxScore.trim()
+        ? Number(maxScore)
+        : NaN;
+
+    if (Number.isFinite(scoreNumber)) {
+      if (Number.isFinite(maxScoreNumber) && maxScoreNumber > 0) {
+        if (scoreNumber >= maxScoreNumber) {
+          return {
+            color: "bg-gradient-to-r from-green-500 to-emerald-500",
+            icon: <CheckCircle className="w-4 h-4 text-white" />,
+          };
+        }
+        if (scoreNumber <= 0) {
+          return {
+            color: "bg-gradient-to-r from-red-500 to-pink-500",
+            icon: <XCircle className="w-4 h-4 text-white" />,
+          };
+        }
+        return {
+          color: "bg-gradient-to-r from-yellow-500 to-amber-500",
+          icon: <AlertCircle className="w-4 h-4 text-white" />,
+        };
+      }
+      if (scoreNumber === 1) {
+        return {
+          color: "bg-gradient-to-r from-green-500 to-emerald-500",
+          icon: <CheckCircle className="w-4 h-4 text-white" />,
+        };
+      }
+      if (scoreNumber === 0) {
+        return {
+          color: "bg-gradient-to-r from-red-500 to-pink-500",
+          icon: <XCircle className="w-4 h-4 text-white" />,
+        };
+      }
+      if (scoreNumber === 2) {
+        return {
+          color: "bg-gradient-to-r from-yellow-500 to-amber-500",
+          icon: <AlertCircle className="w-4 h-4 text-white" />,
+        };
+      }
     }
 
+    // For both learner and corrective feedback, show score-based icons when score is available
     // Default/neutral color when score is not provided or unknown state
     return {
       color: "bg-gradient-to-r from-blue-500 to-indigo-500",

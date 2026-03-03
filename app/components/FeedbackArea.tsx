@@ -16,7 +16,7 @@ import React, { useState, useCallback } from "react";
 
 // Helper functions to safely access feedback data
 const getConcisedFeedback = (data: StructuredFeedback): string => {
-  return data.structured_feedback;
+  return data.structured_feedback || data.text_feedback || data.feedback || "";
 };
 
 const isStructuredFeedback = (obj: unknown): obj is StructuredFeedback => {

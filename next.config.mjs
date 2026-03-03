@@ -1,20 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  async redirects() {
-    return [
-      {
-        source: '/v2',
-        destination: '/',
-        permanent: true,
-      },
-      {
-        source: '/v2/:path*',
-        destination: '/:path*',
-        permanent: true,
-      },
-    ];
-  },
   async headers() {
     return [
       {
@@ -28,20 +14,6 @@ const nextConfig = {
           {
             key: 'X-Frame-Options',
             value: 'ALLOWALL', // This allows all domains to iframe - remove in production if not needed
-          },
-        ],
-      },
-      {
-        // Specific headers for MCQ routes
-        source: '/v2/mcq/:questionId*',
-        headers: [
-          {
-            key: 'Content-Security-Policy', 
-            value: "frame-ancestors 'self' https://*.qualtrics.com https://qualtrics.com http://localhost:* http://127.0.0.1:* http://*.cmu.edu https://*.cmu.edu http://stellarator.oli.cmu.edu https://stellarator.oli.cmu.edu http://*.muf-in.com https://*.muf-in.com;",
-          },
-          {
-            key: 'X-Frame-Options',
-            value: 'ALLOWALL',
           },
         ],
       },

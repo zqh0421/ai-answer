@@ -9,7 +9,14 @@ interface LeftFeedbackPanelProps {
   result:
     | string
     | StructuredFeedback
-    | { feedback?: string; score?: string; structured_feedback?: string };
+    | {
+        feedback?: string;
+        is_structured?: boolean;
+        score?: string | number;
+        max_score?: string | number;
+        structured_feedback?: string;
+        text_feedback?: string;
+      };
   reference: Reference | undefined;
   isReferenceLoading: boolean;
   images: string[] | null;
@@ -57,21 +64,28 @@ export default function LeftFeedbackPanel({
   sessionId,
   participantId,
 }: LeftFeedbackPanelProps) {
-  const feedbackHtml = isStreaming
-    ? streamingContent
-    : typeof result === "string"
-    ? result
-    : "structured_feedback" in result
-    ? result.structured_feedback || result.feedback || ""
-    : "feedback" in result
-    ? result.feedback || ""
-    : "";
+  const feedbackHtml = (() => {
+    if (isStreaming) return streamingContent;
+    if (typeof result === "string") return result;
 
-  const feedbackScore = isStreaming
-    ? ""
-    : typeof result !== "string" && "score" in result
-    ? result.score || ""
-    : "";
+    if ("is_structured" in result && typeof result.is_structured === "boolean") {
+      return result.is_structured
+        ? result.structured_feedback || result.feedback || ""
+        : result.text_feedback || result.feedback || "";
+    }
+    if ("structured_feedback" in result) {
+      return result.structured_feedback || result.text_feedback || result.feedback || "";
+    }
+    if ("text_feedback" in result) {
+      return result.text_feedback || result.feedback || "";
+    }
+    if ("feedback" in result) return result.feedback || "";
+    return "";
+  })();
+
+  const feedbackScore = isStreaming || typeof result === "string" ? undefined : result.score;
+  const feedbackMaxScore =
+    isStreaming || typeof result === "string" ? undefined : ("max_score" in result ? result.max_score : undefined);
 
   return (
     <motion.div
@@ -86,6 +100,7 @@ export default function LeftFeedbackPanel({
           html={feedbackHtml}
           isFeedbackLoading={isFeedbackLoading}
           score={feedbackScore}
+          maxScore={feedbackMaxScore}
           isStreaming={isStreaming}
           promptVersion={promptVersion}
           recordId={recordId}

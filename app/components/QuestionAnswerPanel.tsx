@@ -137,7 +137,14 @@ export default function QuestionAnswerPanel({
             </div>
           ) : (
             <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-500">
-              {questionLoading ? "Loading question..." : "No question content available."}
+              {questionLoading ? (
+                <div className="space-y-2">
+                  <div className="h-3 w-11/12 animate-pulse rounded bg-slate-200" />
+                  <div className="h-3 w-3/4 animate-pulse rounded bg-slate-200" />
+                </div>
+              ) : (
+                "No question content available."
+              )}
             </div>
           )}
         </div>
@@ -360,6 +367,20 @@ export default function QuestionAnswerPanel({
                 );
               })}
             </div>
+          ) : questionLoading ? (
+            <div className="space-y-3">
+              {Array.from({ length: 4 }, (_, idx) => (
+                <div
+                  key={`mcq-option-loading-${idx}`}
+                  className="animate-pulse rounded-lg border border-slate-200 bg-slate-50 p-4"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="h-4 w-4 rounded-full border border-slate-300 bg-slate-200" />
+                    <div className="h-4 flex-1 rounded bg-slate-200" />
+                  </div>
+                </div>
+              ))}
+            </div>
           ) : (
             <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-700">
               No options available for this MCQ question.
@@ -416,37 +437,35 @@ export default function QuestionAnswerPanel({
           />
         )}
       </div>
-      {!isMCQ && (
-        <button
-          onClick={onSubmit}
-          disabled={isFeedbackLoading || isImageLoading || isReferenceLoading}
-          className={`
-            relative w-full py-3 px-4 rounded-lg font-medium transition-all duration-300 overflow-hidden group
-            ${
-              isFeedbackLoading || isImageLoading || isReferenceLoading
-                ? "bg-slate-300 text-slate-500 cursor-not-allowed"
-                : "bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow-lg hover:shadow-xl"
-            }
-          `}
-        >
-          {/* Subtle skewed background overlay on hover */}
-          {!isFeedbackLoading && !isImageLoading && !isReferenceLoading && (
-            <div className="absolute inset-0 bg-white opacity-0 group-hover:opacity-10 transition-all duration-500 transform -skew-x-6 scale-x-0 group-hover:scale-x-100 origin-left"></div>
-          )}
+      <button
+        onClick={onSubmit}
+        disabled={isFeedbackLoading || isImageLoading || isReferenceLoading}
+        className={`
+          relative w-full py-3 px-4 rounded-lg font-medium transition-all duration-300 overflow-hidden group
+          ${
+            isFeedbackLoading || isImageLoading || isReferenceLoading
+              ? "bg-slate-300 text-slate-500 cursor-not-allowed"
+              : "bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow-lg hover:shadow-xl"
+          }
+        `}
+      >
+        {/* Subtle skewed background overlay on hover */}
+        {!isFeedbackLoading && !isImageLoading && !isReferenceLoading && (
+          <div className="absolute inset-0 bg-white opacity-0 group-hover:opacity-10 transition-all duration-500 transform -skew-x-6 scale-x-0 group-hover:scale-x-100 origin-left"></div>
+        )}
 
-          {/* Button content */}
-          <div className="relative z-10 flex items-center justify-center">
-            {isFeedbackLoading || isImageLoading || isReferenceLoading ? (
-              <div className="flex items-center justify-center space-x-2">
-                <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                <span>{isStreaming ? "Thinking..." : "Evaluating..."}</span>
-              </div>
-            ) : (
-              "Submit Answer"
-            )}
-          </div>
-        </button>
-      )}
+        {/* Button content */}
+        <div className="relative z-10 flex items-center justify-center">
+          {isFeedbackLoading || isImageLoading || isReferenceLoading ? (
+            <div className="flex items-center justify-center space-x-2">
+              <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+              <span>{isStreaming ? "Thinking..." : "Evaluating..."}</span>
+            </div>
+          ) : (
+            "Submit Answer"
+          )}
+        </div>
+      </button>
     </div>
   );
 }
