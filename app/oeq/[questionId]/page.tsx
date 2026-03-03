@@ -28,6 +28,52 @@ const parseJsonLikeFeedback = (value: unknown) => {
   }
 };
 
+const readFirstString = (...candidates: unknown[]): string => {
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+  }
+  return "";
+};
+
+const stringifyIfObject = (value: unknown): string => {
+  if (typeof value === "string") return value;
+  if (value === null || value === undefined) return "";
+  if (typeof value === "object") {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return "";
+    }
+  }
+  return String(value);
+};
+
+const resolveRuntimeFeedbackContent = (raw: any): { feedbackText: string; structuredFeedback: string } => {
+  const feedbackText = readFirstString(
+    raw?.feedback,
+    raw?.output,
+    raw?.result,
+    raw?.text,
+    raw?.static_feedback_text,
+    raw?.question_feedback_text,
+    raw?.message
+  );
+  const structuredFeedback = readFirstString(
+    raw?.structured_feedback,
+    raw?.feedback_html,
+    raw?.feedback,
+    raw?.output,
+    raw?.result,
+    raw?.static_feedback_text,
+    raw?.question_feedback_text
+  );
+  const fallbackFeedback = stringifyIfObject(raw?.feedback || raw?.output || raw?.result);
+  return {
+    feedbackText: feedbackText || fallbackFeedback,
+    structuredFeedback: structuredFeedback || feedbackText || fallbackFeedback,
+  };
+};
+
 const extractExplicitOeqScore = (value: unknown): Pick<RecordResultInput, "score_given" | "score_maximum"> => {
   const parsed = parseJsonLikeFeedback(value);
   const rawScore = parsed?.score;
@@ -106,8 +152,10 @@ function PageChildren({
   }), [searchParams]);
   const ltiLaunchId = (searchParams?.lti_launch_id as string) || undefined;
   const ltiUserId = (searchParams?.lti_user_id as string) || undefined;
+  const launchId = (searchParams?.launch_id as string) || undefined;
   const compositionId = (searchParams?.composition_id as string) || undefined;
   const learnerIdFromUrl = (searchParams?.learner_id as string) || undefined;
+  const isLtiMode = Boolean(searchParams?.lti_mode || launchId || ltiLaunchId);
 
   const dispatch = useDispatch<AppDispatch>();
 
@@ -137,19 +185,19 @@ function PageChildren({
   const [promptVersion, setPromptVersion] = useState<string | null>(null);
   const [currentRecordId, setCurrentRecordId] = useState<number | null>(null);
 
-  const [selectedPromptEngineering, setSelectedPromptEngineering] = useState<string>("rag_cot");
-  const [selectedFeedbackFramework, setSelectedFeedbackFramework] = useState<string>("feature");
-  const [slideTextArr, setSlideTextArr] = useState<string[]>([""]);
+  const [selectedPromptEngineering] = useState<string>("rag_cot");
+  const [selectedFeedbackFramework] = useState<string>("feature");
+  const [, setSlideTextArr] = useState<string[]>([""]);
 
   const [course, setCourse] = useState<string>();
   const [courses, setCourses] = useState<Course[]>([]);
   const [module, setModule] = useState<string[]>([]);
   const [slide, setSlide] = useState<string[]>([]);
 
-  const [availableModules, setAvailableModules] = useState<Module[]>([]);
-  const [availableSlides, setAvailableSlides] = useState<Slide[]>([]);
+  const [, setAvailableModules] = useState<Module[]>([]);
+  const [, setAvailableSlides] = useState<Slide[]>([]);
 
-  const [preferredInfoType, setPreferredInfoType] = useState<string>("vision");
+  const [preferredInfoType] = useState<string>("vision");
 
   const [questionPreset, setQuestionPreset] = useState<Question>({
     question_id: "",
@@ -168,7 +216,11 @@ function PageChildren({
   );
   const [saveStatus, setSaveStatus] = useState("Saved");
   const [fallbackLearnerId] = useState(() => createFallbackLearnerId());
-  const effectiveLearnerId = learnerIdFromUrl || prolificPid || participantId || fallbackLearnerId;
+  const [testLearnerId, setTestLearnerId] = useState(() => learnerIdFromUrl || fallbackLearnerId);
+  const normalizedTestLearnerId = testLearnerId.trim() || fallbackLearnerId;
+  const effectiveLearnerId = isLtiMode
+    ? learnerIdFromUrl || prolificPid || participantId || normalizedTestLearnerId
+    : normalizedTestLearnerId;
 
   const resolveCompositionForQuestion = useCallback(async (resolvedQuestionId?: string) => {
     if (!compositionId || !resolvedQuestionId) return null;
@@ -317,67 +369,65 @@ function PageChildren({
     e.target.style.height = `${e.target.scrollHeight}px`;
   }
 
-  const handleRetrieve = async () => {
-    try {
-      const response = await axios.post("/api/embed", {
-        question_id: question_id || null,
-        question: questionPreset?.content?.length ? questionPreset.content : question,
-        slideIds: slide,
-        preferredInfoType: preferredInfoType,
-      });
-      const res = typeof response.data === "string" ? JSON.parse(response.data).result : response.data.result;
-      setReference(res[0]);
+  const applyReferenceFromRuntimeResponse = async (feedbackData: any) => {
+    const preferred = String(feedbackData?.preferred_info_type ?? preferredInfoType ?? "text").toLowerCase();
+    const runtimeReference = feedbackData?.reference && typeof feedbackData.reference === "object" ? feedbackData.reference : null;
+    const slideId = String(
+      runtimeReference?.slide_google_id ??
+      runtimeReference?.slide_id ??
+      feedbackData?.reference_slide_id ??
+      ""
+    ).trim();
+    const pageNumberRaw =
+      runtimeReference?.page_number ??
+      runtimeReference?.reference_slide_page_number ??
+      feedbackData?.reference_slide_page_number;
+    const pageNumber = typeof pageNumberRaw === "number" ? pageNumberRaw : Number(pageNumberRaw);
+    const imageText = String(
+      runtimeReference?.image_text ??
+      (preferred === "vision" ? feedbackData?.reference_slide_content : "") ??
+      ""
+    );
+    const text = String(runtimeReference?.text ?? feedbackData?.reference_slide_content ?? "");
+    const displayText = imageText.trim() || text.trim();
 
-      if (preferredInfoType === "vision" && res[0].image_text) {
-        setReference({ ...res[0], display: res[0].image_text.replace(/\n\s*\n+/g, "\n") });
-      } else if (res[0].text) {
-        setReference({ ...res[0], display: res[0].text });
-      } else {
-        setReference({ ...res[0], display: "EMPTY REFERENCE" });
-      }
-
-      setSlideTextArr(
-        res.map((item: Reference) => {
-          if (preferredInfoType === "vision" && item.image_text) return item.image_text;
-          if (item.text) return item.text;
-          alert(`${item.slide_title} unpublished!`);
-          return "";
-        })
-      );
-
-      let temp: string[] = [];
-      const page_number = res[0].page_number;
-      const startPage = page_number;
-      const endPage = page_number;
-      setTotalCount(endPage - startPage + 1);
-      setLoadedCount(0);
-
-      for (let i = startPage; i <= endPage; i++) {
-        const image: string | null = await handlePdfImage(i, res[0].slide_id);
-        if (image !== null) {
-          setLoadedCount((prevCount) => prevCount + 1);
-          temp = [...temp, image];
-        }
-      }
-
-      setImages(temp);
+    if (!slideId || !Number.isFinite(pageNumber) || pageNumber <= 0 || !displayText) {
+      setReference(undefined);
+      setImages(null);
+      setSlideTextArr([""]);
+      setTotalCount(-1);
+      setLoadedCount(-1);
       setIsImageLoading(false);
-      setIsReferenceLoading(false);
-
-      return {
-        slide_text_arr: res.map((item: Reference) => {
-          if (preferredInfoType === "vision" && item.image_text) return item.image_text;
-          if (item.text) return item.text;
-          alert(`${item.slide_title} unpublished!`);
-          return "";
-        }),
-        reference: res[0] as Reference,
-      };
-    } catch (error) {
-      console.error("Error fetching the result:", error);
-      setIsReferenceLoading(false);
-      setIsImageLoading(false);
+      return;
     }
+
+    const nextReference: Reference = {
+      ...(runtimeReference ?? {}),
+      page_number: pageNumber,
+      slide_google_id: slideId,
+      text,
+      image_text: imageText,
+      display: displayText,
+    };
+    setReference(nextReference);
+
+    const retrievalRange = Array.isArray(feedbackData?.slide_retrieval_range)
+      ? feedbackData.slide_retrieval_range.filter((item: unknown): item is string => typeof item === "string")
+      : [];
+    setSlideTextArr(retrievalRange.length > 0 ? retrievalRange : [displayText]);
+
+    setIsImageLoading(true);
+    setTotalCount(1);
+    setLoadedCount(0);
+    const image = await handlePdfImage(pageNumber, slideId);
+    if (image) {
+      setImages([image]);
+      setLoadedCount(1);
+    } else {
+      setImages(null);
+      setLoadedCount(0);
+    }
+    setIsImageLoading(false);
   };
 
   const recordResultToDatabase = async (payload: RecordResultInput) => {
@@ -406,215 +456,126 @@ function PageChildren({
     return input.trim() !== "" && alphanumericRegex.test(input);
   }
 
-  const handleStreamingSubmit = async () => {
-    if (!question && !questionPreset) return;
-    const resolvedComposition = await resolveCompositionForQuestion(questionPreset.question_id);
-    const resolvedMode =
-      resolvedComposition?.matched_rule_id && resolvedComposition.feedback_mode
-        ? resolvedComposition.feedback_mode
-        : null;
-    
-    // Composition/legacy static mode: use saved/latest feedback version
-    if (resolvedMode === "use_latest_version" || (!resolvedMode && course_version === "v2a")) {
-      if (questionPreset) {
-        try {
-          setIsFeedbackLoading(true);
-          setIsReferenceLoading(true);
-          
-          // Get human feedback
-          const response = await axios.get(`/api/v2/get_human_feedback_oeq/${questionPreset.question_id}`);
-          setResult(response.data.human_feedback);
-          
-          // Get reference data for slide link (but won't display content)
-          const retrievalResult = await handleRetrieve();
-          
-          setIsFeedbackLoading(false);
-          setIsReferenceLoading(false);
-        } catch (error) {
-          console.error("Failed to get human feedback:", error);
-          setIsFeedbackLoading(false);
-          setIsReferenceLoading(false);
-        }
-      }
-      return;
-    }
-    
+  const runOeqRuntimeFeedback = useCallback(async () => {
+    if (!questionPreset?.question_id) return;
+    const normalizedAnswer = isValidInput(answer) ? answer : "The student haven't provided any answer yet.";
+    const startTime = Date.now();
     setIsFeedbackLoading(true);
-    setIsImageLoading(true);
     setIsReferenceLoading(true);
-    setIsStreaming(true);
+    setIsImageLoading(true);
+    setIsStreaming(false);
     setStreamingContent("");
     setResult("");
 
-    const startTime = Date.now();
-    let retrievalResult: any = null;
-
-    // Create abort controller for canceling the request
-    const controller = new AbortController();
-    setAbortController(controller);
-
     try {
-      // Handle retrieval for reference content and images
-      if (["rag_zero", "rag_few", "rag_cot", "graph_rag"].includes(selectedPromptEngineering)) {
-        retrievalResult = await handleRetrieve();
-      }
+      const resolvedComposition = await resolveCompositionForQuestion(questionPreset.question_id);
+      const resolvedCompositionId = resolvedComposition?.composition_id || null;
+      const feedbackResponse = await axios.post(
+        `/api/questions/${questionPreset.question_id}/feedback-runtime`,
+        {
+          composition_id: resolvedCompositionId,
+          learner_id: effectiveLearnerId,
+          answer_text: normalizedAnswer,
+          launch_id: launchId || null,
+          lti_launch_id: ltiLaunchId || null,
+        }
+      );
+      const feedbackData = feedbackResponse.data || {};
+      const { feedbackText, structuredFeedback } = resolveRuntimeFeedbackContent(feedbackData);
+      const displayFeedback = feedbackText || "No feedback is available for this question yet.";
+      const displayStructuredFeedback = structuredFeedback || displayFeedback;
 
-      // Prepare the request payload
-      const requestPayload = {
-        participant_id: effectiveLearnerId || null,
-        question_id: questionPreset.question_id || null,
-        promptEngineering: selectedPromptEngineering,
-        feedbackFramework: selectedFeedbackFramework,
-        question: questionPreset.content || question,
-        answer: isValidInput(answer) ? answer : "The student haven't provided any answer yet.",
-        slide_text_arr: slideTextArr,
-        isStructured: true,
-        course_version: course_version || null,  // Include course_version
-      };
-
-      // Start streaming fetch
-      const response = await fetch('/api/v2/generate_feedback_rag_stream_oeq', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(requestPayload),
-        signal: controller.signal,
+      setResult({
+        feedback: displayFeedback,
+        score: "",
+        structured_feedback: displayStructuredFeedback,
       });
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const reader = response.body?.getReader();
-      if (!reader) {
-        throw new Error('Failed to get response reader');
-      }
-
-      const decoder = new TextDecoder();
-      let accumulatedText = "";
-      let buffer = "";
-
-      // Read the streaming response
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        // Append new chunk to buffer
-        buffer += decoder.decode(value, { stream: true });
-        
-        // Process complete lines
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || ""; // Keep incomplete line in buffer
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          
-          const data = line.slice(6);
-          
-          // Handle [DONE] signal
-          if (data === '[DONE]') {
-            console.log(accumulatedText)
-            setIsStreaming(false);
-            setIsFeedbackLoading(false);
-            
-            // Try to parse as JSON, otherwise keep as plain text
-            try {
-              const cleanedText = accumulatedText.trim()
-                .replace(/^```json\s*/, '')
-                .replace(/\s*```$/, '');
-              
-              const parsed = JSON.parse(cleanedText);
-              setResult(parsed?.structured_feedback || parsed?.feedback ? parsed : accumulatedText);
-            } catch {
-              setResult(accumulatedText);
-            }
-            
-            const endTime = Date.now();
-
-            // Record result to database
-            if (questionPreset) {
-              let feedbackForDB = accumulatedText;
-              try {
-                const parsed = JSON.parse(accumulatedText.trim().replace(/^```json\s*/, '').replace(/\s*```$/, ''));
-                if (parsed?.structured_feedback) {
-                  feedbackForDB = parsed.structured_feedback;
-                }
-              } catch {
-                // Keep original text
-              }
-              
-              const recordPayload: RecordResultInput = {
-                learner_id: effectiveLearnerId,
-                study_id: studyId || "unidentifiable_study",
-                session_id: sessionId || "unidentifiable_session",
-                ...extractExplicitOeqScore(accumulatedText),
-                question_id: questionPreset.question_id,
-                answer: answer,
-                feedback: feedbackForDB,
-                prompt_engineering_method: selectedPromptEngineering,
-                preferred_info_type: preferredInfoType === "vision" && reference?.image_text ? "vision" : "text",
-                feedback_framework: selectedFeedbackFramework,
-                slide_retrieval_range: retrievalResult?.slide_text_arr,
-                reference_slide_page_number: retrievalResult?.reference?.page_number,
-                reference_slide_content:
-                  preferredInfoType === "vision" && retrievalResult?.reference?.image_text
-                    ? retrievalResult?.reference?.image_text
-                    : reference?.text || "",
-                reference_slide_id: retrievalResult?.reference?.slide_google_id,
-                submission_time: startTime,
-                system_total_response_time: endTime - startTime,
-              };
-              await recordResultToDatabase(recordPayload);
-              
-            }
-            break;
-          }
-          
-          // Check if it's metadata - handle it separately
-          if (data) {
-            try {
-              const parsed = JSON.parse(data);
-              if (parsed.type === 'metadata' && parsed.prompt_version) {
-                // Store prompt version but don't add to accumulated text
-                setPromptVersion(parsed.prompt_version);
-                console.log('Received prompt version:', parsed.prompt_version);
-                // Don't add metadata to accumulatedText - skip to next iteration
-                continue;
-              }
-            } catch {
-              // Not JSON metadata, it's actual feedback content
-            }
-            
-            // Only add non-metadata data to accumulated text
-            accumulatedText += data;
-            // Update streaming content immediately after appending data
-            setStreamingContent(accumulatedText);
-          }
-        }
-        
-        // Also update streaming content with partial data in buffer if we have accumulated text
-        // This ensures smoother streaming even if server sends partial chunks
-        if (accumulatedText.length > 0 && buffer.length > 0) {
-          setStreamingContent(accumulatedText + buffer);
-        }
-      }
-
-    } catch (error: any) {
-      console.error("Error in streaming:", error);
-      setIsStreaming(false);
-      setIsFeedbackLoading(false);
-      
-      if (error.name === 'AbortError') {
-        console.log('Streaming request was aborted');
-        setResult("Request was cancelled");
+      const effectiveFeedbackMode =
+        feedbackData.feedback_mode ??
+        (resolvedComposition?.matched_rule_id ? resolvedComposition.feedback_mode : undefined);
+      if (effectiveFeedbackMode === "runtime_generate") {
+        setPromptVersion("prompt_corrective");
+      } else if (effectiveFeedbackMode === "use_latest_version") {
+        setPromptVersion("human_feedback");
       } else {
-        setResult(`Error: ${error.message}`);
+        setPromptVersion(null);
       }
+
+      await applyReferenceFromRuntimeResponse(feedbackData);
+
+      const runtimeReference = feedbackData?.reference && typeof feedbackData.reference === "object" ? feedbackData.reference : null;
+      const retrievalRange = Array.isArray(feedbackData?.slide_retrieval_range)
+        ? feedbackData.slide_retrieval_range.filter((item: unknown): item is string => typeof item === "string")
+        : undefined;
+      const referencePageNumberRaw =
+        runtimeReference?.page_number ??
+        runtimeReference?.reference_slide_page_number ??
+        feedbackData?.reference_slide_page_number;
+      const referencePageNumber =
+        typeof referencePageNumberRaw === "number" ? referencePageNumberRaw : Number(referencePageNumberRaw);
+      const referenceContent = String(
+        runtimeReference?.image_text ??
+        runtimeReference?.text ??
+        feedbackData?.reference_slide_content ??
+        ""
+      );
+      const referenceSlideId = String(
+        runtimeReference?.slide_google_id ??
+        runtimeReference?.slide_id ??
+        feedbackData?.reference_slide_id ??
+        ""
+      );
+
+      const endTime = Date.now();
+      const recordPayload: RecordResultInput = {
+        learner_id: effectiveLearnerId,
+        study_id: studyId || "unidentifiable_study",
+        session_id: sessionId || "unidentifiable_session",
+        ...extractExplicitOeqScore(displayFeedback),
+        question_id: questionPreset.question_id,
+        answer: answer,
+        feedback: displayFeedback,
+        prompt_engineering_method: selectedPromptEngineering,
+        preferred_info_type: preferredInfoType,
+        feedback_framework: selectedFeedbackFramework,
+        slide_retrieval_range: retrievalRange,
+        reference_slide_page_number: Number.isFinite(referencePageNumber) ? referencePageNumber : undefined,
+        reference_slide_content: referenceContent || undefined,
+        reference_slide_id: referenceSlideId || undefined,
+        submission_time: startTime,
+        system_total_response_time: endTime - startTime,
+      };
+      await recordResultToDatabase(recordPayload);
+    } catch (error: any) {
+      console.error("Error generating OEQ runtime feedback:", error);
+      const errorMessage = error?.response?.data?.detail || error?.message || "Failed to get feedback";
+      setResult({
+        feedback: String(errorMessage),
+        score: "",
+        structured_feedback: `<div class=\"error-feedback\"><statement>Error</statement><explanation>${String(errorMessage)}</explanation></div>`,
+      });
+      setReference(undefined);
+      setImages(null);
     } finally {
+      setIsFeedbackLoading(false);
+      setIsReferenceLoading(false);
+      setIsImageLoading(false);
       setAbortController(null);
     }
-  };
+  }, [
+    answer,
+    effectiveLearnerId,
+    launchId,
+    ltiLaunchId,
+    preferredInfoType,
+    questionPreset?.question_id,
+    resolveCompositionForQuestion,
+    selectedFeedbackFramework,
+    selectedPromptEngineering,
+    studyId,
+    sessionId,
+  ]);
 
   const stopStreaming = () => {
     if (abortController) {
@@ -625,151 +586,7 @@ function PageChildren({
   };
 
   const handleSmartSubmit = async () => {
-    // Use streaming for rag_cot method, regular for others
-    if (useStreaming && selectedPromptEngineering === "rag_cot") {
-      await handleStreamingSubmit();
-    } else {
-      await handleSubmit();
-    }
-  };
-
-  const handleSubmit = async () => {
-    if (!question && !questionPreset) return;
-    const resolvedComposition = await resolveCompositionForQuestion(questionPreset.question_id);
-    const resolvedMode =
-      resolvedComposition?.matched_rule_id && resolvedComposition.feedback_mode
-        ? resolvedComposition.feedback_mode
-        : null;
-    setIsFeedbackLoading(true);
-    setIsImageLoading(true);
-    setIsReferenceLoading(true);
-
-    const startTime = Date.now();
-    let retrievalResult: any = null;
-
-    if (resolvedMode === "use_latest_version" || (!resolvedMode && course_version === "v2a")) {
-      if (questionPreset) {
-        try {
-          // Get human feedback
-          const response = await axios.get(`/api/v2/get_human_feedback_oeq/${questionPreset.question_id}`);
-          
-          // Get reference data for slide link (but won't display content)
-          retrievalResult = await handleRetrieve();
-          
-          const endTime = Date.now();
-          const recordPayload: RecordResultInput = {
-            learner_id: effectiveLearnerId,
-            study_id: studyId || "unidentifiable_study",
-            session_id: sessionId || "unidentifiable_session",
-            ...extractExplicitOeqScore(response.data.human_feedback),
-            question_id: questionPreset.question_id,
-            answer: answer,
-            feedback: response.data.human_feedback,
-            prompt_engineering_method: selectedPromptEngineering,
-            preferred_info_type: preferredInfoType === "vision" && reference?.image_text ? "vision" : "text",
-            feedback_framework: selectedFeedbackFramework,
-            slide_retrieval_range: retrievalResult?.slide_text_arr ? [retrievalResult.slide_text_arr.length] : [],
-            reference_slide_page_number: retrievalResult?.reference?.page_number || -1,
-            reference_slide_content: retrievalResult?.reference?.display || "",
-            reference_slide_id: retrievalResult?.reference?.slide_google_id || "",
-            submission_time: startTime,
-            system_total_response_time: endTime - startTime,
-          };
-          await recordResultToDatabase(recordPayload);
-          
-          setResult(response.data.human_feedback);
-          setIsFeedbackLoading(false);
-          setIsImageLoading(false);
-          setIsReferenceLoading(false);
-        } catch (error) {
-          console.error("Failed to record result:", error);
-          setIsFeedbackLoading(false);
-          setIsImageLoading(false);
-          setIsReferenceLoading(false);
-        }
-      }
-    } else {
-      try {
-        let response;
-        if (["rag_zero", "rag_few", "rag_cot", "graph_rag"].includes(selectedPromptEngineering)) {
-          retrievalResult = await handleRetrieve();
-          response = await axios.post("/api/v2/generate_feedback_rag_oeq", {
-            participant_id: effectiveLearnerId || null,
-            question_id: questionPreset.question_id || null,
-            promptEngineering: selectedPromptEngineering,
-            feedbackFramework: selectedFeedbackFramework,
-            question: questionPreset.content || question,
-            answer: isValidInput(answer) ? answer : "The student haven't provided any answer yet.",
-            slide_text_arr: slideTextArr,
-            isStructured: true,
-            course_version: course_version || null,  // Include course_version
-          });
-        } else {
-          const [retrieval, feedbackResponse] = await Promise.all([
-            handleRetrieve(),
-            axios.post("/api/v2/generate_feedback_oeq", {
-              promptEngineering: selectedPromptEngineering,
-              feedbackFramework: selectedFeedbackFramework,
-              question: questionPreset.content || question,
-              answer: isValidInput(answer) ? answer : "The student haven't provided any answer yet.",
-            }),
-          ]);
-          response = feedbackResponse;
-          retrievalResult = retrieval;
-        }
-
-        const endTime = Date.now();
-
-        if (questionPreset) {
-          const recordPayload: RecordResultInput = {
-            learner_id: effectiveLearnerId,
-            study_id: studyId || "unidentifiable_study",
-            session_id: sessionId || "unidentifiable_session",
-            ...extractExplicitOeqScore(response.data.feedback || response.data),
-            question_id: questionPreset.question_id,
-            answer: answer,
-            feedback: response.data.feedback,
-            prompt_engineering_method: selectedPromptEngineering,
-            preferred_info_type: preferredInfoType === "vision" && reference?.image_text ? "vision" : "text",
-            feedback_framework: selectedFeedbackFramework,
-            slide_retrieval_range: retrievalResult?.slide_text_arr,
-            reference_slide_page_number: retrievalResult?.reference?.page_number,
-            reference_slide_content:
-              preferredInfoType === "vision" && retrievalResult?.reference?.image_text
-                ? retrievalResult?.reference?.image_text
-                : reference?.text || "",
-            reference_slide_id: retrievalResult?.reference?.slide_google_id,
-            submission_time: startTime,
-            system_total_response_time: endTime - startTime,
-          };
-          await recordResultToDatabase(recordPayload);
-          
-        }
-
-        // Handle the response which might be structured or plain text
-        const feedbackData = response.data.feedback || response.data;
-        if (typeof feedbackData === 'string') {
-          // Try to parse as JSON if it's a string
-          try {
-            const parsed = JSON.parse(feedbackData);
-            if (parsed && typeof parsed === 'object' && ('structured_feedback' in parsed || 'feedback' in parsed)) {
-              setResult(parsed);
-            } else {
-              setResult(feedbackData);
-            }
-          } catch {
-            setResult(feedbackData);
-          }
-        } else {
-          // Already an object
-          setResult(feedbackData);
-        }
-        setIsFeedbackLoading(false);
-      } catch (error) {
-        console.error("Error generating feedback:", error);
-        setIsFeedbackLoading(false);
-      }
-    }
+    await runOeqRuntimeFeedback();
   };
 
   const handleImageClick = (image: string, index: number) => {
@@ -808,7 +625,22 @@ function PageChildren({
       <ParticipantModal isOpen={!prolificPid && !participantId && !!course_version} />
 
       <section className="mb-3 rounded-xl border border-slate-200 bg-white px-4 py-3">
-        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Question</p>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Question</p>
+          {!isLtiMode ? (
+            <div className="flex items-center gap-2">
+              <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Test Learner ID</label>
+              <input
+                type="text"
+                value={testLearnerId}
+                onChange={(e) => setTestLearnerId(e.target.value)}
+                onBlur={() => setTestLearnerId((prev) => prev.trim() || fallbackLearnerId)}
+                className="w-64 rounded-lg border border-slate-200 bg-white px-2 py-1 font-mono text-xs text-slate-900 outline-none focus:border-slate-300"
+                placeholder="test_learner_xxx"
+              />
+            </div>
+          ) : null}
+        </div>
         <p className="mt-1 text-sm text-slate-900">{questionDisplayText}</p>
       </section>
 

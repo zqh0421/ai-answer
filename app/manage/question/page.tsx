@@ -3063,8 +3063,7 @@ const QuestionOverview = () => {
   };
 
   const getPlayerHref = (question: Question) => {
-    if (question.type === "multiple choice") return `/mcq/${question.question_id}${ltiQuery}`;
-    return `/oeq/${question.question_id}${ltiQuery}`;
+    return `/question/${question.question_id}${ltiQuery}`;
   };
 
   const questionColumns: ManageTableColumn<Question>[] = [

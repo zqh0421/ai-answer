@@ -9,8 +9,7 @@ import DynamicImage from '@/app/components/DynamicImage';
 import ManageListPanel from '@/app/components/manage/ManageListPanel';
 import {
   FeedbackComposition,
-  FEEDBACK_COMPOSITION_STORAGE_KEY,
-  loadFeedbackCompositions,
+  parseFeedbackCompositionsResponse,
 } from '@/app/lib/feedbackCompositions';
 import { formatDateTimeForUser } from '@/app/utils/datetime';
 import { buildStaticPageTitle } from '@/app/utils/title';
@@ -144,19 +143,44 @@ export default function LtiQuestionsPage() {
     document.title = buildStaticPageTitle('LTI Question Library');
   }, []);
 
-  useEffect(() => {
-    setCompositions(loadFeedbackCompositions());
-  }, []);
+  const fetchCompositions = useCallback(async () => {
+    try {
+      const requests = [
+        axios.get('/api/feedback-compositions', {
+          params: {
+            include_public: true,
+          },
+        }),
+      ];
+      if (ltiUserId) {
+        requests.push(
+          axios.get('/api/feedback-compositions', {
+            params: {
+              user_id: ltiUserId,
+              include_public: true,
+            },
+          })
+        );
+      }
+      const responses = await Promise.all(requests);
+      const merged = responses.flatMap((res) => parseFeedbackCompositionsResponse(res.data));
+      const seen = new Set<string>();
+      const deduped = merged.filter((item) => {
+        const key = item.composition_id.toLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+      setCompositions(deduped);
+    } catch (error) {
+      console.error('Error fetching compositions:', error);
+      setCompositions([]);
+    }
+  }, [ltiUserId]);
 
   useEffect(() => {
-    const onStorage = (event: StorageEvent) => {
-      if (!event.key || event.key === FEEDBACK_COMPOSITION_STORAGE_KEY) {
-        setCompositions(loadFeedbackCompositions());
-      }
-    };
-    window.addEventListener('storage', onStorage);
-    return () => window.removeEventListener('storage', onStorage);
-  }, []);
+    void fetchCompositions();
+  }, [fetchCompositions]);
 
   const fetchQuestions = useCallback(async () => {
     setLoading(true);
@@ -246,6 +270,20 @@ export default function LtiQuestionsPage() {
     () => new Map(compositions.map((composition) => [composition.composition_id, composition])),
     [compositions]
   );
+  const dropdownCompositions = useMemo(() => {
+    if (!defaultCompositionId || compositionById.has(defaultCompositionId)) return compositions;
+    return [
+      ...compositions,
+      {
+        composition_id: defaultCompositionId,
+        title: defaultCompositionId,
+        description: '',
+        rules: [],
+        created_at: '',
+        updated_at: '',
+      } as FeedbackComposition,
+    ];
+  }, [compositions, compositionById, defaultCompositionId]);
   const getSelectedCompositionId = (questionId: string) =>
     compositionSelectionByQuestion[questionId] ?? defaultCompositionId;
   const getSelectedComposition = (questionId: string) => {
@@ -258,13 +296,6 @@ export default function LtiQuestionsPage() {
       ? compositionSlideModeToLegacyMode(getSelectedComposition(questionId)?.rules?.[0]?.slide_mode)
       : 'retrieved_slide_page';
   const getQuestionPlayerHref = (question: QuestionRow) => {
-    const normalizedType = String(question.question_type ?? question.type ?? '').toLowerCase();
-    const route = (
-      normalizedType.includes('choice') ||
-      normalizedType.includes('true_false') ||
-      normalizedType.includes('dropdown') ||
-      normalizedType.includes('mcq')
-    ) ? 'mcq' : 'oeq';
     const compositionId = getSelectedCompositionId(question.question_id);
     const params = new URLSearchParams();
     if (compositionId) params.set('composition_id', compositionId);
@@ -274,7 +305,8 @@ export default function LtiQuestionsPage() {
     if (launchId) params.set('launch_id', launchId);
     if (ltiLaunchId) params.set('lti_launch_id', ltiLaunchId);
     if (ltiUserId) params.set('lti_user_id', ltiUserId);
-    return `/${route}/${question.question_id}?${params.toString()}`;
+    const query = params.toString();
+    return `/question/${question.question_id}${query ? `?${query}` : ''}`;
   };
 
   return (
@@ -438,8 +470,8 @@ export default function LtiQuestionsPage() {
                                   }
                                   className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-700 shadow-sm outline-none focus:border-slate-300 sm:w-[220px]"
                                   >
-                                    <option value="">No Composition</option>
-                                    {compositions.map((composition) => (
+                                    <option value="">No Feedback</option>
+                                    {dropdownCompositions.map((composition) => (
                                       <option key={`composition-${composition.composition_id}`} value={composition.composition_id}>
                                         {composition.title || composition.composition_id}
                                       </option>

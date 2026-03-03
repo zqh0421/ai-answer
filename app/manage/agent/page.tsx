@@ -10,14 +10,12 @@ import { useManagePermissionGuard } from '@/app/manage/hooks/useManagePermission
 import {
   COMPOSITION_LITERAL_TOKENS,
   COMPOSITION_VARIABLE_TOKENS,
+  FEEDBACK_COMPOSITION_STORAGE_KEY,
   createDefaultCompositionRule,
   createRuleId,
   FeedbackComposition,
   FeedbackCompositionRule,
-  loadFeedbackCompositions,
-  removeFeedbackComposition,
-  saveFeedbackCompositions,
-  upsertFeedbackComposition,
+  parseFeedbackCompositionsResponse,
 } from '@/app/lib/feedbackCompositions';
 import { formatDateTimeForUser } from '@/app/utils/datetime';
 import { buildStaticPageTitle } from '@/app/utils/title';
@@ -77,8 +75,6 @@ interface CompositionFormState {
   composition_id: string;
   title: string;
   description: string;
-  question_id: string;
-  question_type: 'mcq' | 'oeq' | '';
   rules: FeedbackCompositionRule[];
 }
 
@@ -111,8 +107,6 @@ const defaultCompositionFormState = (): CompositionFormState => ({
   composition_id: '',
   title: '',
   description: '',
-  question_id: '',
-  question_type: '',
   rules: [createDefaultCompositionRule()],
 });
 
@@ -380,6 +374,8 @@ export default function AgentManagementPage() {
   const [compositionForm, setCompositionForm] = useState<CompositionFormState>(defaultCompositionFormState);
   const [editingCompositionId, setEditingCompositionId] = useState<string | null>(null);
   const [compositionError, setCompositionError] = useState<string | null>(null);
+  const [isFetchingCompositions, setIsFetchingCompositions] = useState(false);
+  const [isSubmittingComposition, setIsSubmittingComposition] = useState(false);
   const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const promptHighlightRef = useRef<HTMLDivElement | null>(null);
 
@@ -395,20 +391,25 @@ export default function AgentManagementPage() {
     document.title = buildStaticPageTitle('Agent Management');
   }, []);
 
-  useEffect(() => {
-    const hydrated = loadFeedbackCompositions();
-    setCompositions(hydrated);
-  }, []);
-
-  useEffect(() => {
-    const onStorage = (event: StorageEvent) => {
-      if (!event.key || event.key === 'ai_feedback_compositions_v1') {
-        setCompositions(loadFeedbackCompositions());
-      }
-    };
-    window.addEventListener('storage', onStorage);
-    return () => window.removeEventListener('storage', onStorage);
-  }, []);
+  const fetchCompositions = useCallback(async () => {
+    setIsFetchingCompositions(true);
+    try {
+      const res = await axios.get('/api/feedback-compositions', {
+        params: {
+          user_id: actorUserId || undefined,
+          include_public: true,
+        },
+      });
+      setCompositions(parseFeedbackCompositionsResponse(res.data));
+      setCompositionError(null);
+    } catch (err) {
+      console.error('Error fetching feedback compositions:', err);
+      setCompositions([]);
+      setCompositionError('Failed to load compositions from database.');
+    } finally {
+      setIsFetchingCompositions(false);
+    }
+  }, [actorUserId]);
 
   const fetchInputOptions = useCallback(async () => {
     if (cachedInputOptionKeys?.length) {
@@ -478,6 +479,14 @@ export default function AgentManagementPage() {
     if (sessionStatus === 'loading' || isPermissionChecking || !hasManagePermission) return;
     fetchInputOptions();
   }, [fetchInputOptions, hasManagePermission, isPermissionChecking, sessionStatus]);
+
+  useEffect(() => {
+    if (sessionStatus === 'loading' || isPermissionChecking || !hasManagePermission) return;
+    if (typeof window !== 'undefined') {
+      window.localStorage.removeItem(FEEDBACK_COMPOSITION_STORAGE_KEY);
+    }
+    void fetchCompositions();
+  }, [fetchCompositions, hasManagePermission, isPermissionChecking, sessionStatus]);
 
   const normalizedSearch = searchQueryTokens
     .filter((token) => !/^user:/i.test(token) && !/^creator:/i.test(token))
@@ -601,8 +610,6 @@ export default function AgentManagementPage() {
       composition_id: composition.composition_id,
       title: composition.title,
       description: composition.description ?? '',
-      question_id: composition.question_id ?? '',
-      question_type: composition.question_type === 'mcq' || composition.question_type === 'oeq' ? composition.question_type : '',
       rules: composition.rules.length > 0 ? composition.rules.map((rule) => ({ ...rule })) : [createDefaultCompositionRule()],
     });
     setCompositionError(null);
@@ -645,7 +652,7 @@ export default function AgentManagementPage() {
     }));
   };
 
-  const handleSubmitComposition = () => {
+  const handleSubmitComposition = async () => {
     setCompositionError(null);
     setError(null);
     setMessage(null);
@@ -669,15 +676,6 @@ export default function AgentManagementPage() {
       setCompositionError('At least one rule is required.');
       return;
     }
-    if (!compositionForm.question_id.trim()) {
-      setCompositionError('Question ID is required for Go To Question.');
-      return;
-    }
-    if (!compositionForm.question_type) {
-      setCompositionError('Question type is required for Go To Question.');
-      return;
-    }
-
     for (const rule of compositionForm.rules) {
       if (!rule.condition_expression.trim()) {
         setCompositionError('Each rule must include a condition expression.');
@@ -706,35 +704,127 @@ export default function AgentManagementPage() {
       return;
     }
 
-    const next = upsertFeedbackComposition(compositions, {
+    const payload = {
       composition_id: compositionId,
       title,
       description: compositionForm.description.trim(),
-      question_id: compositionForm.question_id.trim(),
-      question_type: compositionForm.question_type,
-      rules: compositionForm.rules.map((rule) => ({
+      access_scope: 'public',
+      is_visible: true,
+      rules: compositionForm.rules.map((rule, index) => ({
+        rule_order: index + 1,
         ...rule,
         condition_expression: rule.condition_expression.trim(),
         feedback_agent_id: rule.feedback_agent_id.trim(),
       })),
-    });
-    setCompositions(next);
-    saveFeedbackCompositions(next);
-    setIsCompositionPanelOpen(false);
-    setEditingCompositionId(null);
-    setCompositionForm(defaultCompositionFormState());
-    setMessage(compositionPanelMode === 'edit' ? 'Composition updated successfully.' : 'Composition created successfully.');
+      ...(actorUserId ? { updated_by: actorUserId } : {}),
+      ...(compositionPanelMode === 'create' && actorUserId ? { created_by: actorUserId } : {}),
+    };
+
+    setIsSubmittingComposition(true);
+    try {
+      let response;
+      if (compositionPanelMode === 'edit') {
+        response = await axios.patch(`/api/feedback-compositions/${encodeURIComponent(compositionId)}`, payload);
+      } else {
+        response = await axios.post('/api/feedback-compositions', payload);
+      }
+      const okFlag = (response?.data as any)?.ok;
+      if (okFlag === false) {
+        const detail = (response?.data as any)?.detail ?? (response?.data as any)?.message ?? 'Composition API returned ok=false.';
+        throw new Error(typeof detail === 'string' ? detail : JSON.stringify(detail));
+      }
+      await fetchCompositions();
+      setIsCompositionPanelOpen(false);
+      setEditingCompositionId(null);
+      setCompositionForm(defaultCompositionFormState());
+      setMessage(compositionPanelMode === 'edit' ? 'Composition updated successfully.' : 'Composition created successfully.');
+    } catch (err) {
+      console.error('Error saving composition:', err);
+      if (axios.isAxiosError(err)) {
+        const detail = (err.response?.data as any)?.detail;
+        if (detail !== undefined) {
+          setCompositionError(typeof detail === 'object' && detail !== null ? JSON.stringify(detail, null, 2) : String(detail));
+          return;
+        }
+      }
+      setCompositionError(compositionPanelMode === 'edit' ? 'Failed to update composition.' : 'Failed to create composition.');
+    } finally {
+      setIsSubmittingComposition(false);
+    }
   };
 
-  const handleDeleteComposition = (composition: FeedbackComposition) => {
+  const handleDeleteComposition = async (composition: FeedbackComposition) => {
     const confirmed = window.confirm(`Delete composition "${composition.composition_id}"?`);
     if (!confirmed) return;
-    const next = removeFeedbackComposition(compositions, composition.composition_id);
-    setCompositions(next);
-    saveFeedbackCompositions(next);
-    setMessage('Composition deleted.');
     setCompositionError(null);
     setError(null);
+    setMessage(null);
+    setIsSubmittingComposition(true);
+    try {
+      await axios.delete(`/api/feedback-compositions/${encodeURIComponent(composition.composition_id)}`, {
+        params: actorUserId ? { updated_by: actorUserId } : undefined,
+      });
+      await fetchCompositions();
+      setMessage('Composition deleted.');
+    } catch (err) {
+      console.error('Error deleting composition:', err);
+      if (axios.isAxiosError(err)) {
+        const detail = (err.response?.data as any)?.detail;
+        if (detail !== undefined) {
+          setCompositionError(typeof detail === 'object' && detail !== null ? JSON.stringify(detail, null, 2) : String(detail));
+          return;
+        }
+      }
+      setCompositionError('Failed to delete composition.');
+    } finally {
+      setIsSubmittingComposition(false);
+    }
+  };
+
+  const handlePublishComposition = async (composition: FeedbackComposition) => {
+    const confirmed = window.confirm(`Set composition "${composition.composition_id}" to public and visible?`);
+    if (!confirmed) return;
+    setCompositionError(null);
+    setError(null);
+    setMessage(null);
+    setIsSubmittingComposition(true);
+    try {
+      const publishPayload = {
+        composition_id: composition.composition_id,
+        title: composition.title,
+        description: composition.description ?? '',
+        rules: (composition.rules ?? []).map((rule, index) => ({
+          rule_order: index + 1,
+          rule_id: rule.rule_id,
+          condition_expression: rule.condition_expression,
+          feedback_mode: rule.feedback_mode,
+          feedback_agent_id: rule.feedback_agent_id,
+          slide_mode: rule.slide_mode,
+        })),
+        access_scope: 'public',
+        is_visible: true,
+        ...(actorUserId ? { updated_by: actorUserId } : {}),
+      };
+      await axios.patch(`/api/feedback-compositions/${encodeURIComponent(composition.composition_id)}`, publishPayload);
+      await fetchCompositions();
+      setMessage(`Composition "${composition.composition_id}" published.`);
+    } catch (err) {
+      console.error('Error publishing composition:', err);
+      if (axios.isAxiosError(err)) {
+        const detail = (err.response?.data as any)?.detail;
+        if (detail !== undefined) {
+          setCompositionError(
+            typeof detail === 'object' && detail !== null
+              ? JSON.stringify(detail, null, 2)
+              : String(detail)
+          );
+          return;
+        }
+      }
+      setCompositionError(`Failed to publish composition "${composition.composition_id}".`);
+    } finally {
+      setIsSubmittingComposition(false);
+    }
   };
 
   const insertPromptVariable = (key: string) => {
@@ -1140,10 +1230,21 @@ export default function AgentManagementPage() {
         <div className="flex justify-end gap-2">
           <ActionButton
             type="button"
+            variant="primary"
+            size="sm"
+            className="rounded-lg"
+            onClick={() => handlePublishComposition(composition)}
+            disabled={isSubmittingComposition}
+          >
+            Publish
+          </ActionButton>
+          <ActionButton
+            type="button"
             variant="ghost"
             size="sm"
             className="rounded-lg"
             onClick={() => openEditCompositionPanel(composition)}
+            disabled={isSubmittingComposition}
           >
             Edit
           </ActionButton>
@@ -1153,6 +1254,7 @@ export default function AgentManagementPage() {
             size="sm"
             className="rounded-lg"
             onClick={() => handleDeleteComposition(composition)}
+            disabled={isSubmittingComposition}
           >
             Delete
           </ActionButton>
@@ -1360,7 +1462,12 @@ export default function AgentManagementPage() {
         <ManageListPanel
           toolbarLeft={(
             <div className="flex items-center gap-2">
-              <ActionButton onClick={openCreateCompositionPanel} variant="primary" className="rounded-lg px-3.5 py-2">
+              <ActionButton
+                onClick={openCreateCompositionPanel}
+                variant="primary"
+                className="rounded-lg px-3.5 py-2"
+                disabled={isFetchingCompositions || isSubmittingComposition}
+              >
                 Create Composition
               </ActionButton>
             </div>
@@ -1377,7 +1484,7 @@ export default function AgentManagementPage() {
                 rowKey={(composition) => composition.composition_id}
                 columns={compositionColumns}
                 rowClassName="transition-colors hover:bg-slate-50/70"
-                emptyContent="No compositions yet."
+                emptyContent={isFetchingCompositions ? 'Loading compositions...' : 'No compositions yet.'}
                 expandableRows={{
                   getRowId: (composition) => composition.composition_id,
                   isRowExpandable: (composition) => composition.rules.length > 0 || Boolean(composition.description),
@@ -1390,9 +1497,6 @@ export default function AgentManagementPage() {
                       ) : (
                         <p className="text-sm text-slate-400">(no description)</p>
                       )}
-                      <p className="text-xs text-slate-600">
-                        Target: {composition.question_type || '-'} / {composition.question_id || '-'}
-                      </p>
                       <div className="space-y-2">
                         {composition.rules.map((rule, index) => (
                           <div key={rule.rule_id} className="rounded-lg border border-slate-200 bg-white p-3">
@@ -1413,7 +1517,9 @@ export default function AgentManagementPage() {
           )}
           summary={(
             <p className="text-center text-sm text-slate-500">
-              Showing {sortedCompositions.length} composition{sortedCompositions.length === 1 ? '' : 's'}
+              {isFetchingCompositions
+                ? 'Loading compositions...'
+                : `Showing ${sortedCompositions.length} composition${sortedCompositions.length === 1 ? '' : 's'}`}
             </p>
           )}
         />
@@ -1736,6 +1842,7 @@ export default function AgentManagementPage() {
                   variant="ghost"
                   className="rounded-lg"
                   onClick={() => setIsCompositionPanelOpen(false)}
+                  disabled={isSubmittingComposition}
                 >
                   Close
                 </ActionButton>
@@ -1776,31 +1883,6 @@ export default function AgentManagementPage() {
                     onChange={(e) => setCompositionField('description', e.target.value)}
                     className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-slate-300"
                   />
-                </div>
-
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div>
-                    <label className="mb-1 block text-sm font-medium text-slate-700">Question ID</label>
-                    <input
-                      type="text"
-                      value={compositionForm.question_id}
-                      onChange={(e) => setCompositionField('question_id', e.target.value)}
-                      placeholder="e.g. 12345"
-                      className="w-full rounded-xl border border-slate-200 px-3 py-2 font-mono text-sm text-slate-900 shadow-sm outline-none focus:border-slate-300"
-                    />
-                  </div>
-                  <div>
-                    <label className="mb-1 block text-sm font-medium text-slate-700">Question Type</label>
-                    <select
-                      value={compositionForm.question_type}
-                      onChange={(e) => setCompositionField('question_type', e.target.value as CompositionFormState['question_type'])}
-                      className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-slate-300"
-                    >
-                      <option value="">Select type</option>
-                      <option value="mcq">mcq</option>
-                      <option value="oeq">oeq</option>
-                    </select>
-                  </div>
                 </div>
 
                 <div className="space-y-3">
@@ -1934,11 +2016,24 @@ export default function AgentManagementPage() {
                     variant="ghost"
                     className="rounded-lg"
                     onClick={() => setIsCompositionPanelOpen(false)}
+                    disabled={isSubmittingComposition}
                   >
                     Cancel
                   </ActionButton>
-                  <ActionButton type="button" variant="primary" className="rounded-lg" onClick={handleSubmitComposition}>
-                    {compositionPanelMode === 'edit' ? 'Update Composition' : 'Create Composition'}
+                  <ActionButton
+                    type="button"
+                    variant="primary"
+                    className="rounded-lg"
+                    onClick={handleSubmitComposition}
+                    disabled={isSubmittingComposition}
+                  >
+                    {isSubmittingComposition
+                      ? compositionPanelMode === 'edit'
+                        ? 'Updating...'
+                        : 'Creating...'
+                      : compositionPanelMode === 'edit'
+                        ? 'Update Composition'
+                        : 'Create Composition'}
                   </ActionButton>
                 </div>
               </div>

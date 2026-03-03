@@ -26,6 +26,52 @@ const parseJsonLikeFeedback = (value: unknown) => {
   }
 };
 
+const readFirstString = (...candidates: unknown[]): string => {
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+  }
+  return "";
+};
+
+const stringifyIfObject = (value: unknown): string => {
+  if (typeof value === "string") return value;
+  if (value === null || value === undefined) return "";
+  if (typeof value === "object") {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return "";
+    }
+  }
+  return String(value);
+};
+
+const resolveRuntimeFeedbackContent = (raw: any): { feedbackText: string; structuredFeedback: string } => {
+  const feedbackText = readFirstString(
+    raw?.feedback,
+    raw?.output,
+    raw?.result,
+    raw?.text,
+    raw?.static_feedback_text,
+    raw?.question_feedback_text,
+    raw?.message
+  );
+  const structuredFeedback = readFirstString(
+    raw?.structured_feedback,
+    raw?.feedback_html,
+    raw?.feedback,
+    raw?.output,
+    raw?.result,
+    raw?.static_feedback_text,
+    raw?.question_feedback_text
+  );
+  const fallbackFeedback = stringifyIfObject(raw?.feedback || raw?.output || raw?.result);
+  return {
+    feedbackText: feedbackText || fallbackFeedback,
+    structuredFeedback: structuredFeedback || feedbackText || fallbackFeedback,
+  };
+};
+
 const extractExplicitScore = (value: unknown): Pick<RecordResultInput, "score_given" | "score_maximum"> => {
   const parsed = parseJsonLikeFeedback(value);
   const rawScore = parsed?.score;
@@ -112,6 +158,7 @@ type CompositionResolveResponse = {
   matched_rule_id?: string | null;
   feedback_mode?: CompositionFeedbackMode;
   slide_mode?: string;
+  feedback_agent_id?: string;
 };
 const createFallbackLearnerId = () => `test_learner_${Math.random().toString(36).slice(2, 10)}`;
 
@@ -140,6 +187,7 @@ function PageChildren({
   const launchId = (searchParams?.launch_id as string) || undefined;
   const compositionId = (searchParams?.composition_id as string) || undefined;
   const learnerIdFromUrl = (searchParams?.learner_id as string) || undefined;
+  const isLtiMode = Boolean(searchParams?.lti_mode || launchId || ltiLaunchId);
 
   const dispatch = useDispatch<AppDispatch>();
 
@@ -205,7 +253,11 @@ function PageChildren({
   );
   const [saveStatus, setSaveStatus] = useState("Saved");
   const [fallbackLearnerId] = useState(() => createFallbackLearnerId());
-  const effectiveLearnerId = learnerIdFromUrl || prolificPid || participantId || fallbackLearnerId;
+  const [testLearnerId, setTestLearnerId] = useState(() => learnerIdFromUrl || fallbackLearnerId);
+  const normalizedTestLearnerId = testLearnerId.trim() || fallbackLearnerId;
+  const effectiveLearnerId = isLtiMode
+    ? learnerIdFromUrl || prolificPid || participantId || normalizedTestLearnerId
+    : normalizedTestLearnerId;
 
   const resolveCompositionForQuestion = useCallback(async (resolvedQuestionId?: string) => {
     if (!compositionId || !resolvedQuestionId) return null;
@@ -302,10 +354,12 @@ function PageChildren({
     try {
       const selectedOption = questionPreset.options?.[optionIndex];
       const selectedText = typeof selectedOption === 'string' ? selectedOption : selectedOption?.text || "";
+      const resolvedComposition = await resolveCompositionForQuestion(questionPreset.question_id);
+      const resolvedCompositionId = resolvedComposition?.composition_id || null;
       const feedbackResponse = await axios.post(
         `/api/questions/${questionPreset.question_id}/feedback-runtime`,
         {
-          composition_id: compositionId || null,
+          composition_id: resolvedCompositionId,
           learner_id: effectiveParticipantId,
           selected_option_index: optionIndex,
           answer_text: selectedText,
@@ -314,36 +368,52 @@ function PageChildren({
         }
       );
       const feedbackData = feedbackResponse.data || {};
+      const { feedbackText, structuredFeedback } = resolveRuntimeFeedbackContent(feedbackData);
+      const legacyHumanFeedback = Array.isArray((questionPreset as any)?.mcq_human_feedback)
+        ? String((questionPreset as any).mcq_human_feedback?.[optionIndex] ?? "").trim()
+        : "";
+      const legacyAiFeedbackRaw = (questionPreset as any)?.mcq_ai_feedback;
+      const legacyAiFeedback =
+        Array.isArray(legacyAiFeedbackRaw)
+          ? String(legacyAiFeedbackRaw?.[optionIndex] ?? "").trim()
+          : legacyAiFeedbackRaw && typeof legacyAiFeedbackRaw === "object"
+            ? String(
+                legacyAiFeedbackRaw?.corrective_feedback?.[optionIndex] ??
+                legacyAiFeedbackRaw?.learner_feedback?.[optionIndex] ??
+                ""
+              ).trim()
+            : "";
+      const shouldFallbackToLegacy = Boolean(feedbackData?.fallback_to_legacy) || !feedbackText;
+      const displayFeedbackText =
+        shouldFallbackToLegacy
+          ? (legacyHumanFeedback || legacyAiFeedback || feedbackText || "No feedback is available for this option yet.")
+          : feedbackText;
+      const displayStructuredFeedback =
+        structuredFeedback ||
+        displayFeedbackText;
+      if (!feedbackText) {
+        console.warn("feedback-runtime returned empty feedback payload:", feedbackData);
+      }
       
       // Format the result for display in the feedback panel
       // The feedback is already structured from backend
       const formattedResult = {
-        feedback: feedbackData.feedback || "",
+        feedback: displayFeedbackText,
         score: "",
-        structured_feedback: feedbackData.structured_feedback || feedbackData.feedback || ""
+        structured_feedback: displayStructuredFeedback
       };
       
       setResult(formattedResult);
       
-      // Set prompt label based on unified runtime feedback mode.
-      if (feedbackData.feedback_mode === 'runtime_generate') {
+      const effectiveFeedbackMode =
+        feedbackData.feedback_mode ??
+        (resolvedComposition?.matched_rule_id ? resolvedComposition.feedback_mode : undefined);
+      if (effectiveFeedbackMode === 'runtime_generate' && !shouldFallbackToLegacy) {
         setPromptVersion("prompt_corrective");
       } else {
         setPromptVersion("human_feedback");
       }
-      
-      // Find correct option(s) for embedding
-      const correctOptions = questionPreset.options
-        ?.map((opt: any, idx: number) => ({
-          index: idx,
-          text: typeof opt === 'string' ? opt : opt.text,
-          isCorrect: typeof opt === 'object' ? opt.isCorrect : false
-        }))
-        .filter((opt: any) => opt.isCorrect)
-        .map((opt: any) => opt.text);
-      
-      // Fetch relevant slides using embed API with correct answer context
-      await handleRetrieveForMCQ(correctOptions || []);
+      await applyReferenceFromRuntimeResponse(feedbackData);
       
       // Record MCQ result to database
       const endTime = Date.now();
@@ -359,7 +429,7 @@ function PageChildren({
         ...scoreFromIsCorrect(isCorrect),
         question_id: questionPreset.question_id,
         answer: selectedText,
-        feedback: typeof feedbackData.feedback === 'string' ? feedbackData.feedback : JSON.stringify(feedbackData.feedback || ""),
+        feedback: displayFeedbackText,
         prompt_engineering_method: "rag_cot",
         preferred_info_type: preferredInfoType,
         feedback_framework: selectedFeedbackFramework,
@@ -371,8 +441,8 @@ function PageChildren({
       console.log("MCQ result recorded:", {
         option_index: optionIndex,
         is_correct: isCorrect,
-        feedback_mode: feedbackData.feedback_mode,
-        matched_rule_id: feedbackData.matched_rule_id,
+        feedback_mode: effectiveFeedbackMode,
+        matched_rule_id: feedbackData.matched_rule_id ?? resolvedComposition?.matched_rule_id ?? null,
         response_time: endTime - startTime
       });
       
@@ -486,160 +556,6 @@ function PageChildren({
       .finally(() => setQuestionLoading(false));
   }, [question_id]);
 
-  // 🔄 Fetch latest feedback AND reference materials for the participant when page loads
-  useEffect(() => {
-    if (!question_id || !questionPreset) return;
-    
-    const effectiveParticipantId = prolificPid || participantId;
-    if (!effectiveParticipantId) return;
-    
-    const fetchLatestFeedbackAndReferences = async () => {
-      try {
-        // Fetch the latest feedback from database (not cache)
-        const response = await axios.get(`/api/v2/mcq/get_latest_feedback/${question_id}/${effectiveParticipantId}`);
-        
-        if (response.data.hasLatestFeedback) {
-          console.log("Loading latest feedback for participant:", {
-            participant_id: effectiveParticipantId,
-            has_feedback: true,
-            selected_option_index: response.data.selectedOptionIndex,
-            submission_time: response.data.submission_time,
-            has_reference: !!response.data.reference_slide_id
-          });
-          
-          // Set the result to display the latest feedback
-          const formattedResult = {
-            feedback: response.data.feedback,
-            score: response.data.isCorrect ? "1" : "0",
-            structured_feedback: response.data.feedback
-          };
-          setResult(formattedResult);
-          
-          // If we have the selected option index, also select that answer
-          if (response.data.selectedOptionIndex >= 0 && questionPreset?.options) {
-            const selectedOption = questionPreset.options[response.data.selectedOptionIndex];
-            const selectedText = typeof selectedOption === 'string' 
-              ? selectedOption 
-              : selectedOption?.text || "";
-            if (selectedText) {
-              setAnswer(selectedText);
-            }
-          } else if (response.data.answer) {
-            // Fallback to the stored answer text
-            setAnswer(response.data.answer);
-          }
-          
-          // Set prompt version if available
-          if (response.data.prompt_engineering_method) {
-            const version = response.data.prompt_engineering_method === 'rag_cot' 
-              ? 'prompt_corrective' 
-              : 'prompt_learner';
-            setPromptVersion(version);
-          }
-          
-          // Set reference material if available
-          if (response.data.reference_slide_id && response.data.reference_slide_content) {
-            const referenceData: Reference = {
-              text: response.data.reference_slide_content,
-              image_text: response.data.preferred_info_type === "vision" ? response.data.reference_slide_content : "",
-              page_number: response.data.reference_slide_page_number || 1,
-              slide_google_id: response.data.reference_slide_id,
-              slide_title: "", // This might not be stored, but that's okay
-              display: response.data.reference_slide_content
-            };
-            setReference(referenceData);
-            
-            // Also set the slide text array if available
-            if (response.data.slide_retrieval_range) {
-              setSlideTextArr(response.data.slide_retrieval_range);
-            }
-            
-            // Fetch the slide images if we have the reference slide
-            if (response.data.reference_slide_id && response.data.reference_slide_page_number) {
-              setIsImageLoading(true);
-              try {
-                const pageNumber = response.data.reference_slide_page_number;
-                const image = await handlePdfImage(pageNumber, response.data.reference_slide_id);
-                if (image) {
-                  setImages([image]);
-                }
-              } catch (error) {
-                console.error("Error loading reference image:", error);
-              } finally {
-                setIsImageLoading(false);
-              }
-            }
-          } else {
-            // No reference stored in latest feedback, but we have a cached answer
-            // Fetch reference materials for the current cached answer
-            const cachedAnswer = question_id ? (answers[question_id] || "") : "";
-            if (cachedAnswer && questionPreset?.options) {
-              console.log("No stored reference, fetching for cached answer:", cachedAnswer);
-              
-              // Find which option was selected
-              const selectedIndex = questionPreset.options.findIndex((opt: any) => {
-                const optionText = typeof opt === 'string' ? opt : opt.text;
-                return optionText === cachedAnswer;
-              });
-              
-              if (selectedIndex !== -1) {
-                // Find correct options for embedding
-                const correctOptions = questionPreset.options
-                  ?.map((opt: any, idx: number) => ({
-                    index: idx,
-                    text: typeof opt === 'string' ? opt : opt.text,
-                    isCorrect: typeof opt === 'object' ? opt.isCorrect : false
-                  }))
-                  .filter((opt: any) => opt.isCorrect)
-                  .map((opt: any) => opt.text);
-                
-                // Fetch relevant slides for the cached answer
-                setIsReferenceLoading(true);
-                setIsImageLoading(true);
-                await handleRetrieveForMCQ(correctOptions || []);
-              }
-            }
-          }
-        } else {
-          console.log("No previous feedback found for participant:", effectiveParticipantId);
-          
-          // Check if there's a cached answer even without feedback
-          const cachedAnswer = question_id ? (answers[question_id] || "") : "";
-          if (cachedAnswer && questionPreset?.options) {
-            console.log("Loading reference for cached answer (no feedback):", cachedAnswer);
-            
-            // Find which option was selected
-            const selectedIndex = questionPreset.options.findIndex((opt: any) => {
-              const optionText = typeof opt === 'string' ? opt : opt.text;
-              return optionText === cachedAnswer;
-            });
-            
-            if (selectedIndex !== -1) {
-              // Find correct options for embedding
-              const correctOptions = questionPreset.options
-                ?.map((opt: any, idx: number) => ({
-                  index: idx,
-                  text: typeof opt === 'string' ? opt : opt.text,
-                  isCorrect: typeof opt === 'object' ? opt.isCorrect : false
-                }))
-                .filter((opt: any) => opt.isCorrect)
-                .map((opt: any) => opt.text);
-              
-              // Fetch relevant slides for the cached answer
-              setIsReferenceLoading(true);
-              setIsImageLoading(true);
-              await handleRetrieveForMCQ(correctOptions || []);
-            }
-          }
-        }
-      } catch (error) {
-        console.error("Error fetching latest feedback:", error);
-      }
-    };
-    
-    fetchLatestFeedbackAndReferences();
-  }, [question_id, participantId, prolificPid, questionPreset]);
-
   const handlePdfImage = async (pageNumber: number, slideId: string) => {
     try {
       const response = await axios.post(
@@ -664,133 +580,65 @@ function PageChildren({
     e.target.style.height = `${e.target.scrollHeight}px`;
   }
 
-  const handleRetrieveForMCQ = async (correctOptions: string[]) => {
-    try {
-      // For MCQ, append the correct answer(s) to the question for better embedding
-      const questionWithAnswer = [
-        ...(questionPreset?.content || question),
-        { 
-          type: "text", 
-          content: correctOptions.length > 0 
-            ? `The correct answer is: ${correctOptions.join(', ')}`
-            : ""
-        }
-      ];
-      
-      const response = await axios.post("/api/embed", {
-        question_id: question_id || null,
-        question: questionWithAnswer,
-        slideIds: slide,
-        preferredInfoType: preferredInfoType,
-      });
-      const res = typeof response.data === "string" ? JSON.parse(response.data).result : response.data.result;
-      setReference(res[0]);
+  const applyReferenceFromRuntimeResponse = async (feedbackData: any) => {
+    const preferred = String(feedbackData?.preferred_info_type ?? preferredInfoType ?? "text").toLowerCase();
+    const runtimeReference = feedbackData?.reference && typeof feedbackData.reference === "object" ? feedbackData.reference : null;
+    const slideId = String(
+      runtimeReference?.slide_google_id ??
+      runtimeReference?.slide_id ??
+      feedbackData?.reference_slide_id ??
+      ""
+    ).trim();
+    const pageNumberRaw =
+      runtimeReference?.page_number ??
+      runtimeReference?.reference_slide_page_number ??
+      feedbackData?.reference_slide_page_number;
+    const pageNumber = typeof pageNumberRaw === "number" ? pageNumberRaw : Number(pageNumberRaw);
+    const imageText = String(
+      runtimeReference?.image_text ??
+      (preferred === "vision" ? feedbackData?.reference_slide_content : "") ??
+      ""
+    );
+    const text = String(runtimeReference?.text ?? feedbackData?.reference_slide_content ?? "");
+    const displayText = imageText.trim() || text.trim();
 
-      if (preferredInfoType === "vision" && res[0].image_text) {
-        setReference({ ...res[0], display: res[0].image_text.replace(/\n\s*\n+/g, "\n") });
-      } else if (res[0].text) {
-        setReference({ ...res[0], display: res[0].text });
-      } else {
-        setReference({ ...res[0], display: "EMPTY REFERENCE" });
-      }
-
-      setSlideTextArr(
-        res.map((item: Reference) => {
-          if (preferredInfoType === "vision" && item.image_text) return item.image_text;
-          if (item.text) return item.text;
-          alert(`${item.slide_title} unpublished!`);
-          return "";
-        })
-      );
-
-      // Fetch slide images for MCQ
-      let temp: string[] = [];
-      const page_number = res[0].page_number;
-      const startPage = page_number;
-      const endPage = page_number;
-      setTotalCount(endPage - startPage + 1);
-      setLoadedCount(0);
-
-      for (let i = startPage; i <= endPage; i++) {
-        const image: string | null = await handlePdfImage(i, res[0].slide_id);
-        if (image !== null) {
-          setLoadedCount((prevCount) => prevCount + 1);
-          temp = [...temp, image];
-        }
-      }
-
-      setImages(temp);
+    if (!slideId || !Number.isFinite(pageNumber) || pageNumber <= 0 || !displayText) {
+      setReference(undefined);
+      setImages(null);
+      setSlideTextArr([""]);
+      setTotalCount(-1);
+      setLoadedCount(-1);
       setIsImageLoading(false);
-      setIsReferenceLoading(false);
-    } catch (error) {
-      console.error("Error during retrieval:", error);
-      setIsImageLoading(false);
-      setIsReferenceLoading(false);
+      return;
     }
-  };
 
-  const handleRetrieve = async (): Promise<{ slide_text_arr: string[]; reference: Reference } | null> => {
-    try {
-      const response = await axios.post("/api/embed", {
-        question_id: question_id || null,
-        question: questionPreset?.content?.length ? questionPreset.content : question,
-        slideIds: slide,
-        preferredInfoType: preferredInfoType,
-      });
-      const res = typeof response.data === "string" ? JSON.parse(response.data).result : response.data.result;
-      setReference(res[0]);
+    const nextReference: Reference = {
+      ...(runtimeReference ?? {}),
+      page_number: pageNumber,
+      slide_google_id: slideId,
+      text,
+      image_text: imageText,
+      display: displayText,
+    };
+    setReference(nextReference);
 
-      if (preferredInfoType === "vision" && res[0].image_text) {
-        setReference({ ...res[0], display: res[0].image_text.replace(/\n\s*\n+/g, "\n") });
-      } else if (res[0].text) {
-        setReference({ ...res[0], display: res[0].text });
-      } else {
-        setReference({ ...res[0], display: "EMPTY REFERENCE" });
-      }
+    const retrievalRange = Array.isArray(feedbackData?.slide_retrieval_range)
+      ? feedbackData.slide_retrieval_range.filter((item: unknown): item is string => typeof item === "string")
+      : [];
+    setSlideTextArr(retrievalRange.length > 0 ? retrievalRange : [displayText]);
 
-      setSlideTextArr(
-        res.map((item: Reference) => {
-          if (preferredInfoType === "vision" && item.image_text) return item.image_text;
-          if (item.text) return item.text;
-          alert(`${item.slide_title} unpublished!`);
-          return "";
-        })
-      );
-
-      let temp: string[] = [];
-      const page_number = res[0].page_number;
-      const startPage = page_number;
-      const endPage = page_number;
-      setTotalCount(endPage - startPage + 1);
+    setIsImageLoading(true);
+    setTotalCount(1);
+    setLoadedCount(0);
+    const image = await handlePdfImage(pageNumber, slideId);
+    if (image) {
+      setImages([image]);
+      setLoadedCount(1);
+    } else {
+      setImages(null);
       setLoadedCount(0);
-
-      for (let i = startPage; i <= endPage; i++) {
-        const image: string | null = await handlePdfImage(i, res[0].slide_id);
-        if (image !== null) {
-          setLoadedCount((prevCount) => prevCount + 1);
-          temp = [...temp, image];
-        }
-      }
-
-      setImages(temp);
-      setIsImageLoading(false);
-      setIsReferenceLoading(false);
-
-      return {
-        slide_text_arr: res.map((item: Reference) => {
-          if (preferredInfoType === "vision" && item.image_text) return item.image_text;
-          if (item.text) return item.text;
-          alert(`${item.slide_title} unpublished!`);
-          return "";
-        }),
-        reference: res[0] as Reference,
-      };
-    } catch (error) {
-      console.error("Error fetching the result:", error);
-      setIsReferenceLoading(false);
-      setIsImageLoading(false);
-      return null;
     }
+    setIsImageLoading(false);
   };
 
   const recordResultToDatabase = async (payload: RecordResultInput) => {
@@ -892,7 +740,22 @@ function PageChildren({
       <ParticipantModal isOpen={!prolificPid && !participantId && !!course_version} />
 
       <section className="mb-3 rounded-xl border border-slate-200 bg-white px-4 py-3">
-        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Question</p>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Question</p>
+          {!isLtiMode ? (
+            <div className="flex items-center gap-2">
+              <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Test Learner ID</label>
+              <input
+                type="text"
+                value={testLearnerId}
+                onChange={(e) => setTestLearnerId(e.target.value)}
+                onBlur={() => setTestLearnerId((prev) => prev.trim() || fallbackLearnerId)}
+                className="w-64 rounded-lg border border-slate-200 bg-white px-2 py-1 font-mono text-xs text-slate-900 outline-none focus:border-slate-300"
+                placeholder="test_learner_xxx"
+              />
+            </div>
+          ) : null}
+        </div>
         <p className="mt-1 text-sm text-slate-900">{questionDisplayText}</p>
       </section>
 

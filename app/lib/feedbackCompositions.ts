@@ -50,7 +50,7 @@ export const createDefaultCompositionRule = (): FeedbackCompositionRule => ({
   slide_mode: 'most_relevant_slide_page',
 });
 
-const normalizeRule = (raw: unknown): FeedbackCompositionRule | null => {
+export const normalizeFeedbackCompositionRule = (raw: unknown): FeedbackCompositionRule | null => {
   if (!raw || typeof raw !== 'object') return null;
   const data = raw as Record<string, unknown>;
   const ruleId = typeof data.rule_id === 'string' && data.rule_id.trim() ? data.rule_id.trim() : createRuleId();
@@ -76,29 +76,129 @@ const normalizeRule = (raw: unknown): FeedbackCompositionRule | null => {
   };
 };
 
-const normalizeComposition = (raw: unknown): FeedbackComposition | null => {
+export const normalizeFeedbackComposition = (raw: unknown): FeedbackComposition | null => {
   if (!raw || typeof raw !== 'object') return null;
   const data = raw as Record<string, unknown>;
-  const compositionId = typeof data.composition_id === 'string' ? data.composition_id.trim() : '';
+  const compositionId = (
+    typeof data.composition_id === 'string'
+      ? data.composition_id
+      : typeof data.id === 'string'
+        ? data.id
+        : typeof data.compositionId === 'string'
+          ? data.compositionId
+          : ''
+  ).trim();
   if (!compositionId) return null;
 
-  const rules = Array.isArray(data.rules)
-    ? data.rules.map(normalizeRule).filter((rule): rule is FeedbackCompositionRule => Boolean(rule))
-    : [];
+  const rawRules = Array.isArray(data.rules)
+    ? data.rules
+    : Array.isArray(data.composition_rules)
+      ? data.composition_rules
+      : Array.isArray(data.rule_list)
+        ? data.rule_list
+        : [];
+  const rules = rawRules
+    .map(normalizeFeedbackCompositionRule)
+    .filter((rule): rule is FeedbackCompositionRule => Boolean(rule));
+
+  const title = (
+    typeof data.title === 'string'
+      ? data.title
+      : typeof data.name === 'string'
+        ? data.name
+        : compositionId
+  ).trim();
+
+  const description = (
+    typeof data.description === 'string'
+      ? data.description
+      : typeof data.desc === 'string'
+        ? data.desc
+        : ''
+  ).trim();
+
+  const questionId = (
+    typeof data.question_id === 'string'
+      ? data.question_id
+      : typeof data.questionId === 'string'
+        ? data.questionId
+        : ''
+  ).trim();
+
+  const rawQuestionType =
+    data.question_type === 'mcq' || data.question_type === 'oeq'
+      ? data.question_type
+      : data.questionType === 'mcq' || data.questionType === 'oeq'
+        ? data.questionType
+        : '';
+
+  const createdAt = (
+    typeof data.created_at === 'string'
+      ? data.created_at
+      : typeof data.createdAt === 'string'
+        ? data.createdAt
+        : ''
+  ) || nowIso();
+
+  const updatedAt = (
+    typeof data.updated_at === 'string'
+      ? data.updated_at
+      : typeof data.updatedAt === 'string'
+        ? data.updatedAt
+        : ''
+  ) || nowIso();
 
   return {
     composition_id: compositionId,
-    title: typeof data.title === 'string' && data.title.trim() ? data.title.trim() : compositionId,
-    description: typeof data.description === 'string' ? data.description.trim() : '',
-    question_id: typeof data.question_id === 'string' ? data.question_id.trim() : '',
-    question_type:
-      data.question_type === 'mcq' || data.question_type === 'oeq'
-        ? data.question_type
-        : '',
+    title: title || compositionId,
+    description,
+    question_id: questionId,
+    question_type: rawQuestionType,
     rules: rules.length > 0 ? rules : [createDefaultCompositionRule()],
-    created_at: typeof data.created_at === 'string' && data.created_at ? data.created_at : nowIso(),
-    updated_at: typeof data.updated_at === 'string' && data.updated_at ? data.updated_at : nowIso(),
+    created_at: createdAt,
+    updated_at: updatedAt,
   };
+};
+
+const collectCompositionCandidates = (raw: unknown): unknown[] => {
+  if (!raw || typeof raw !== 'object') {
+    return Array.isArray(raw) ? raw : [];
+  }
+  if (Array.isArray(raw)) return raw;
+  const record = raw as Record<string, unknown>;
+  const listFields = [
+    record.items,
+    record.data,
+    record.compositions,
+    record.feedback_compositions,
+    record.results,
+    record.rows,
+  ];
+  for (const candidate of listFields) {
+    if (Array.isArray(candidate)) return candidate;
+  }
+  const singleFields = [record.item, record.composition, record.feedback_composition, record.result];
+  for (const candidate of singleFields) {
+    if (candidate && typeof candidate === 'object') return [candidate];
+  }
+  if (typeof record.composition_id === 'string' || typeof record.id === 'string') return [record];
+  return [];
+};
+
+export const parseFeedbackCompositionsResponse = (raw: unknown): FeedbackComposition[] => {
+  const candidates = collectCompositionCandidates(raw);
+  const parsed = candidates
+    .map(normalizeFeedbackComposition)
+    .filter((composition): composition is FeedbackComposition => Boolean(composition));
+
+  // Deduplicate by composition_id while preserving order from server response.
+  const seen = new Set<string>();
+  return parsed.filter((item) => {
+    const key = item.composition_id.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 };
 
 export const loadFeedbackCompositions = (): FeedbackComposition[] => {
@@ -109,7 +209,7 @@ export const loadFeedbackCompositions = (): FeedbackComposition[] => {
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
     return parsed
-      .map(normalizeComposition)
+      .map(normalizeFeedbackComposition)
       .filter((composition): composition is FeedbackComposition => Boolean(composition));
   } catch {
     return [];
