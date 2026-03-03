@@ -301,6 +301,7 @@ async def lti_login(request: Request, settings: Settings = Depends(get_settings)
         state=state,
         nonce=nonce,
     )
+    print("LTI Go to:", redirect_url)
     # 303 like the Simon test (302 also acceptable, but match the test)
     return RedirectResponse(url=redirect_url, status_code=303)
 
