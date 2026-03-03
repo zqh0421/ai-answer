@@ -301,7 +301,26 @@ async def lti_login(request: Request, settings: Settings = Depends(get_settings)
         state=state,
         nonce=nonce,
     )
-    print("LTI Go to:", repr(redirect_url))
+    print(
+        "[LTI_LOGIN_REDIRECT] "
+        + json.dumps(
+            {
+                "iss": iss,
+                "client_id": client_id,
+                "login_hint": login_hint,
+                "target_link_uri": target_link_uri,
+                "lti_message_hint": params.get("lti_message_hint"),
+                "state": state,
+                "nonce": nonce,
+                "redirect_url": redirect_url,
+                "status_code": 303,
+            },
+            ensure_ascii=True,
+            default=str,
+        )
+    )
+    # 303 like the Simon test (302 also acceptable, but match the test)
+    return RedirectResponse(url=redirect_url, status_code=303)
 
 
 @router.api_route("/launch", methods=["GET", "POST"])
