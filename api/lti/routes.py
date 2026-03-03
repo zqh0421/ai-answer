@@ -454,8 +454,6 @@ async def lti_launch(request: Request, settings: Settings = Depends(get_settings
             redirect_source = "claim_target_link_uri"
         ui_url = _append_query_params(
             ui_url,
-            lti_mode="deep_link",
-            launch_id=session_id,
             lti_launch_id=session_id,
             lti_user_id=str(sub) if sub else None,
             lti_context_id=str(context_id) if context_id else None,
