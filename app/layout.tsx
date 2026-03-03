@@ -40,7 +40,9 @@ export default function RootLayout({
           </main>
 
           {/* Footer */}
-          <Footer />
+          <div className="hidden md:block">
+            <Footer />
+          </div>
         </div>
       </body>
     </html>

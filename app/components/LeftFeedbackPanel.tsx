@@ -89,7 +89,7 @@ export default function LeftFeedbackPanel({
 
   return (
     <motion.div
-      className="col-span-6 space-y-6"
+      className="order-2 col-span-11 space-y-6 lg:order-1 lg:col-span-6"
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.6 }}

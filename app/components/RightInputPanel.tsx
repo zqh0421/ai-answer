@@ -76,12 +76,12 @@ export default function RightInputPanel({
 
   return (
     <motion.div
-      className="col-span-5 z-1"
+      className="z-1 order-1 col-span-11 lg:order-2 lg:col-span-5"
       initial={{ opacity: 0, x: 20 }}
       animate={{ opacity: 1, x: 0 }}
       transition={{ duration: 0.6, delay: 0.2 }}
     >
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 sticky top-[75px] z-0">
+      <div className="z-0 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:sticky lg:top-[75px] lg:p-6">
         {/* Tabs Header */}
         <TabNavigation
           activeTab={activeTab}

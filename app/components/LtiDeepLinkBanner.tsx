@@ -8,7 +8,9 @@ const LTI_MODE_KEY = "lti_mode";
 const DEEP_LINK_MODE = "deep_link";
 const LEARN_MODE = "learn";
 const LAUNCH_ID_KEY = "launch_id";
+const COMPOSITION_ID_KEY = "composition_id";
 const DEEP_LINK_LAUNCH_ID_STORAGE_KEY = "lti_deep_link_launch_id";
+const DEEP_LINK_COMPOSITION_ID_STORAGE_KEY = "lti_deep_link_composition_id";
 
 export default function LtiDeepLinkBanner() {
   const pathname = usePathname();
@@ -19,6 +21,7 @@ export default function LtiDeepLinkBanner() {
 
   const queryMode = searchParams.get(LTI_MODE_KEY);
   const launchId = searchParams.get(LAUNCH_ID_KEY);
+  const compositionId = searchParams.get(COMPOSITION_ID_KEY);
   const isDeepLinkMode = useMemo(() => queryMode === DEEP_LINK_MODE, [queryMode]);
 
   useEffect(() => {
@@ -42,6 +45,16 @@ export default function LtiDeepLinkBanner() {
     }
   }, [launchId, queryMode]);
 
+  useEffect(() => {
+    if (queryMode !== DEEP_LINK_MODE) return;
+    if (!compositionId) return;
+    try {
+      window.sessionStorage.setItem(DEEP_LINK_COMPOSITION_ID_STORAGE_KEY, compositionId);
+    } catch (storageError) {
+      console.warn("[LTI deep-link] failed to persist composition_id in sessionStorage", storageError);
+    }
+  }, [compositionId, queryMode]);
+
   const handleSelectForLms = async () => {
     setError(null);
     setIsSubmitting(true);
@@ -50,6 +63,13 @@ export default function LtiDeepLinkBanner() {
       const deepLinkLaunchId = launchId || (() => {
         try {
           return window.sessionStorage.getItem(DEEP_LINK_LAUNCH_ID_STORAGE_KEY) || "";
+        } catch {
+          return "";
+        }
+      })();
+      const selectedCompositionId = compositionId || (() => {
+        try {
+          return window.sessionStorage.getItem(DEEP_LINK_COMPOSITION_ID_STORAGE_KEY) || "";
         } catch {
           return "";
         }
@@ -65,6 +85,9 @@ export default function LtiDeepLinkBanner() {
           const resourceUrl = new URL(window.location.href);
           resourceUrl.searchParams.set(LTI_MODE_KEY, LEARN_MODE);
           resourceUrl.searchParams.delete(LAUNCH_ID_KEY);
+          if (selectedCompositionId) {
+            resourceUrl.searchParams.set(COMPOSITION_ID_KEY, selectedCompositionId);
+          }
           return resourceUrl.toString();
         })(),
         title: buildDeepLinkPayloadTitle({

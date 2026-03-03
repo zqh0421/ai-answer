@@ -23,6 +23,7 @@ interface QuestionContentItem {
 
 interface QuestionRow {
   question_id: string;
+  id?: string;
   type?: string;
   question_type?: string;
   content?: QuestionContentItem[];
@@ -41,7 +42,9 @@ interface QuestionRow {
 type QuestionListPayload = {
   items?: QuestionRow[];
   questions?: QuestionRow[];
-  data?: QuestionRow[] | { items?: QuestionRow[]; questions?: QuestionRow[] };
+  rows?: QuestionRow[];
+  list?: QuestionRow[];
+  data?: QuestionRow[] | { items?: QuestionRow[]; questions?: QuestionRow[]; rows?: QuestionRow[]; list?: QuestionRow[] };
   results?: QuestionRow[];
 };
 
@@ -50,6 +53,7 @@ type SortDirection = 'asc' | 'desc';
 type SlideModeKey = 'no_slide' | 'full_slide' | 'retrieved_slide_page';
 
 const PAGE_SIZE = 20;
+const LTI_QUESTION_ENDPOINT = '/api/questions/public';
 
 const compositionSlideModeToLegacyMode = (value?: string): SlideModeKey => {
   if (value === 'no_slide') return 'no_slide';
@@ -80,27 +84,41 @@ const getQuestionImagePreview = (question: QuestionRow) =>
 
 const formatCreatedAt = (value?: string) => formatDateTimeForUser(value);
 
-const normalizeQuestionRow = (raw: any): QuestionRow => {
-  const contentFromBlocks = Array.isArray(raw?.content_blocks)
-    ? raw.content_blocks
-        .map((block: any) => ({
-          type: String(block?.type ?? block?.block_type ?? 'text'),
-          content: String(block?.content ?? block?.text_content ?? block?.media_url ?? ''),
-        }))
-        .filter((item: QuestionContentItem) => Boolean(item.content))
-    : [];
-  const content = Array.isArray(raw?.content) ? raw.content : contentFromBlocks;
-  const questionType = String(raw?.question_type ?? raw?.type ?? '').trim();
+const toRecordArray = (value: unknown): Array<Record<string, unknown>> =>
+  Array.isArray(value) ? value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object') : [];
+
+const normalizeQuestionRow = (raw: unknown): QuestionRow => {
+  const record = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  const contentFromQuestionContent = toRecordArray(record.question_content)
+    .map((item) => ({
+      type: String(item.type ?? item.content_type ?? 'text'),
+      content: String(item.content ?? item.value ?? ''),
+    }))
+    .filter((item: QuestionContentItem) => Boolean(item.content));
+  const contentFromBlocks = toRecordArray(record.content_blocks)
+    .map((block) => ({
+      type: String(block.type ?? block.block_type ?? 'text'),
+      content: String(block.content ?? block.text_content ?? block.media_url ?? ''),
+    }))
+    .filter((item: QuestionContentItem) => Boolean(item.content));
+  const content = Array.isArray(record.content)
+    ? (record.content as QuestionContentItem[])
+    : contentFromQuestionContent.length > 0
+      ? contentFromQuestionContent
+      : contentFromBlocks;
+  const questionType = String(record.question_type ?? record.type ?? '').trim();
+  const questionId = String(record.question_id ?? record.questionId ?? record.id ?? '').trim();
 
   return {
-    question_id: String(raw?.question_id ?? ''),
+    question_id: questionId,
+    id: String(record.id ?? questionId),
     question_type: questionType,
-    type: String(raw?.type ?? questionType),
+    type: String(record.type ?? record.questionType ?? questionType).trim(),
     content,
-    content_blocks: Array.isArray(raw?.content_blocks) ? raw.content_blocks : [],
-    objective: Array.isArray(raw?.objective) ? raw.objective : [],
-    slide_ids: Array.isArray(raw?.slide_ids) ? raw.slide_ids : [],
-    created_at: typeof raw?.created_at === 'string' ? raw.created_at : undefined,
+    content_blocks: Array.isArray(record.content_blocks) ? (record.content_blocks as QuestionRow['content_blocks']) : [],
+    objective: Array.isArray(record.objective) ? (record.objective as string[]) : [],
+    slide_ids: Array.isArray(record.slide_ids) ? (record.slide_ids as string[]) : [],
+    created_at: typeof record.created_at === 'string' ? record.created_at : undefined,
   };
 };
 
@@ -110,11 +128,16 @@ const parsePublicQuestionsResponse = (payload: unknown): QuestionRow[] => {
   const data = payload as QuestionListPayload;
   if (Array.isArray(data.items)) return data.items.map(normalizeQuestionRow).filter((item) => item.question_id);
   if (Array.isArray(data.questions)) return data.questions.map(normalizeQuestionRow).filter((item) => item.question_id);
+  if (Array.isArray(data.rows)) return data.rows.map(normalizeQuestionRow).filter((item) => item.question_id);
+  if (Array.isArray(data.list)) return data.list.map(normalizeQuestionRow).filter((item) => item.question_id);
   if (Array.isArray(data.results)) return data.results.map(normalizeQuestionRow).filter((item) => item.question_id);
   if (Array.isArray(data.data)) return data.data.map(normalizeQuestionRow).filter((item) => item.question_id);
   if (data.data && typeof data.data === 'object') {
-    if (Array.isArray(data.data.items)) return data.data.items.map(normalizeQuestionRow).filter((item) => item.question_id);
-    if (Array.isArray(data.data.questions)) return data.data.questions.map(normalizeQuestionRow).filter((item) => item.question_id);
+    const nestedData = data.data as { items?: unknown; questions?: unknown; rows?: unknown; list?: unknown };
+    if (Array.isArray(nestedData.items)) return nestedData.items.map(normalizeQuestionRow).filter((item) => item.question_id);
+    if (Array.isArray(nestedData.questions)) return nestedData.questions.map(normalizeQuestionRow).filter((item) => item.question_id);
+    if (Array.isArray(nestedData.rows)) return nestedData.rows.map(normalizeQuestionRow).filter((item) => item.question_id);
+    if (Array.isArray(nestedData.list)) return nestedData.list.map(normalizeQuestionRow).filter((item) => item.question_id);
   }
   return [];
 };
@@ -125,7 +148,6 @@ export default function LtiQuestionsPage() {
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [typeFilter, setTypeFilter] = useState<'all' | string>('all');
   const [sortKey, setSortKey] = useState<SortKey>('created_at');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   const [currentPage, setCurrentPage] = useState(1);
@@ -136,8 +158,6 @@ export default function LtiQuestionsPage() {
   const ltiLaunchId = searchParams.get('lti_launch_id');
   const ltiUserId = searchParams.get('lti_user_id');
   const defaultCompositionId = searchParams.get('composition_id') || '';
-  const queryLearnerId = searchParams.get('learner_id');
-  const [learnerIdInput, setLearnerIdInput] = useState(queryLearnerId || ltiUserId || '');
 
   useEffect(() => {
     document.title = buildStaticPageTitle('LTI Question Library');
@@ -186,16 +206,17 @@ export default function LtiQuestionsPage() {
     setLoading(true);
     setLoadError(null);
     try {
-      const res = await axios.get('/api/questions/public');
+      const res = await axios.get(LTI_QUESTION_ENDPOINT);
       const parsed = parsePublicQuestionsResponse(res.data);
       setQuestions(parsed);
       if (parsed.length === 0) {
-        setLoadError('No public questions were returned (empty response).');
+        setLoadError('No questions were returned (empty response).');
       }
     } catch (error) {
       console.error('Error fetching questions:', error);
       setQuestions([]);
-      setLoadError('Failed to load public questions.');
+      const message = error instanceof Error ? error.message : String(error);
+      setLoadError(`Failed to load questions from ${LTI_QUESTION_ENDPOINT}. ${message}`);
     } finally {
       setLoading(false);
     }
@@ -209,14 +230,13 @@ export default function LtiQuestionsPage() {
 
   const filteredQuestions = useMemo(() => {
     return questions.filter((q) => {
-      if (typeFilter !== 'all' && (q.type ?? '') !== typeFilter) return false;
       if (!normalizedSearch) return true;
       const id = String(q.question_id ?? '').toLowerCase();
       const type = String(q.type ?? '').toLowerCase();
       const preview = getQuestionTextPreview(q).toLowerCase();
       return id.includes(normalizedSearch) || type.includes(normalizedSearch) || preview.includes(normalizedSearch);
     });
-  }, [questions, normalizedSearch, typeFilter]);
+  }, [questions, normalizedSearch]);
 
   const sortedQuestions = useMemo(() => {
     const list = [...filteredQuestions];
@@ -254,10 +274,6 @@ export default function LtiQuestionsPage() {
   const pagedQuestions = sortedQuestions.slice(pageStart, pageStart + PAGE_SIZE);
   const paginationTokens = getPaginationTokens(currentPage, totalPages);
   const sortIndicator = (key: SortKey) => (sortKey !== key ? '↕' : sortDirection === 'asc' ? '↑' : '↓');
-  const typeOptions = useMemo(
-    () => ['all', ...Array.from(new Set(questions.map((q) => q.type).filter(Boolean) as string[])).sort()],
-    [questions]
-  );
   const handleSort = (key: SortKey) => {
     if (sortKey === key) {
       setSortDirection((prev) => (prev === 'asc' ? 'desc' : 'asc'));
@@ -299,8 +315,6 @@ export default function LtiQuestionsPage() {
     const compositionId = getSelectedCompositionId(question.question_id);
     const params = new URLSearchParams();
     if (compositionId) params.set('composition_id', compositionId);
-    const normalizedLearnerId = learnerIdInput.trim();
-    if (normalizedLearnerId) params.set('learner_id', normalizedLearnerId);
     if (isDeepLinkMode) params.set('lti_mode', 'deep_link');
     if (launchId) params.set('launch_id', launchId);
     if (ltiLaunchId) params.set('lti_launch_id', ltiLaunchId);
@@ -337,8 +351,8 @@ export default function LtiQuestionsPage() {
             </div>
           )}
           toolbarRight={(
-            <>
-              <div className="relative w-full md:w-96">
+            <div className="flex w-full min-w-0 flex-wrap items-stretch gap-2 min-[900px]:justify-end">
+              <div className="relative w-full min-[900px]:w-96">
                 <input
                   type="text"
                   value={searchQuery}
@@ -353,44 +367,23 @@ export default function LtiQuestionsPage() {
                   ⌕
                 </span>
               </div>
-              <select
-                value={typeFilter}
-                onChange={(e) => {
-                  setTypeFilter(e.target.value);
-                  setCurrentPage(1);
-                }}
-                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-slate-300"
-              >
-                {typeOptions.map((option) => (
-                  <option key={option} value={option}>
-                    {option === 'all' ? 'All types' : option}
-                  </option>
-                ))}
-              </select>
-              <input
-                type="text"
-                value={learnerIdInput}
-                onChange={(e) => setLearnerIdInput(e.target.value)}
-                placeholder="learner_id (optional)"
-                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none placeholder:text-slate-400 focus:border-slate-300 md:w-56"
-              />
               <ActionButton
                 onClick={() => fetchQuestions()}
                 variant="neutral"
                 size="sm"
-                className="rounded-xl"
+                className="w-full rounded-xl min-[700px]:w-auto"
               >
                 {loading ? 'Refreshing...' : 'Refresh'}
               </ActionButton>
-            </>
+            </div>
           )}
           table={(
             <div className="overflow-hidden rounded-2xl border border-slate-200">
               <div className="overflow-x-auto">
-                <table className="min-w-full divide-y divide-slate-200 text-sm">
+                <table className="min-w-full table-fixed divide-y divide-slate-200 text-sm">
                   <thead className="bg-slate-50">
                     <tr>
-                      <th className="w-[14%] whitespace-nowrap px-4 py-3 text-left font-semibold text-slate-700">
+                      <th className="w-[18%] whitespace-nowrap px-4 py-3 text-left font-semibold text-slate-700">
                         <button
                           type="button"
                           onClick={() => handleSort('type')}
@@ -410,7 +403,7 @@ export default function LtiQuestionsPage() {
                           <span className="text-slate-400">{sortIndicator('preview')}</span>
                         </button>
                       </th>
-                      <th className="w-[1%] whitespace-nowrap px-4 py-3 text-left font-semibold text-slate-700">
+                      <th className="hidden w-[14%] whitespace-nowrap px-4 py-3 text-left font-semibold text-slate-700 lg:table-cell">
                         <button
                           type="button"
                           onClick={() => handleSort('created_at')}
@@ -420,7 +413,7 @@ export default function LtiQuestionsPage() {
                           <span className="text-slate-400">{sortIndicator('created_at')}</span>
                         </button>
                       </th>
-                      <th className="w-[1%] whitespace-nowrap px-4 py-3 text-right font-semibold text-slate-700">Actions</th>
+                      <th className="w-[28%] whitespace-nowrap px-4 py-3 text-right font-semibold text-slate-700">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 bg-white">
@@ -448,18 +441,18 @@ export default function LtiQuestionsPage() {
                                 </div>
                               ) : null}
                               <div className="min-w-0">
-                                <p className="line-clamp-2 break-words text-sm text-slate-700">
+                                <p className="line-clamp-3 break-words text-sm text-slate-700">
                                   {getQuestionTextPreview(question)}
                                 </p>
                               </div>
                             </div>
                           </td>
-                          <td className="px-4 py-3 align-middle whitespace-nowrap text-slate-600">
+                          <td className="hidden px-4 py-3 align-middle whitespace-nowrap text-slate-600 lg:table-cell">
                             {formatCreatedAt(question.created_at)}
                           </td>
                           <td className="px-4 py-3 align-middle">
-                            <div className="flex min-w-[360px] flex-col items-end gap-2">
-                              <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
+                            <div className="flex min-w-0 flex-col items-stretch gap-2 lg:items-end">
+                              <div className="flex w-full flex-col gap-2 xl:flex-row xl:items-center xl:justify-end">
                                 <select
                                   value={getSelectedCompositionId(question.question_id)}
                                   onChange={(e) =>
@@ -468,7 +461,7 @@ export default function LtiQuestionsPage() {
                                       [question.question_id]: e.target.value,
                                     }))
                                   }
-                                  className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-700 shadow-sm outline-none focus:border-slate-300 sm:w-[220px]"
+                                  className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-700 shadow-sm outline-none focus:border-slate-300 xl:w-[220px]"
                                   >
                                     <option value="">No Feedback</option>
                                     {dropdownCompositions.map((composition) => (
@@ -480,7 +473,7 @@ export default function LtiQuestionsPage() {
                                 <Link
                                   href={getQuestionPlayerHref(question)}
                                 >
-                                  <ActionButton variant="ghost" size="sm" className="w-full rounded-lg sm:w-auto">
+                                  <ActionButton variant="ghost" size="sm" className="w-full rounded-lg xl:w-auto">
                                     Open
                                   </ActionButton>
                                 </Link>
@@ -513,7 +506,7 @@ export default function LtiQuestionsPage() {
           summary={(
             <p className="text-center text-sm text-slate-500">
               Showing {pagedQuestions.length} item{pagedQuestions.length === 1 ? '' : 's'} of {sortedQuestions.length} filtered
-              {' '}({normalizedSearch || typeFilter !== 'all' ? 'filters active, ' : ''}page {currentPage} of {totalPages}, {PAGE_SIZE} per page, {compositions.length} composition{compositions.length === 1 ? '' : 's'})
+              {' '}({normalizedSearch ? 'filters active, ' : ''}page {currentPage} of {totalPages}, {PAGE_SIZE} per page, {compositions.length} composition{compositions.length === 1 ? '' : 's'})
             </p>
           )}
         />
