@@ -3,7 +3,7 @@ from __future__ import annotations
 import secrets
 from typing import Any, Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
@@ -388,6 +388,7 @@ def delete_feedback_composition(
 
 @router.get("/feedback-compositions/{composition_id}/resolve")
 def resolve_feedback_composition(
+    request: Request,
     composition_id: str,
     learner_id: Optional[str] = Query(default=None),
     question_id: str = Query(..., min_length=1, max_length=64),
@@ -402,6 +403,16 @@ def resolve_feedback_composition(
         launch_id=launch_id,
         lti_launch_id=lti_launch_id,
         question_type=question_type,
+    )
+    print(
+        "[FEEDBACK_COMPOSITION_RESOLVE_REQUEST] "
+        + str(
+            {
+                "composition_id": composition_id,
+                "query_params": dict(request.query_params),
+                "resolved_query": query.model_dump(),
+            }
+        )
     )
     final_learner_id = _coerce_learner_id(query.learner_id)
     row = db.execute(

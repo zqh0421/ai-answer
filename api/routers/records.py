@@ -2,11 +2,13 @@ import json
 from urllib.parse import parse_qsl, urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from .. import models, schema
 from ..config import Settings, get_settings
 from ..dependencies import get_db
+from ..services.semantic_schema import generate_short_id
 from ..tags import Tags
 from ..schema.questionSchema import Question
 from ..lti.routes import try_submit_lti_grade_for_launch
@@ -107,13 +109,56 @@ def _extract_lti_context_from_request(request: Request) -> dict[str, str]:
     return values
 
 
+def _next_feedback_record_result_id(db: Session) -> str:
+    for _ in range(50):
+        candidate = generate_short_id("rr")
+        exists = db.execute(
+            text("SELECT 1 FROM feedback_record_result WHERE record_result_id = :rid LIMIT 1"),
+            {"rid": candidate},
+        ).scalar()
+        if not exists:
+            return candidate
+    raise RuntimeError("Unable to generate unique feedback_record_result.record_result_id")
+
+
+def _semantic_question_version_id(db: Session, question_id: str) -> str | None:
+    row = db.execute(
+        text(
+            """
+            SELECT current_version_id
+            FROM content_question
+            WHERE question_id = :question_id
+            LIMIT 1
+            """
+        ),
+        {"question_id": question_id},
+    ).scalar()
+    return str(row) if row else None
+
+
 def _attempt_lti_grade_passback(
     *,
     result: models.RecordResultModel,
     db: Session,
     settings: Settings,
 ) -> dict | None:
-    mcq_score = _resolve_mcq_score(db, result.question_id, result.answer)
+    try:
+        mcq_score = _resolve_mcq_score(db, result.question_id, result.answer)
+    except Exception as e:
+        print(
+            "[LTI_AUTO_GRADE_FROM_RECORD_SCORE_RESOLVE_ERROR] "
+            + json.dumps(
+                {
+                    "error": str(e),
+                    "question_id": result.question_id,
+                    "learner_id": result.learner_id,
+                    "lti_launch_id": getattr(result, "lti_launch_id", None),
+                },
+                ensure_ascii=True,
+                default=str,
+            )
+        )
+        mcq_score = None
     inferred_score_given = mcq_score[0] if mcq_score else None
     inferred_score_maximum = mcq_score[1] if mcq_score else None
     score_given = result.score_given if result.score_given is not None else inferred_score_given
@@ -235,42 +280,144 @@ def record_result(
                 }
             )
 
-        record_data = {
-            "learner_id": result.learner_id,
-            "study_id": result.study_id,
-            "session_id": result.session_id,
-            "question_id": result.question_id,
-            "answer": result.answer,
-            "preferred_info_type": result.preferred_info_type,
-            "prompt_engineering_method": result.prompt_engineering_method,
-            "feedback_framework": result.feedback_framework,
-            "feedback": result.feedback,
-            "system_total_response_time": result.system_total_response_time,
-            "submission_time": result.submission_time,
-        }
+        is_semantic_question = str(result.question_id).startswith("qn_")
+        created_record_id: str | int
 
-        if result.reference_slide_id:
-            record_data.update(
+        if is_semantic_question:
+            question_version_id = _semantic_question_version_id(db, result.question_id)
+            if not question_version_id:
+                raise HTTPException(status_code=400, detail="semantic question current_version_id not found")
+
+            inferred_score = _resolve_mcq_score(db, result.question_id, result.answer)
+            score_given = result.score_given if result.score_given is not None else (inferred_score[0] if inferred_score else None)
+            score_maximum = result.score_maximum if result.score_maximum is not None else (inferred_score[1] if inferred_score else None)
+            previous_attempts = db.execute(
+                text(
+                    """
+                    SELECT COUNT(*)::INT
+                    FROM feedback_record_result
+                    WHERE question_id = :question_id
+                      AND participant_id = :participant_id
+                    """
+                ),
+                {"question_id": result.question_id, "participant_id": result.learner_id},
+            ).scalar()
+            attempt_count = int(previous_attempts or 0) + 1
+            semantic_record_id = _next_feedback_record_result_id(db)
+
+            db.execute(
+                text(
+                    """
+                    INSERT INTO feedback_record_result (
+                        record_result_id,
+                        participant_id,
+                        question_id,
+                        question_version_id,
+                        answer_text,
+                        attempt_count,
+                        feedback_text,
+                        structured_feedback_text,
+                        score_given_raw,
+                        score_given,
+                        score_maximum,
+                        preferred_info_type,
+                        generation_strategy,
+                        feedback_framework,
+                        system_total_response_time_ms
+                    )
+                    VALUES (
+                        :record_result_id,
+                        :participant_id,
+                        :question_id,
+                        :question_version_id,
+                        :answer_text,
+                        :attempt_count,
+                        :feedback_text,
+                        :structured_feedback_text,
+                        :score_given_raw,
+                        :score_given,
+                        :score_maximum,
+                        :preferred_info_type,
+                        :generation_strategy,
+                        :feedback_framework,
+                        :system_total_response_time_ms
+                    )
+                    """
+                ),
                 {
-                    "reference_slide_id": result.reference_slide_id,
-                    "reference_slide_content": result.reference_slide_content,
-                    "reference_slide_page_number": result.reference_slide_page_number,
-                    "slide_retrieval_range": result.slide_retrieval_range,
-                }
+                    "record_result_id": semantic_record_id,
+                    "participant_id": result.learner_id,
+                    "question_id": result.question_id,
+                    "question_version_id": question_version_id,
+                    "answer_text": result.answer,
+                    "attempt_count": attempt_count,
+                    "feedback_text": result.feedback,
+                    "structured_feedback_text": result.feedback,
+                    "score_given_raw": score_given,
+                    "score_given": score_given,
+                    "score_maximum": score_maximum,
+                    "preferred_info_type": result.preferred_info_type,
+                    "generation_strategy": result.prompt_engineering_method,
+                    "feedback_framework": result.feedback_framework,
+                    "system_total_response_time_ms": result.system_total_response_time,
+                },
             )
+            db.commit()
+            created_record_id = semantic_record_id
+        else:
+            record_data = {
+                "learner_id": result.learner_id,
+                "study_id": result.study_id,
+                "session_id": result.session_id,
+                "question_id": result.question_id,
+                "answer": result.answer,
+                "preferred_info_type": result.preferred_info_type,
+                "prompt_engineering_method": result.prompt_engineering_method,
+                "feedback_framework": result.feedback_framework,
+                "feedback": result.feedback,
+                "system_total_response_time": result.system_total_response_time,
+                "submission_time": result.submission_time,
+            }
 
-        db_result = schema.RecordResult(**record_data)
-        db.add(db_result)
-        db.commit()
-        db.refresh(db_result)
+            if result.reference_slide_id:
+                record_data.update(
+                    {
+                        "reference_slide_id": result.reference_slide_id,
+                        "reference_slide_content": result.reference_slide_content,
+                        "reference_slide_page_number": result.reference_slide_page_number,
+                        "slide_retrieval_range": result.slide_retrieval_range,
+                    }
+                )
 
-        lti_grade = _attempt_lti_grade_passback(
-            result=result,
-            db=db,
-            settings=settings,
-        )
+            db_result = schema.RecordResult(**record_data)
+            db.add(db_result)
+            db.commit()
+            db.refresh(db_result)
+            created_record_id = db_result.id
 
-        response = {"id": db_result.id, "message": "Record created successfully"}
+        try:
+            lti_grade = _attempt_lti_grade_passback(
+                result=result,
+                db=db,
+                settings=settings,
+            )
+        except Exception as e:
+            print(
+                "[LTI_AUTO_GRADE_FROM_RECORD_UNCAUGHT_ERROR] "
+                + json.dumps(
+                    {
+                        "error": str(e),
+                        "question_id": result.question_id,
+                        "learner_id": result.learner_id,
+                        "lti_launch_id": getattr(result, "lti_launch_id", None),
+                    },
+                    ensure_ascii=True,
+                    default=str,
+                )
+            )
+            lti_grade = {"ok": False, "error": str(e)}
+
+        response = {"id": created_record_id, "message": "Record created successfully"}
         if lti_grade is not None:
             response["lti_grade"] = lti_grade
         return response
