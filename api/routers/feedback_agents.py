@@ -59,6 +59,18 @@ class AgentCreateRequest(BaseModel):
     model: Optional[str] = Field(default=None, max_length=100)
     prompt_text: Optional[str] = None
     llm_params: Optional[dict[str, Any]] = None
+    # Question type scope for this agent.
+    apply_question_type: Literal[
+        "single_choice",
+        "multi_choice",
+        "dropdown",
+        "true_false",
+        "free_text",
+        "essay",
+        "all",
+    ] = "all"
+    if_score: bool = False
+    score_ai_agent_id: Optional[str] = Field(default=None, min_length=16, max_length=16)
     access_scope: Literal["private", "public"] = "private"
     created_by: str = Field(min_length=16, max_length=16)
     inputs: list[AgentInputIn] = Field(default_factory=list)
@@ -75,6 +87,15 @@ def _validate_create_payload(payload: AgentCreateRequest) -> None:
             raise HTTPException(status_code=400, detail="human agents cannot set prompt_text")
         if payload.is_structured:
             raise HTTPException(status_code=400, detail="human agents cannot set is_structured=true")
+        if payload.if_score and not payload.score_ai_agent_id:
+            raise HTTPException(status_code=400, detail="score_ai_agent_id is required when if_score=true")
+        if not payload.if_score and payload.score_ai_agent_id:
+            raise HTTPException(status_code=400, detail="score_ai_agent_id must be null when if_score=false")
+    else:
+        if payload.if_score:
+            raise HTTPException(status_code=400, detail="if_score is only supported for human agents")
+        if payload.score_ai_agent_id:
+            raise HTTPException(status_code=400, detail="score_ai_agent_id is only supported for human agents")
     if payload.llm_params is not None and payload.role != "ai":
         raise HTTPException(status_code=400, detail="llm_params is only supported for ai agents")
 
@@ -142,6 +163,22 @@ def _feedback_agent_has_llm_params_column(db: Session) -> bool:
     )
 
 
+def _feedback_agent_has_apply_question_type_column(db: Session) -> bool:
+    return bool(
+        db.execute(
+            text(
+                """
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_name = 'feedback_agent'
+                  AND column_name = 'apply_question_type'
+                LIMIT 1
+                """
+            )
+        ).scalar()
+    )
+
+
 def _feedback_agent_llm_params_column_type(db: Session) -> str | None:
     row = db.execute(
         text(
@@ -155,6 +192,76 @@ def _feedback_agent_llm_params_column_type(db: Session) -> str | None:
         )
     ).scalar()
     return str(row) if row is not None else None
+
+
+def _feedback_agent_has_if_score_column(db: Session) -> bool:
+    return bool(
+        db.execute(
+            text(
+                """
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_name = 'feedback_agent'
+                  AND column_name = 'if_score'
+                LIMIT 1
+                """
+            )
+        ).scalar()
+    )
+
+
+def _feedback_agent_has_score_ai_agent_id_column(db: Session) -> bool:
+    return bool(
+        db.execute(
+            text(
+                """
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_name = 'feedback_agent'
+                  AND column_name = 'score_ai_agent_id'
+                LIMIT 1
+                """
+            )
+        ).scalar()
+    )
+
+
+def _validate_score_ai_agent_id(db: Session, score_ai_agent_id: str) -> None:
+    row = db.execute(
+        text(
+            """
+            SELECT role, is_visible
+            FROM feedback_agent
+            WHERE agent_id = :agent_id
+            LIMIT 1
+            """
+        ),
+        {"agent_id": score_ai_agent_id},
+    ).mappings().first()
+    if not row:
+        raise HTTPException(status_code=400, detail="score_ai_agent_id not found")
+    if str(row.get("role") or "") != "ai":
+        raise HTTPException(status_code=400, detail="score_ai_agent_id must reference an ai agent")
+    if not bool(row.get("is_visible")):
+        raise HTTPException(status_code=400, detail="score_ai_agent_id must reference a visible ai agent")
+
+
+def _normalize_apply_question_type(value: Any) -> str:
+    v = str(value or "").strip().lower()
+    if v in {
+        "single_choice",
+        "multi_choice",
+        "dropdown",
+        "true_false",
+        "free_text",
+        "essay",
+        "all",
+    }:
+        return v
+    # Backward compatibility for previously stored non-question-type values.
+    if v in {"one", "multiple", "single_selection", "multiple_selection"}:
+        return "all"
+    return "all"
 
 
 def _generate_unique_id(db: Session, *, table: str, column: str, prefix: str) -> str:
@@ -171,21 +278,40 @@ def _fetch_agent_rows(db: Session, agent_ids: list[str]) -> tuple[dict[str, dict
         return {}, {}
     llm_col_type = _feedback_agent_llm_params_column_type(db)
     llm_col_expr = "llm_params_text" if llm_col_type else "NULL::text AS llm_params_text"
+    if_score_expr = "if_score" if _feedback_agent_has_if_score_column(db) else "FALSE AS if_score"
+    score_ai_agent_id_expr = (
+        "score_ai_agent_id" if _feedback_agent_has_score_ai_agent_id_column(db) else "NULL::text AS score_ai_agent_id"
+    )
+    apply_q_type_expr = (
+        "apply_question_type"
+        if _feedback_agent_has_apply_question_type_column(db)
+        else "'all'::text AS apply_question_type"
+    )
     agents = db.execute(
         text(
             """
             SELECT agent_id, source_agent_id, title, description, role, is_structured,
-                   provider, model, prompt_text, {llm_col_expr}, access_scope, is_visible, created_by, created_at
+                   provider, model, prompt_text, {llm_col_expr}, {apply_q_type_expr},
+                   {if_score_expr}, {score_ai_agent_id_expr},
+                   access_scope, is_visible, created_by, created_at
             FROM feedback_agent
             WHERE agent_id = ANY(:agent_ids)
             ORDER BY created_at DESC, agent_id ASC
-            """.format(llm_col_expr=llm_col_expr)
+            """.format(
+                llm_col_expr=llm_col_expr,
+                apply_q_type_expr=apply_q_type_expr,
+                if_score_expr=if_score_expr,
+                score_ai_agent_id_expr=score_ai_agent_id_expr,
+            )
         ),
         {"agent_ids": agent_ids},
     ).mappings().all()
     by_id = {row["agent_id"]: dict(row) for row in agents}
     for agent in by_id.values():
         raw = agent.pop("llm_params_text", None)
+        agent["apply_question_type"] = _normalize_apply_question_type(agent.get("apply_question_type"))
+        agent["if_score"] = bool(agent.get("if_score"))
+        agent["score_ai_agent_id"] = str(agent["score_ai_agent_id"]) if agent.get("score_ai_agent_id") is not None else None
         if raw:
             if isinstance(raw, dict):
                 agent["llm_params"] = raw
@@ -316,6 +442,9 @@ def list_feedback_agents(
     db: Session = Depends(get_db),
 ):
     has_llm_params_col = _feedback_agent_has_llm_params_column(db)
+    has_apply_q_type_col = _feedback_agent_has_apply_question_type_column(db)
+    has_if_score_col = _feedback_agent_has_if_score_column(db)
+    has_score_ai_agent_id_col = _feedback_agent_has_score_ai_agent_id_column(db)
     where_parts = ["fa.is_visible = TRUE"]
     params: dict[str, Any] = {"limit": limit, "offset": offset}
 
@@ -347,6 +476,9 @@ def list_feedback_agents(
             SELECT fa.agent_id, fa.source_agent_id, fa.title, fa.description, fa.role,
                    fa.is_structured, fa.provider, fa.model, fa.prompt_text,
                    {"fa.llm_params_text" if has_llm_params_col else "NULL::text AS llm_params_text"},
+                   {"fa.apply_question_type" if has_apply_q_type_col else "'all'::text AS apply_question_type"},
+                   {"fa.if_score" if has_if_score_col else "FALSE AS if_score"},
+                   {"fa.score_ai_agent_id" if has_score_ai_agent_id_col else "NULL::text AS score_ai_agent_id"},
                    fa.access_scope,
                    fa.is_visible, fa.created_by, fa.created_at,
                    u.name AS creator_name, u.email AS creator_email
@@ -369,6 +501,9 @@ def list_feedback_agents(
     items = [dict(r) for r in rows]
     for item in items:
         raw = item.pop("llm_params_text", None)
+        item["apply_question_type"] = _normalize_apply_question_type(item.get("apply_question_type"))
+        item["if_score"] = bool(item.get("if_score"))
+        item["score_ai_agent_id"] = str(item["score_ai_agent_id"]) if item.get("score_ai_agent_id") is not None else None
         if raw:
             if isinstance(raw, dict):
                 item["llm_params"] = raw
@@ -392,6 +527,26 @@ def get_feedback_agent_input_options():
     return {
         "ok": True,
         "template_variable_syntax": "{{{key}}}",
+        "human_score_options": {
+            "if_score": {"type": "boolean", "default": False},
+            "score_ai_agent_id": {
+                "type": "string",
+                "nullable": True,
+                "description": "Required when if_score=true; must reference an ai agent_id.",
+            },
+        },
+        "prompt_blocks": [
+            {
+                "field": "llm_params.feedback_generation_block",
+                "description": "Task 1 content. Main teaching/feedback generation rules.",
+                "required": False,
+            },
+            {
+                "field": "llm_params.additional_formatting_instructions_block",
+                "description": "Additional Task 2 formatting rules appended after base instructions.",
+                "required": False,
+            },
+        ],
         "supported_inputs": [
             {"input_key": "question_content_blocks", "supports_retrieval_rule": False},
             {"input_key": "answer_text", "supports_retrieval_rule": False},
@@ -415,11 +570,21 @@ def create_feedback_agent(payload: AgentCreateRequest, db: Session = Depends(get
     _validate_create_payload(payload)
     if not _user_exists(db, payload.created_by):
         raise HTTPException(status_code=400, detail="created_by user_id not found")
+    if payload.role == "human" and payload.if_score and payload.score_ai_agent_id:
+        _validate_score_ai_agent_id(db, payload.score_ai_agent_id)
 
     try:
         agent_id = _generate_unique_id(db, table="feedback_agent", column="agent_id", prefix="ag")
         inputs_to_insert = _synthesize_inputs_from_prompt_template(payload)
         llm_col_type = _feedback_agent_llm_params_column_type(db)
+        has_apply_q_type_col = _feedback_agent_has_apply_question_type_column(db)
+        has_if_score_col = _feedback_agent_has_if_score_column(db)
+        has_score_ai_agent_id_col = _feedback_agent_has_score_ai_agent_id_column(db)
+        if payload.if_score and (not has_if_score_col or not has_score_ai_agent_id_col):
+            raise HTTPException(
+                status_code=409,
+                detail="feedback_agent.if_score columns are missing; run semantic schema init first",
+            )
         insert_params = {
             "agent_id": agent_id,
             "title": payload.title,
@@ -430,54 +595,64 @@ def create_feedback_agent(payload: AgentCreateRequest, db: Session = Depends(get
             "model": payload.model,
             "prompt_text": payload.prompt_text,
             "llm_params_text": json.dumps(payload.llm_params) if payload.llm_params is not None else None,
+            "apply_question_type": _normalize_apply_question_type(payload.apply_question_type),
+            "if_score": bool(payload.if_score),
+            "score_ai_agent_id": payload.score_ai_agent_id,
             "access_scope": payload.access_scope,
             "created_by": payload.created_by,
         }
+        columns = [
+            "agent_id",
+            "source_agent_id",
+            "title",
+            "description",
+            "role",
+            "is_structured",
+            "provider",
+            "model",
+            "prompt_text",
+        ]
+        values = [
+            ":agent_id",
+            "NULL",
+            ":title",
+            ":description",
+            ":role",
+            ":is_structured",
+            ":provider",
+            ":model",
+            ":prompt_text",
+        ]
         if llm_col_type == "jsonb":
-            db.execute(
-                text(
-                    """
-                    INSERT INTO feedback_agent (
-                      agent_id, source_agent_id, title, description, role, is_structured,
-                      provider, model, prompt_text, llm_params_text, access_scope, is_visible, created_by, created_at
-                    ) VALUES (
-                      :agent_id, NULL, :title, :description, :role, :is_structured,
-                      :provider, :model, :prompt_text, CAST(:llm_params_text AS JSONB), :access_scope, TRUE, :created_by, NOW()
-                    )
-                    """
-                ),
-                insert_params,
-            )
+            columns.append("llm_params_text")
+            values.append("CAST(:llm_params_text AS JSONB)")
         elif llm_col_type:
-            db.execute(
-                text(
-                    """
-                    INSERT INTO feedback_agent (
-                      agent_id, source_agent_id, title, description, role, is_structured,
-                      provider, model, prompt_text, llm_params_text, access_scope, is_visible, created_by, created_at
-                    ) VALUES (
-                      :agent_id, NULL, :title, :description, :role, :is_structured,
-                      :provider, :model, :prompt_text, :llm_params_text, :access_scope, TRUE, :created_by, NOW()
-                    )
-                    """
-                ),
-                insert_params,
-            )
-        else:
-            db.execute(
-                text(
-                    """
-                    INSERT INTO feedback_agent (
-                      agent_id, source_agent_id, title, description, role, is_structured,
-                      provider, model, prompt_text, access_scope, is_visible, created_by, created_at
-                    ) VALUES (
-                      :agent_id, NULL, :title, :description, :role, :is_structured,
-                      :provider, :model, :prompt_text, :access_scope, TRUE, :created_by, NOW()
-                    )
-                    """
-                ),
-                insert_params,
-            )
+            columns.append("llm_params_text")
+            values.append(":llm_params_text")
+        if has_apply_q_type_col:
+            columns.append("apply_question_type")
+            values.append(":apply_question_type")
+        if has_if_score_col:
+            columns.append("if_score")
+            values.append(":if_score")
+        if has_score_ai_agent_id_col:
+            columns.append("score_ai_agent_id")
+            values.append(":score_ai_agent_id")
+        columns.extend(["access_scope", "is_visible", "created_by", "created_at"])
+        values.extend([":access_scope", "TRUE", ":created_by", "NOW()"])
+
+        db.execute(
+            text(
+                f"""
+                INSERT INTO feedback_agent (
+                  {", ".join(columns)}
+                ) VALUES (
+                  {", ".join(values)}
+                )
+                """
+            ),
+            insert_params,
+        )
         _insert_agent_inputs(db, agent_id=agent_id, created_by=payload.created_by, inputs=inputs_to_insert)
         db.commit()
     except HTTPException:

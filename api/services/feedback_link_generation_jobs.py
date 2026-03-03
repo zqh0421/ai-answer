@@ -14,38 +14,17 @@ from .semantic_schema import generate_short_id
 _PROMPT_VAR_RE = re.compile(r"\{\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}\}")
 
 STRUCTURED_FEEDBACK_PROMPT_SUFFIX = """
-Format your response as a JSON object with this exact structure:
-
-```json
-{
-  "score": "[0 for incorrect, 1 for correct, 2 for partially correct]",
-  "feedback": "[A clear, concise revision of the original feedback, retaining key points and removing redundancy. Tooltips are integrated as plain terms.]",
-  "structured_feedback": "<statement>[Your assessment - whether answer is correct or incorrect].</statement> <explanation>[Detailed explanation with <term explanation='[tooltip text]'>[highlighted terms]</term>].</explanation> <advice>[Actionable advice for improvement].</advice>"
-}
-```
-
-**Formatting Instructions:**
-- First, Identify terms from the feedback that require explanation (key concepts or technical terms) and extract their tooltip-style explanations
-- Do not repeat tooltip details within the feedback body
-- Extract strictly quotable phrases from the concised feedback, categorized into:
-  - **statement**: Phrases about whether the answer is correct or incorrect
-  - **explanation**: Reasoning that explains the mistake or correct logic
-  - **advice**: Actionable suggestions for improvement
-- The terms in the "terms" array must use the exact wording as it appears in the feedback text
-- The "structured_feedback" field MUST contain proper HTML with semantic tags:
-  - Use <statement> tags for short sentense/phrases for whether the answer is correct or incorrect
-  - Use <explanation> tags for reasoning that explains the mistake or correct logicn
-  - Use <advice> tags for actionable suggestions for improvement
-  - Use <term explanation='tooltip text'> tags for highlighted terms with tooltips, must use the exact wording as it appears in the feedback text
-- IMPORTANT: The structured_feedback field must be valid HTML, not plain text
-- You are not required to provide terms all the time, only provide terms when they are necessary for the learner to understand the feedback and improve their answer.
-- For term explanation, not just providing the definition, but also provide the context of the term in the feedback, that is resonated with the learner's answer.
-
-**Example structured_feedback format:**
-"<statement>Your answer is incorrect.</statement> <explanation>The correct answer is <term explanation='A specific term that matches the question requirements'>test</term>. This matches the question's requirement for a specific term.</explanation> <advice>To improve, review the question carefully to ensure your answer aligns with the expected response.</advice>"
-
-**Final Output**: Provide only the JSON object in the exact format specified above. No additional explanation, comments, or plain text are allowed.
+Return valid JSON only.
 """.strip()
+
+DEFAULT_GENERATION_BLOCK = (
+    "Generate feedback that starts with a clear judgment (correct/incorrect/partially correct), "
+    "explains the reasoning with context from the question, and keeps the feedback concise and actionable."
+)
+
+DEFAULT_ADDITIONAL_FORMATTING_INSTRUCTIONS = (
+    "No additional formatting instructions."
+)
 
 
 def _load_feedback_link_generation_context(db, feedback_link_id: str) -> dict[str, Any] | None:
@@ -309,6 +288,117 @@ def _format_prompt_template_value(key: str, value: Any) -> str:
     return _stringify_prompt_value(value)
 
 
+def _parse_llm_params(raw: Any) -> dict[str, Any]:
+    if raw is None:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        text_value = raw.strip()
+        if not text_value:
+            return {}
+        try:
+            parsed = json.loads(text_value)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _format_max_score_for_prompt(max_score: float) -> str:
+    if float(max_score).is_integer():
+        return str(int(max_score))
+    return str(round(max_score, 4))
+
+
+def _load_question_prompt_context(db, question_version_id: str) -> dict[str, Any]:
+    row = db.execute(
+        text(
+            """
+            SELECT question_type, score_maximum
+            FROM content_question_version
+            WHERE question_version_id = :question_version_id
+            LIMIT 1
+            """
+        ),
+        {"question_version_id": question_version_id},
+    ).mappings().first()
+    if not row:
+        return {"question_type": "open-ended", "max_score": 1.0}
+
+    question_type = str(row.get("question_type") or "open-ended")
+    score_maximum = float(row.get("score_maximum") or 1)
+    return {"question_type": question_type, "max_score": score_maximum}
+
+
+def _human_question_type_label(question_type: str) -> str:
+    q = (question_type or "").strip().lower()
+    if q in {"single_choice", "multi_choice", "dropdown", "true_false"}:
+        return "multiple-choice"
+    if q in {"free_text", "essay"}:
+        return "open-ended"
+    return "open-ended"
+
+
+def _score_hint_for_question_type(question_type: str, max_score: float) -> str:
+    q = (question_type or "").strip().lower()
+    if q in {"single_choice", "multi_choice", "dropdown", "true_false"}:
+        return "[0 for incorrect, 1 for correct]"
+    if abs(float(max_score) - 2.0) < 1e-9:
+        return "[0 for incorrect, 1 for correct, 2 for partially correct]"
+    return f"[Numeric score from 0 to { _format_max_score_for_prompt(float(max_score)) }]"
+
+
+def _build_output_schema_json_block(*, is_structured: bool, score_hint: str, max_score: float) -> str:
+    feedback_key = "structured_feedback" if is_structured else "text_feedback"
+    feedback_hint = "[Structured feedback text]" if is_structured else "[Plain text feedback]"
+    return (
+        "{\n"
+        f"  \"score\": \"{score_hint}\",\n"
+        f"  \"max_score\": \"[{_format_max_score_for_prompt(float(max_score))}]\",\n"
+        f"  \"{feedback_key}\": \"{feedback_hint}\"\n"
+        "}"
+    )
+
+
+def _build_formatting_instructions_text(*, is_structured: bool, max_score: float, additional: str) -> str:
+    feedback_key = "structured_feedback" if is_structured else "text_feedback"
+    max_score_literal = _format_max_score_for_prompt(float(max_score))
+    extra = (additional or "").strip() or DEFAULT_ADDITIONAL_FORMATTING_INSTRUCTIONS
+    return (
+        "- Return valid JSON only; no markdown, no extra keys.\n"
+        f"- Include exactly 3 keys: score, max_score, {feedback_key}.\n"
+        "- score and max_score must be numeric values.\n"
+        f"- Set max_score to exactly {max_score_literal}.\n"
+        f"- {feedback_key} must be a string.\n"
+        f"- Additional formatting instructions: {extra}\n"
+        "- Final output must be only the JSON object."
+    )
+
+
+def _build_system_prompt_from_blocks(
+    *,
+    question_type_label: str,
+    generation_block: str,
+    output_schema_json: str,
+    formatting_instructions: str,
+) -> str:
+    generation = (generation_block or "").strip() or DEFAULT_GENERATION_BLOCK
+    return (
+        f"You are tasked with generating clear, effective feedback for a student's {question_type_label} answer "
+        f"and then formatting it into a structured JSON output. Complete both tasks in sequence.\n\n"
+        f"### Task 1: Generate Feedback\n"
+        f"{generation}\n\n"
+        f"### Task 2: Format Output\n"
+        f"After generating the feedback, format your response as a JSON object with this exact structure:\n\n"
+        f"```json\n"
+        f"{output_schema_json}\n"
+        f"```\n\n"
+        f"#### Formatting Instructions:\n"
+        f"{formatting_instructions}\n"
+    )
+
+
 def _build_retrieval_query_text(input_values: dict[str, Any] | None, fallback_text: str) -> str:
     if not input_values:
         return fallback_text
@@ -493,6 +583,7 @@ def _generate_feedback_text_from_context(
         raise ValueError(f"Unsupported provider for static auto-generation: {provider}")
 
     model = (ctx.get("model") or "").strip() or "gpt-5"
+    llm_params = _parse_llm_params(ctx.get("llm_params_text"))
     effective_input_values = dict(input_values or {})
     fallback_question_payload = _load_question_version_text(db, str(ctx["question_version_id"]))
     fallback_user_text = _compose_generation_input(fallback_question_payload)
@@ -507,13 +598,29 @@ def _generate_feedback_text_from_context(
         if resolved_pages is not None:
             effective_input_values["retrieved_slide_pages"] = resolved_pages
 
-    system_prompt = (ctx.get("prompt_text") or "").strip() or (
-        "Generate concise, helpful static feedback for this question. "
-        "Do not reference hidden grading keys. Focus on what a learner should understand."
+    prompt_ctx = _load_question_prompt_context(db, str(ctx["question_version_id"]))
+    question_type = str(prompt_ctx["question_type"])
+    max_score = float(prompt_ctx["max_score"])
+    generation_block = str(llm_params.get("feedback_generation_block") or (ctx.get("prompt_text") or "").strip() or DEFAULT_GENERATION_BLOCK)
+    additional_formatting_instructions = str(llm_params.get("additional_formatting_instructions_block") or "")
+    score_hint = _score_hint_for_question_type(question_type, max_score)
+    output_schema_json = _build_output_schema_json_block(
+        is_structured=bool(ctx.get("is_structured")),
+        score_hint=score_hint,
+        max_score=max_score,
+    )
+    formatting_instructions = _build_formatting_instructions_text(
+        is_structured=bool(ctx.get("is_structured")),
+        max_score=max_score,
+        additional=additional_formatting_instructions,
+    )
+    system_prompt = _build_system_prompt_from_blocks(
+        question_type_label=_human_question_type_label(question_type),
+        generation_block=generation_block,
+        output_schema_json=output_schema_json,
+        formatting_instructions=formatting_instructions,
     )
     system_prompt = _render_prompt_template(system_prompt, effective_input_values)
-    if bool(ctx.get("is_structured")):
-        system_prompt = f"{system_prompt}\n\n{STRUCTURED_FEEDBACK_PROMPT_SUFFIX}"
 
     user_text = _compose_generation_input_from_values(effective_input_values)
     if not user_text:

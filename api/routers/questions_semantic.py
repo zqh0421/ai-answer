@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
+import math
+import re
 import secrets
 from typing import Any, Literal, Optional
 from uuid import UUID
@@ -29,6 +32,7 @@ from ..services.slide_batch_jobs import slide_batch_job_manager
 from ..tags import Tags
 
 router = APIRouter(prefix="/api", tags=[Tags.CONTENT_QUESTIONS])
+_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 
 
 QuestionType = Literal["single_choice", "multi_choice", "dropdown", "true_false", "free_text", "essay"]
@@ -335,6 +339,222 @@ def _find_visible_feedback_link_by_target(
         },
     ).scalar()
     return str(row) if row else None
+
+
+def _feedback_agent_has_if_score_column(db: Session) -> bool:
+    return bool(
+        db.execute(
+            text(
+                """
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_name = 'feedback_agent'
+                  AND column_name = 'if_score'
+                LIMIT 1
+                """
+            )
+        ).scalar()
+    )
+
+
+def _feedback_agent_has_score_ai_agent_id_column(db: Session) -> bool:
+    return bool(
+        db.execute(
+            text(
+                """
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_name = 'feedback_agent'
+                  AND column_name = 'score_ai_agent_id'
+                LIMIT 1
+                """
+            )
+        ).scalar()
+    )
+
+
+def _feedback_agent_runtime_profile(db: Session, agent_id: str) -> dict[str, Any] | None:
+    if_score_expr = "if_score" if _feedback_agent_has_if_score_column(db) else "FALSE AS if_score"
+    score_ai_expr = (
+        "score_ai_agent_id"
+        if _feedback_agent_has_score_ai_agent_id_column(db)
+        else "NULL::text AS score_ai_agent_id"
+    )
+    row = db.execute(
+        text(
+            f"""
+            SELECT agent_id, role, {if_score_expr}, {score_ai_expr}
+            FROM feedback_agent
+            WHERE agent_id = :agent_id
+            LIMIT 1
+            """
+        ),
+        {"agent_id": agent_id},
+    ).mappings().first()
+    if not row:
+        return None
+    profile = dict(row)
+    profile["if_score"] = bool(profile.get("if_score"))
+    profile["score_ai_agent_id"] = (
+        str(profile["score_ai_agent_id"]) if profile.get("score_ai_agent_id") is not None else None
+    )
+    return profile
+
+
+def _runtime_feedback_link_id_for_agent(
+    db: Session,
+    *,
+    question_version_id: str,
+    agent_id: str,
+    selected_option_id: str | None,
+) -> str | None:
+    if selected_option_id:
+        option_link = _find_visible_feedback_link_by_target(
+            db,
+            question_version_id=question_version_id,
+            agent_id=agent_id,
+            target_entity_type="interaction_option",
+            target_entity_id=selected_option_id,
+        )
+        if option_link:
+            return option_link
+    return _find_visible_question_version_link(
+        db, question_version_id=question_version_id, agent_id=agent_id
+    ) or _find_any_visible_question_link(
+        db, question_version_id=question_version_id, agent_id=agent_id
+    )
+
+
+def _safe_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _extract_score_from_generated_feedback(raw_feedback: Any) -> dict[str, Any]:
+    text_value = str(raw_feedback or "").strip()
+    if not text_value:
+        return {"score": None, "max_score": None}
+
+    parsed_obj: dict[str, Any] | None = None
+    try:
+        loaded = json.loads(text_value)
+        if isinstance(loaded, dict):
+            parsed_obj = loaded
+    except Exception:
+        m = _JSON_FENCE_RE.search(text_value)
+        if m:
+            try:
+                loaded = json.loads(m.group(1))
+                if isinstance(loaded, dict):
+                    parsed_obj = loaded
+            except Exception:
+                parsed_obj = None
+
+    if not parsed_obj:
+        return {"score": None, "max_score": None}
+    return {
+        "score": _safe_float(parsed_obj.get("score")),
+        "max_score": _safe_float(parsed_obj.get("max_score")),
+    }
+
+
+def _extract_structured_feedback_from_generated_feedback(raw_feedback: Any) -> str | None:
+    text_value = str(raw_feedback or "").strip()
+    if not text_value:
+        return None
+    parsed_obj: dict[str, Any] | None = None
+    try:
+        loaded = json.loads(text_value)
+        if isinstance(loaded, dict):
+            parsed_obj = loaded
+    except Exception:
+        m = _JSON_FENCE_RE.search(text_value)
+        if m:
+            try:
+                loaded = json.loads(m.group(1))
+                if isinstance(loaded, dict):
+                    parsed_obj = loaded
+            except Exception:
+                parsed_obj = None
+    if not parsed_obj:
+        return None
+    structured = parsed_obj.get("structured_feedback")
+    if structured is None:
+        structured = parsed_obj.get("text_feedback")
+    return str(structured) if structured is not None else None
+
+
+def _resolve_human_agent_ai_score_result(
+    db: Session,
+    *,
+    question_version_id: str,
+    human_agent_id: str,
+    selected_option_id: str | None,
+    runtime_inputs: dict[str, Any],
+) -> dict[str, Any] | None:
+    profile = _feedback_agent_runtime_profile(db, human_agent_id)
+    if not profile:
+        return None
+    if str(profile.get("role") or "") != "human":
+        return None
+    if not bool(profile.get("if_score")):
+        return None
+
+    ai_agent_id = str(profile.get("score_ai_agent_id") or "").strip()
+    if not ai_agent_id:
+        return {
+            "enabled": True,
+            "has_score": False,
+            "reason": "missing_score_ai_agent_id",
+        }
+
+    ai_feedback_link_id = _runtime_feedback_link_id_for_agent(
+        db,
+        question_version_id=question_version_id,
+        agent_id=ai_agent_id,
+        selected_option_id=selected_option_id,
+    )
+    if not ai_feedback_link_id:
+        return {
+            "enabled": True,
+            "has_score": False,
+            "ai_agent_id": ai_agent_id,
+            "reason": "ai_feedback_link_not_found",
+        }
+
+    generated = generate_static_feedback_for_feedback_link(
+        str(ai_feedback_link_id),
+        persist=False,
+        enforce_ai_role=True,
+        input_values=runtime_inputs,
+        include_debug=True,
+    )
+    if not generated.get("ok"):
+        return {
+            "enabled": True,
+            "has_score": False,
+            "ai_agent_id": ai_agent_id,
+            "feedback_link_id": ai_feedback_link_id,
+            "reason": str(generated.get("reason") or "ai_generation_failed"),
+        }
+
+    extracted = _extract_score_from_generated_feedback(generated.get("static_feedback_text"))
+    return {
+        "enabled": True,
+        "has_score": extracted.get("score") is not None,
+        "ai_agent_id": ai_agent_id,
+        "feedback_link_id": ai_feedback_link_id,
+        "score": extracted.get("score"),
+        "max_score": extracted.get("max_score"),
+        "rendered_prompt": {
+            "system_prompt": generated.get("resolved_system_prompt"),
+            "user_text": generated.get("resolved_user_text"),
+        },
+    }
 
 
 def _question_version_belongs_to_question(db: Session, *, question_id: str, question_version_id: str) -> bool:
@@ -805,6 +1025,38 @@ def _build_question_list_slide_scope(db: Session, version_ids: list[str]) -> dic
     if not version_ids:
         return {}
 
+    def _to_float_vector(value: Any) -> list[float] | None:
+        if value is None:
+            return None
+        if isinstance(value, list):
+            seq = value
+        elif isinstance(value, tuple):
+            seq = list(value)
+        else:
+            try:
+                seq = list(value)
+            except Exception:
+                return None
+        if not seq:
+            return None
+        out: list[float] = []
+        try:
+            for item in seq:
+                out.append(float(item))
+        except Exception:
+            return None
+        return out
+
+    def _cosine_similarity(vec_a: list[float], vec_b: list[float]) -> float:
+        if len(vec_a) != len(vec_b):
+            return -1.0
+        dot = sum(a * b for a, b in zip(vec_a, vec_b))
+        norm_a = math.sqrt(sum(a * a for a in vec_a))
+        norm_b = math.sqrt(sum(b * b for b in vec_b))
+        if norm_a == 0.0 or norm_b == 0.0:
+            return -1.0
+        return dot / (norm_a * norm_b)
+
     rows = db.execute(
         text(
             """
@@ -817,26 +1069,100 @@ def _build_question_list_slide_scope(db: Session, version_ids: list[str]) -> dic
               s.created_by,
               s.created_at,
               sl.slide_title,
+              sl.slide_google_id,
               sl.module_id::text AS module_id,
               m.module_title,
               m.course_id::text AS course_id,
-              c.course_title
+              c.course_title,
+              COALESCE(pc.total_pages, 0) AS slide_total_pages,
+              NULL::int AS most_relevant_page_number
             FROM content_question_slide_scope s
             JOIN slide sl ON sl.id = s.slide_id
             JOIN module m ON m.module_id = sl.module_id
             JOIN course c ON c.course_id = m.course_id
-            WHERE question_version_id = ANY(CAST(:version_ids AS TEXT[]))
+            LEFT JOIN (
+              SELECT slide_id, COUNT(*)::int AS total_pages
+              FROM page
+              GROUP BY slide_id
+            ) pc ON pc.slide_id = s.slide_id
+            WHERE s.question_version_id = ANY(CAST(:version_ids AS TEXT[]))
             ORDER BY s.question_version_id ASC, s.created_at ASC, s.slide_scope_id ASC
             """
         ),
         {"version_ids": version_ids},
     ).mappings().all()
 
+    vector_rows = db.execute(
+        text(
+            """
+            SELECT
+              question_version_id::text AS question_version_id,
+              question_vector,
+              question_answer_vector
+            FROM content_question_version
+            WHERE question_version_id = ANY(CAST(:version_ids AS TEXT[]))
+            """
+        ),
+        {"version_ids": version_ids},
+    ).mappings().all()
+    retrieval_vector_by_version: dict[str, list[float]] = {}
+    for row in vector_rows:
+        qv_id = str(row.get("question_version_id") or "")
+        if not qv_id:
+            continue
+        vec = _to_float_vector(row.get("question_answer_vector")) or _to_float_vector(row.get("question_vector"))
+        if vec:
+            retrieval_vector_by_version[qv_id] = vec
+
+    slide_ids = list({str(r.get("slide_id")) for r in rows if r.get("slide_id")})
+    page_rows: list[dict[str, Any]] = []
+    if slide_ids:
+        page_rows = db.execute(
+            text(
+                """
+                SELECT slide_id::text AS slide_id, page_number, vector
+                FROM page
+                WHERE slide_id = ANY(CAST(:slide_ids AS UUID[]))
+                  AND vector IS NOT NULL
+                ORDER BY slide_id ASC, page_number ASC
+                """
+            ),
+            {"slide_ids": slide_ids},
+        ).mappings().all()
+    pages_by_slide: dict[str, list[dict[str, Any]]] = {}
+    for row in page_rows:
+        pages_by_slide.setdefault(str(row.get("slide_id")), []).append(dict(row))
+
     grouped: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         item = dict(row)
+        qv_id = str(item.get("question_version_id") or "")
+        retrieval_vector = retrieval_vector_by_version.get(qv_id)
+        most_relevant_page_number: int | None = None
+        if retrieval_vector:
+            sid = str(item.get("slide_id") or "")
+            page_start = item.get("page_start")
+            page_end = item.get("page_end")
+            best_similarity = -1.0
+            for page in pages_by_slide.get(sid, []):
+                page_number = int(page.get("page_number") or 0)
+                if page_number <= 0:
+                    continue
+                if page_start is not None and page_number < int(page_start):
+                    continue
+                if page_end is not None and page_number > int(page_end):
+                    continue
+                page_vector = _to_float_vector(page.get("vector"))
+                if not page_vector:
+                    continue
+                similarity = _cosine_similarity(retrieval_vector, page_vector)
+                if similarity > best_similarity:
+                    best_similarity = similarity
+                    most_relevant_page_number = page_number
+        item["most_relevant_page_number"] = most_relevant_page_number
         item["slide"] = {
             "slide_id": item.get("slide_id"),
+            "slide_google_id": item.get("slide_google_id"),
             "slide_title": item.get("slide_title"),
             "module_id": item.get("module_id"),
             "module_title": item.get("module_title"),
@@ -1751,8 +2077,9 @@ def dry_run_attached_agent_feedback(
     agent = _get_feedback_agent(db, agent_id)
     if not agent or not agent.get("is_visible", True):
         raise HTTPException(status_code=404, detail="feedback agent not found")
-    if str(agent.get("role") or "") != "ai":
-        raise HTTPException(status_code=400, detail="dry-run generation is only supported for ai agents")
+    agent_role = str(agent.get("role") or "")
+    if agent_role not in {"ai", "human"}:
+        raise HTTPException(status_code=400, detail="dry-run generation is only supported for ai or human agents")
 
     feedback_link_id = _find_visible_question_version_link(
         db, question_version_id=current_version_id, agent_id=agent_id
@@ -1761,17 +2088,115 @@ def dry_run_attached_agent_feedback(
     )
     if not feedback_link_id:
         raise HTTPException(status_code=404, detail="agent is not attached to this question")
+    runtime_inputs = dict((payload.input_values if payload else None) or {})
+    selected_option_id: str | None = None
+    if runtime_inputs.get("selected_option_id"):
+        selected_option_id = str(runtime_inputs.get("selected_option_id"))
+    elif isinstance(runtime_inputs.get("selected_option_index"), int):
+        option_ids = _runtime_option_ids_for_version(db, current_version_id)
+        idx = int(runtime_inputs["selected_option_index"])
+        if 0 <= idx < len(option_ids):
+            selected_option_id = option_ids[idx]
 
-    result = generate_static_feedback_for_feedback_link(
-        str(feedback_link_id),
-        persist=not dry_run,
-        enforce_ai_role=not dry_run,
-        input_values=(payload.input_values if payload else None),
-        include_debug=True,
-    )
+    if agent_role == "human":
+        if not dry_run:
+            raise HTTPException(status_code=400, detail="persisting dry-run output is only supported for ai agents")
+        feedback_row = db.execute(
+            text(
+                """
+                SELECT static_feedback_text, structured_feedback_text
+                FROM feedback_link
+                WHERE feedback_link_id = :fid
+                LIMIT 1
+                """
+            ),
+            {"fid": feedback_link_id},
+        ).mappings().first()
+        static_feedback_text = None
+        structured_feedback_text = None
+        if feedback_row:
+            static_feedback_text = (
+                str(feedback_row.get("static_feedback_text"))
+                if feedback_row.get("static_feedback_text") is not None
+                else None
+            )
+            structured_feedback_text = (
+                str(feedback_row.get("structured_feedback_text"))
+                if feedback_row.get("structured_feedback_text") is not None
+                else None
+            )
+        if not static_feedback_text and not structured_feedback_text:
+            fallback_row = db.execute(
+                text(
+                    """
+                    SELECT static_feedback_text, structured_feedback_text
+                    FROM feedback_link
+                    WHERE question_version_id = :question_version_id
+                      AND agent_id = :agent_id
+                      AND is_visible = TRUE
+                      AND (
+                        static_feedback_text IS NOT NULL
+                        OR structured_feedback_text IS NOT NULL
+                      )
+                    ORDER BY
+                      CASE WHEN target_entity_type = 'question_version' THEN 0 ELSE 1 END ASC,
+                      created_at ASC
+                    LIMIT 1
+                    """
+                ),
+                {"question_version_id": current_version_id, "agent_id": agent_id},
+            ).mappings().first()
+            if fallback_row:
+                static_feedback_text = (
+                    str(fallback_row.get("static_feedback_text"))
+                    if fallback_row.get("static_feedback_text") is not None
+                    else None
+                )
+                structured_feedback_text = (
+                    str(fallback_row.get("structured_feedback_text"))
+                    if fallback_row.get("structured_feedback_text") is not None
+                    else None
+                )
+        display_feedback_text = static_feedback_text or structured_feedback_text
+        result = {
+            "ok": True,
+            "feedback_link_id": str(feedback_link_id),
+            "persisted": False,
+            "static_feedback_text": display_feedback_text,
+            "structured_feedback_text": structured_feedback_text,
+            "has_feedback": bool(display_feedback_text),
+            "ai_score_result": _resolve_human_agent_ai_score_result(
+                db,
+                question_version_id=current_version_id,
+                human_agent_id=agent_id,
+                selected_option_id=selected_option_id,
+                runtime_inputs=runtime_inputs,
+            ),
+            "rendered_prompt": None,
+        }
+        if isinstance(result.get("ai_score_result"), dict):
+            rp = result["ai_score_result"].get("rendered_prompt")
+            if isinstance(rp, dict):
+                result["rendered_prompt"] = rp
+    else:
+        result = generate_static_feedback_for_feedback_link(
+            str(feedback_link_id),
+            persist=not dry_run,
+            enforce_ai_role=not dry_run,
+            input_values=(payload.input_values if payload else None),
+            include_debug=True,
+        )
+        result["ai_score_result"] = None
+        result["structured_feedback_text"] = _extract_structured_feedback_from_generated_feedback(
+            result.get("static_feedback_text")
+        )
+        result["rendered_prompt"] = {
+            "system_prompt": result.get("resolved_system_prompt"),
+            "user_text": result.get("resolved_user_text"),
+        }
 
     created_version: dict[str, Any] | None = None
-    if not dry_run and result.get("ok") and not result.get("skipped"):
+    if agent_role == "ai" and not dry_run and result.get("ok") and not result.get("skipped"):
         _ensure_static_feedback_version_schema(db)
         latest_before_update = _get_latest_static_feedback_version(db, question_id=question_id, agent_id=agent_id)
         latest_version_id = str(latest_before_update["version_id"]) if latest_before_update else None
@@ -2336,13 +2761,13 @@ def get_semantic_question(
         "content_blocks": detail["content_blocks"],
         "interactions": detail["interactions"],
         "options": top_level_options,
+        # Question-level scope is part of the canonical question payload.
+        "slide_scope": detail["slide_scope"],
     }
 
     includes = {x.strip() for x in (include or "").split(",") if x.strip()}
     if "current_version" in includes:
         payload["question_version"] = detail["question_version"]
-    if "slide_scope" in includes:
-        payload["slide_scope"] = detail["slide_scope"]
     if "feedback_links" in includes:
         payload["feedback_links"] = detail["feedback_links"]
     return payload
@@ -2408,6 +2833,24 @@ def run_question_feedback_runtime(
             raise HTTPException(status_code=400, detail="selected_option_index out of range")
         selected_option_id = option_ids[payload.selected_option_index]
 
+    runtime_inputs = dict(payload.input_values or {})
+    if payload.answer_text is not None:
+        runtime_inputs["answer_text"] = payload.answer_text
+    runtime_inputs["learner_id"] = learner_id
+    runtime_inputs["question_id"] = question_id
+    runtime_inputs["question_type"] = question_type
+    if selected_option_id:
+        runtime_inputs["selected_option_id"] = selected_option_id
+        runtime_inputs["selected_option_index"] = payload.selected_option_index
+
+    ai_score_result = _resolve_human_agent_ai_score_result(
+        db,
+        question_version_id=question_version_id,
+        human_agent_id=agent_id,
+        selected_option_id=selected_option_id,
+        runtime_inputs=runtime_inputs,
+    )
+
     if feedback_mode == "use_latest_version":
         feedback_link_id = None
         feedback_text = None
@@ -2454,26 +2897,18 @@ def run_question_feedback_runtime(
             "feedback": str(feedback_text) if feedback_text is not None else None,
             "feedback_source": "saved_version",
             "has_feedback": bool(feedback_text),
+            "ai_score_result": ai_score_result,
         }
 
     if feedback_mode == "runtime_generate":
-        feedback_link_id = _find_visible_question_version_link(
-            db, question_version_id=question_version_id, agent_id=agent_id
-        ) or _find_any_visible_question_link(
-            db, question_version_id=question_version_id, agent_id=agent_id
+        feedback_link_id = _runtime_feedback_link_id_for_agent(
+            db,
+            question_version_id=question_version_id,
+            agent_id=agent_id,
+            selected_option_id=selected_option_id,
         )
         if not feedback_link_id:
             raise HTTPException(status_code=404, detail="no attached feedback link for runtime generation")
-
-        runtime_inputs = dict(payload.input_values or {})
-        if payload.answer_text is not None:
-            runtime_inputs["answer_text"] = payload.answer_text
-        runtime_inputs["learner_id"] = learner_id
-        runtime_inputs["question_id"] = question_id
-        runtime_inputs["question_type"] = question_type
-        if selected_option_id:
-            runtime_inputs["selected_option_id"] = selected_option_id
-            runtime_inputs["selected_option_index"] = payload.selected_option_index
 
         generated = generate_static_feedback_for_feedback_link(
             str(feedback_link_id),
@@ -2503,6 +2938,7 @@ def run_question_feedback_runtime(
             "feedback": generated.get("static_feedback_text"),
             "feedback_source": "runtime_generate",
             "has_feedback": bool(generated.get("static_feedback_text")),
+            "ai_score_result": ai_score_result,
         }
 
     raise HTTPException(status_code=400, detail=f"unsupported feedback_mode: {feedback_mode}")

@@ -9,6 +9,9 @@ class Settings(BaseSettings):
     auth_google_id: str
     auth_google_secret: str
     auth_secret: str
+    google_service_account_email: Optional[str] = None
+    google_service_account_private_key: Optional[str] = None
+    google_service_account_private_key_file: Optional[str] = None
     env: str
     nextauth_url: str
     database_host: str

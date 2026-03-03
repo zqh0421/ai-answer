@@ -49,14 +49,111 @@ def _ddl_steps() -> List[DDLStep]:
                 provider VARCHAR(50) NULL,
                 model VARCHAR(100) NULL,
                 prompt_text TEXT NULL,
+                apply_question_type VARCHAR(20) NULL DEFAULT 'all',
+                if_score BOOLEAN NOT NULL DEFAULT FALSE,
+                score_ai_agent_id {ID_TYPE} NULL,
                 access_scope VARCHAR(10) NOT NULL DEFAULT 'private',
                 is_visible BOOLEAN NOT NULL DEFAULT TRUE,
                 created_by {ID_TYPE} NOT NULL,
                 created_at TIMESTAMP NOT NULL DEFAULT NOW(),
                 CONSTRAINT chk_feedback_agent_role CHECK (role IN ('human', 'ai')),
+                CONSTRAINT chk_feedback_agent_apply_question_type CHECK (
+                    apply_question_type IS NULL OR apply_question_type IN (
+                        'single_choice', 'multi_choice', 'dropdown', 'true_false', 'free_text', 'essay', 'all'
+                    )
+                ),
+                CONSTRAINT chk_feedback_agent_score_mode CHECK (
+                    (if_score = FALSE AND score_ai_agent_id IS NULL)
+                    OR (if_score = TRUE AND score_ai_agent_id IS NOT NULL)
+                ),
                 CONSTRAINT chk_feedback_agent_access_scope CHECK (access_scope IN ('private', 'public')),
+                CONSTRAINT fk_feedback_agent_score_ai_agent FOREIGN KEY (score_ai_agent_id) REFERENCES feedback_agent(agent_id),
                 CONSTRAINT fk_feedback_agent_source FOREIGN KEY (source_agent_id) REFERENCES feedback_agent(agent_id)
             );
+            """,
+        ),
+        DDLStep(
+            "feedback_agent_add_apply_question_type_column",
+            """
+            ALTER TABLE feedback_agent
+            ADD COLUMN IF NOT EXISTS apply_question_type VARCHAR(20) NULL DEFAULT 'all';
+            """,
+        ),
+        DDLStep(
+            "feedback_agent_apply_question_type_data_normalization",
+            """
+            UPDATE feedback_agent
+            SET apply_question_type = 'all'
+            WHERE apply_question_type IN ('one', 'single_selection');
+
+            UPDATE feedback_agent
+            SET apply_question_type = 'all'
+            WHERE apply_question_type IN ('multiple', 'multiple_selection');
+            """,
+        ),
+        DDLStep(
+            "feedback_agent_apply_question_type_constraint",
+            """
+            DO $$
+            BEGIN
+                ALTER TABLE feedback_agent
+                DROP CONSTRAINT IF EXISTS chk_feedback_agent_apply_question_type;
+
+                ALTER TABLE feedback_agent
+                ADD CONSTRAINT chk_feedback_agent_apply_question_type
+                CHECK (
+                    apply_question_type IS NULL OR apply_question_type IN (
+                        'single_choice', 'multi_choice', 'dropdown', 'true_false', 'free_text', 'essay', 'all'
+                    )
+                );
+            END $$;
+            """,
+        ),
+        DDLStep(
+            "feedback_agent_add_if_score_columns",
+            f"""
+            ALTER TABLE feedback_agent
+            ADD COLUMN IF NOT EXISTS if_score BOOLEAN NOT NULL DEFAULT FALSE,
+            ADD COLUMN IF NOT EXISTS score_ai_agent_id {ID_TYPE} NULL;
+            """,
+        ),
+        DDLStep(
+            "feedback_agent_if_score_data_normalization",
+            """
+            UPDATE feedback_agent
+            SET if_score = TRUE
+            WHERE score_ai_agent_id IS NOT NULL;
+
+            UPDATE feedback_agent
+            SET if_score = FALSE
+            WHERE score_ai_agent_id IS NULL;
+            """,
+        ),
+        DDLStep(
+            "feedback_agent_if_score_constraints",
+            """
+            DO $$
+            BEGIN
+                ALTER TABLE feedback_agent
+                DROP CONSTRAINT IF EXISTS chk_feedback_agent_score_mode;
+
+                ALTER TABLE feedback_agent
+                ADD CONSTRAINT chk_feedback_agent_score_mode
+                CHECK (
+                    (if_score = FALSE AND score_ai_agent_id IS NULL)
+                    OR (if_score = TRUE AND score_ai_agent_id IS NOT NULL)
+                );
+
+                IF NOT EXISTS (
+                    SELECT 1
+                    FROM pg_constraint
+                    WHERE conname = 'fk_feedback_agent_score_ai_agent'
+                ) THEN
+                    ALTER TABLE feedback_agent
+                    ADD CONSTRAINT fk_feedback_agent_score_ai_agent
+                    FOREIGN KEY (score_ai_agent_id) REFERENCES feedback_agent(agent_id);
+                END IF;
+            END $$;
             """,
         ),
         DDLStep(

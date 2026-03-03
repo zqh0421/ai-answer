@@ -5,12 +5,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from .. import models, schema
+from .. import models
 from ..config import Settings, get_settings
 from ..dependencies import get_db
 from ..services.semantic_schema import generate_short_id
 from ..tags import Tags
-from ..schema.questionSchema import Question
 from ..lti.routes import try_submit_lti_grade_for_launch
 
 router = APIRouter(prefix="/api", tags=[Tags.CONTENT_RECORDS])
@@ -27,29 +26,24 @@ _NON_LTI_LEARNER_SENTINELS = {
 
 
 def _resolve_mcq_score(db: Session, question_id: str, answer: str) -> tuple[float, float] | None:
-    if question_id.startswith("qn_"):
-        rows = db.execute(
-            text(
-                """
-                SELECT o.option_value, o.is_correct
-                FROM content_question q
-                JOIN content_question_version qv ON qv.question_version_id = q.current_version_id
-                JOIN content_question_interaction i ON i.question_version_id = qv.question_version_id
-                JOIN content_question_interaction_option o ON o.interaction_id = i.interaction_id
-                WHERE q.question_id = :question_id
-                ORDER BY i.interaction_order ASC, o.option_order ASC
-                """
-            ),
-            {"question_id": question_id},
-        ).mappings().all()
-        options = [{"text": str(r["option_value"] or ""), "isCorrect": bool(r["is_correct"])} for r in rows]
-    else:
-        question = db.query(Question).filter(Question.question_id == question_id).first()
-        if not question:
-            return None
-        options = question.options or []
-        if not isinstance(options, list):
-            return None
+    if not question_id.startswith("qn_"):
+        return None
+
+    rows = db.execute(
+        text(
+            """
+            SELECT o.option_value, o.is_correct
+            FROM content_question q
+            JOIN content_question_version qv ON qv.question_version_id = q.current_version_id
+            JOIN content_question_interaction i ON i.question_version_id = qv.question_version_id
+            JOIN content_question_interaction_option o ON o.interaction_id = i.interaction_id
+            WHERE q.question_id = :question_id
+            ORDER BY i.interaction_order ASC, o.option_order ASC
+            """
+        ),
+        {"question_id": question_id},
+    ).mappings().all()
+    options = [{"text": str(r["option_value"] or ""), "isCorrect": bool(r["is_correct"])} for r in rows]
 
     normalized_answer = (answer or "").strip()
     selected_index = None
@@ -280,120 +274,92 @@ def record_result(
                 }
             )
 
-        is_semantic_question = str(result.question_id).startswith("qn_")
-        created_record_id: str | int
-
-        if is_semantic_question:
-            question_version_id = _semantic_question_version_id(db, result.question_id)
-            if not question_version_id:
-                raise HTTPException(status_code=400, detail="semantic question current_version_id not found")
-
-            inferred_score = _resolve_mcq_score(db, result.question_id, result.answer)
-            score_given = result.score_given if result.score_given is not None else (inferred_score[0] if inferred_score else None)
-            score_maximum = result.score_maximum if result.score_maximum is not None else (inferred_score[1] if inferred_score else None)
-            previous_attempts = db.execute(
-                text(
-                    """
-                    SELECT COUNT(*)::INT
-                    FROM feedback_record_result
-                    WHERE question_id = :question_id
-                      AND participant_id = :participant_id
-                    """
-                ),
-                {"question_id": result.question_id, "participant_id": result.learner_id},
-            ).scalar()
-            attempt_count = int(previous_attempts or 0) + 1
-            semantic_record_id = _next_feedback_record_result_id(db)
-
-            db.execute(
-                text(
-                    """
-                    INSERT INTO feedback_record_result (
-                        record_result_id,
-                        participant_id,
-                        question_id,
-                        question_version_id,
-                        answer_text,
-                        attempt_count,
-                        feedback_text,
-                        structured_feedback_text,
-                        score_given_raw,
-                        score_given,
-                        score_maximum,
-                        preferred_info_type,
-                        generation_strategy,
-                        feedback_framework,
-                        system_total_response_time_ms
-                    )
-                    VALUES (
-                        :record_result_id,
-                        :participant_id,
-                        :question_id,
-                        :question_version_id,
-                        :answer_text,
-                        :attempt_count,
-                        :feedback_text,
-                        :structured_feedback_text,
-                        :score_given_raw,
-                        :score_given,
-                        :score_maximum,
-                        :preferred_info_type,
-                        :generation_strategy,
-                        :feedback_framework,
-                        :system_total_response_time_ms
-                    )
-                    """
-                ),
-                {
-                    "record_result_id": semantic_record_id,
-                    "participant_id": result.learner_id,
-                    "question_id": result.question_id,
-                    "question_version_id": question_version_id,
-                    "answer_text": result.answer,
-                    "attempt_count": attempt_count,
-                    "feedback_text": result.feedback,
-                    "structured_feedback_text": result.feedback,
-                    "score_given_raw": score_given,
-                    "score_given": score_given,
-                    "score_maximum": score_maximum,
-                    "preferred_info_type": result.preferred_info_type,
-                    "generation_strategy": result.prompt_engineering_method,
-                    "feedback_framework": result.feedback_framework,
-                    "system_total_response_time_ms": result.system_total_response_time,
-                },
+        if not str(result.question_id).startswith("qn_"):
+            raise HTTPException(
+                status_code=410,
+                detail="Legacy record_result table writes are removed. Provide a semantic question_id (qn_...).",
             )
-            db.commit()
-            created_record_id = semantic_record_id
-        else:
-            record_data = {
-                "learner_id": result.learner_id,
-                "study_id": result.study_id,
-                "session_id": result.session_id,
-                "question_id": result.question_id,
-                "answer": result.answer,
-                "preferred_info_type": result.preferred_info_type,
-                "prompt_engineering_method": result.prompt_engineering_method,
-                "feedback_framework": result.feedback_framework,
-                "feedback": result.feedback,
-                "system_total_response_time": result.system_total_response_time,
-                "submission_time": result.submission_time,
-            }
 
-            if result.reference_slide_id:
-                record_data.update(
-                    {
-                        "reference_slide_id": result.reference_slide_id,
-                        "reference_slide_content": result.reference_slide_content,
-                        "reference_slide_page_number": result.reference_slide_page_number,
-                        "slide_retrieval_range": result.slide_retrieval_range,
-                    }
+        question_version_id = _semantic_question_version_id(db, result.question_id)
+        if not question_version_id:
+            raise HTTPException(status_code=400, detail="semantic question current_version_id not found")
+
+        inferred_score = _resolve_mcq_score(db, result.question_id, result.answer)
+        score_given = result.score_given if result.score_given is not None else (inferred_score[0] if inferred_score else None)
+        score_maximum = result.score_maximum if result.score_maximum is not None else (inferred_score[1] if inferred_score else None)
+        previous_attempts = db.execute(
+            text(
+                """
+                SELECT COUNT(*)::INT
+                FROM feedback_record_result
+                WHERE question_id = :question_id
+                  AND participant_id = :participant_id
+                """
+            ),
+            {"question_id": result.question_id, "participant_id": result.learner_id},
+        ).scalar()
+        attempt_count = int(previous_attempts or 0) + 1
+        semantic_record_id = _next_feedback_record_result_id(db)
+
+        db.execute(
+            text(
+                """
+                INSERT INTO feedback_record_result (
+                    record_result_id,
+                    participant_id,
+                    question_id,
+                    question_version_id,
+                    answer_text,
+                    attempt_count,
+                    feedback_text,
+                    structured_feedback_text,
+                    score_given_raw,
+                    score_given,
+                    score_maximum,
+                    preferred_info_type,
+                    generation_strategy,
+                    feedback_framework,
+                    system_total_response_time_ms
                 )
-
-            db_result = schema.RecordResult(**record_data)
-            db.add(db_result)
-            db.commit()
-            db.refresh(db_result)
-            created_record_id = db_result.id
+                VALUES (
+                    :record_result_id,
+                    :participant_id,
+                    :question_id,
+                    :question_version_id,
+                    :answer_text,
+                    :attempt_count,
+                    :feedback_text,
+                    :structured_feedback_text,
+                    :score_given_raw,
+                    :score_given,
+                    :score_maximum,
+                    :preferred_info_type,
+                    :generation_strategy,
+                    :feedback_framework,
+                    :system_total_response_time_ms
+                )
+                """
+            ),
+            {
+                "record_result_id": semantic_record_id,
+                "participant_id": result.learner_id,
+                "question_id": result.question_id,
+                "question_version_id": question_version_id,
+                "answer_text": result.answer,
+                "attempt_count": attempt_count,
+                "feedback_text": result.feedback,
+                "structured_feedback_text": result.feedback,
+                "score_given_raw": score_given,
+                "score_given": score_given,
+                "score_maximum": score_maximum,
+                "preferred_info_type": result.preferred_info_type,
+                "generation_strategy": result.prompt_engineering_method,
+                "feedback_framework": result.feedback_framework,
+                "system_total_response_time_ms": result.system_total_response_time,
+            },
+        )
+        db.commit()
+        created_record_id: str = semantic_record_id
 
         try:
             lti_grade = _attempt_lti_grade_passback(
@@ -428,63 +394,16 @@ def record_result(
 
 
 @router.post("/record_result/{record_id}/audio-usage")
-def log_audio_narration_usage(record_id: int, payload: models.AudioNarrationUsageEvent, db: Session = Depends(get_db)):
-    try:
-        db_record = db.query(schema.RecordResult).filter(schema.RecordResult.id == record_id).first()
-        if not db_record:
-            raise HTTPException(status_code=404, detail="Record not found")
-
-        if payload.action == "start":
-            usage = schema.AudioNarrationUsage(
-                record_result_id=record_id,
-                session_id=payload.session_id,
-                started_at=payload.timestamp,
-            )
-            db.add(usage)
-            db.commit()
-            db.refresh(usage)
-            return {"usage_id": usage.id, "message": "Audio narration started"}
-
-        if payload.action == "stop":
-            query = db.query(schema.AudioNarrationUsage).filter(
-                schema.AudioNarrationUsage.record_result_id == record_id,
-                schema.AudioNarrationUsage.session_id == payload.session_id,
-                schema.AudioNarrationUsage.ended_at.is_(None),
-            )
-
-            if payload.usage_id is not None:
-                query = query.filter(schema.AudioNarrationUsage.id == payload.usage_id)
-
-            usage = query.order_by(schema.AudioNarrationUsage.started_at.desc()).first()
-
-            if not usage:
-                raise HTTPException(status_code=404, detail="Active audio narration session not found")
-
-            usage.ended_at = payload.timestamp
-            db.commit()
-            db.refresh(usage)
-            return {"usage_id": usage.id, "message": "Audio narration stopped"}
-
-        raise HTTPException(status_code=400, detail="Unsupported action")
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=400, detail=f"Error logging audio narration usage: {str(e)}")
+def log_audio_narration_usage(record_id: str, _payload: models.AudioNarrationUsageEvent, _db: Session = Depends(get_db)):
+    raise HTTPException(
+        status_code=410,
+        detail="Legacy audio_narration_usage endpoint is removed and has no semantic-table replacement yet.",
+    )
 
 
 @router.put("/record_result/{record_id}/rating")
-def update_rating(record_id: int, rating_update: models.UpdateRatingModel, db: Session = Depends(get_db)):
-    try:
-        db_record = db.query(schema.RecordResult).filter(schema.RecordResult.id == record_id).first()
-        if not db_record:
-            raise HTTPException(status_code=404, detail="Record not found")
-
-        db_record.rating = rating_update.rating
-        db.commit()
-
-        return {"message": "Rating updated successfully", "rating": rating_update.rating}
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=400, detail=f"Error updating rating: {str(e)}")
+def update_rating(record_id: str, _rating_update: models.UpdateRatingModel, _db: Session = Depends(get_db)):
+    raise HTTPException(
+        status_code=410,
+        detail="Legacy record_result rating endpoint is removed and has no semantic-table replacement yet.",
+    )
