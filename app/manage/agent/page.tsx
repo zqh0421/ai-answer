@@ -591,10 +591,11 @@ const parsePromptBlocksMeta = (data: unknown): PromptBlocksMeta => {
 
   visit(data, 0);
   if (!candidate) return {};
+  const resolvedCandidate = candidate as Record<string, unknown>;
 
   return {
-    feedback_generation_block: toMeta(candidate.feedback_generation_block),
-    additional_formatting_instructions_block: toMeta(candidate.additional_formatting_instructions_block),
+    feedback_generation_block: toMeta(resolvedCandidate['feedback_generation_block']),
+    additional_formatting_instructions_block: toMeta(resolvedCandidate['additional_formatting_instructions_block']),
   };
 };
 
