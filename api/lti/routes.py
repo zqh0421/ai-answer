@@ -305,15 +305,39 @@ async def lti_login(request: Request, settings: Settings = Depends(get_settings)
     return RedirectResponse(url=redirect_url, status_code=303)
 
 
-@router.post("/launch")
+@router.api_route("/launch", methods=["GET", "POST"])
 async def lti_launch(request: Request, settings: Settings = Depends(get_settings)):
     """
-    Launch endpoint (receives form_post with id_token and state).
+    Launch endpoint.
+    - POST: standard LTI form_post with id_token/state
+    - GET: compatibility for redirect targets carrying lti_* context params
     """
-    form = await request.form()
-    state = form.get("state")
-    id_token = form.get("id_token")
-    form_dict = {k: v for k, v in form.items()}
+    if request.method == "GET":
+        query_dict = dict(request.query_params)
+        has_lti_context = any(
+            query_dict.get(key)
+            for key in ("lti_launch_id", "lti_user_id", "lti_context_id", "lti_resource_link_id")
+        )
+        if has_lti_context and not query_dict.get("id_token") and not query_dict.get("state"):
+            ui_url = _append_query_params(
+                f"{settings.public_base_url}/lti/questions",
+                **{
+                    "lti_launch_id": query_dict.get("lti_launch_id"),
+                    "lti_user_id": query_dict.get("lti_user_id"),
+                    "lti_context_id": query_dict.get("lti_context_id"),
+                    "lti_resource_link_id": query_dict.get("lti_resource_link_id"),
+                    "lti_mode": query_dict.get("lti_mode"),
+                    "launch_id": query_dict.get("launch_id"),
+                },
+            )
+            return RedirectResponse(url=ui_url, status_code=302)
+        form_dict = query_dict
+    else:
+        form = await request.form()
+        form_dict = {k: v for k, v in form.items()}
+
+    state = form_dict.get("state")
+    id_token = form_dict.get("id_token")
     launch_input_debug = dict(form_dict)
     if "id_token" in launch_input_debug and launch_input_debug["id_token"] is not None:
         token_str = str(launch_input_debug["id_token"])
