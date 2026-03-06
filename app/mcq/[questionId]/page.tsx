@@ -467,6 +467,17 @@ function PageChildren({
       setIsAndrewModalOpen(false);
       return;
     }
+    const normalizedLearnerIdFromUrl = (learnerIdFromUrl || "").trim();
+    if (normalizedLearnerIdFromUrl) {
+      setAndrewId(normalizedLearnerIdFromUrl);
+      setAndrewIdCookie(normalizedLearnerIdFromUrl);
+      setIsAndrewModalOpen(false);
+      return;
+    }
+    if (prolificPid || participantId) {
+      setIsAndrewModalOpen(false);
+      return;
+    }
     const savedAndrewId = getAndrewIdFromCookie();
     if (savedAndrewId) {
       setAndrewId(savedAndrewId);
@@ -475,7 +486,7 @@ function PageChildren({
     }
     setAndrewId("");
     setIsAndrewModalOpen(true);
-  }, [debugModeEnabled]);
+  }, [debugModeEnabled, learnerIdFromUrl, participantId, prolificPid]);
 
   const handleSaveAndrewId = useCallback((value: string) => {
     const normalized = value.trim();
