@@ -13,6 +13,7 @@ from .controllers_mcq.feedback.rag_cot_mcq import (
 )
 from ..schema.questionSchema import Question
 from ..services.feedback_composition_expr import CompositionExprError, compile_condition_expression
+from ..services.feedback_link_generation_jobs import generate_static_feedback_for_feedback_link
 import uuid
 
 router = APIRouter(prefix="/api/v2/mcq", tags=["Feedback / MCQ (v2)"])
@@ -219,10 +220,12 @@ def _semantic_static_feedback_for_option(
     target_option_id = str(options[selected_option_index]["interaction_option_id"])
     is_correct = bool(options[selected_option_index]["is_correct"])
 
+    feedback_link_id: str | None = None
+
     row = db.execute(
         text(
             """
-            SELECT fl.static_feedback_text
+            SELECT fl.feedback_link_id, fl.static_feedback_text
             FROM content_question q
             JOIN feedback_link fl ON fl.question_version_id = q.current_version_id
             WHERE q.question_id = :question_id
@@ -236,13 +239,15 @@ def _semantic_static_feedback_for_option(
         ),
         {"question_id": question_id, "agent_id": agent_id, "target_option_id": target_option_id},
     ).mappings().first()
-    if row and row.get("static_feedback_text"):
-        return str(row["static_feedback_text"]), is_correct
+    if row:
+        feedback_link_id = str(row["feedback_link_id"])
+        if row.get("static_feedback_text"):
+            return str(row["static_feedback_text"]), is_correct
 
     fallback = db.execute(
         text(
             """
-            SELECT fl.static_feedback_text
+            SELECT fl.feedback_link_id, fl.static_feedback_text
             FROM content_question q
             JOIN feedback_link fl ON fl.question_version_id = q.current_version_id
             WHERE q.question_id = :question_id
@@ -255,8 +260,26 @@ def _semantic_static_feedback_for_option(
         ),
         {"question_id": question_id, "agent_id": agent_id},
     ).mappings().first()
-    if fallback and fallback.get("static_feedback_text"):
-        return str(fallback["static_feedback_text"]), is_correct
+    if fallback:
+        feedback_link_id = str(fallback["feedback_link_id"])
+        if fallback.get("static_feedback_text"):
+            return str(fallback["static_feedback_text"]), is_correct
+
+    # use_latest_version fallback: if saved static feedback is missing, generate at runtime.
+    if feedback_link_id:
+        try:
+            generated = generate_static_feedback_for_feedback_link(
+                feedback_link_id,
+                persist=False,
+                enforce_ai_role=True,
+                include_debug=False,
+            )
+            if generated.get("ok"):
+                runtime_text = str(generated.get("static_feedback_text") or "").strip()
+                if runtime_text:
+                    return runtime_text, is_correct
+        except Exception:
+            pass
 
     return None, is_correct
 

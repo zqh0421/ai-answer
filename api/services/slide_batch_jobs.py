@@ -121,6 +121,10 @@ class SlideBatchJobManager:
         self._queue_name = settings.slide_batch_queue_name
         self._default_timeout = str(settings.slide_batch_job_timeout)
         self._result_ttl = str(settings.slide_batch_rq_result_ttl)
+        self._max_retries = settings.slide_batch_max_retries if settings.slide_batch_max_retries > 0 else 4
+        self._retry_base_seconds = (
+            settings.slide_batch_retry_base_seconds if settings.slide_batch_retry_base_seconds > 0 else 1.0
+        )
 
     def _queue(self):
         try:
@@ -132,6 +136,19 @@ class SlideBatchJobManager:
             ) from exc
         conn = Redis.from_url(self._redis_url)
         return Queue(self._queue_name, connection=conn, default_timeout=self._default_timeout)
+
+    def _rq_retry(self):
+        if self._max_retries <= 1:
+            return None
+        try:
+            from rq import Retry
+        except Exception:
+            return None
+
+        # Exponential backoff intervals, e.g. 1, 2, 4, 8...
+        retry_count = max(1, int(self._max_retries))
+        intervals = [max(1, int(self._retry_base_seconds * (2 ** i))) for i in range(retry_count - 1)]
+        return Retry(max=retry_count, interval=intervals)
 
     def enqueue_job(self, job_id: str) -> None:
         db = SessionLocal()
@@ -148,8 +165,14 @@ class SlideBatchJobManager:
             db.close()
 
         queue = self._queue()
+        retry = self._rq_retry()
         for (item_id,) in item_ids:
-            queue.enqueue(process_slide_batch_item, str(item_id), result_ttl=int(self._result_ttl))
+            queue.enqueue(
+                process_slide_batch_item,
+                str(item_id),
+                result_ttl=int(self._result_ttl),
+                retry=retry,
+            )
 
     def enqueue_callable(self, func: Any, *args: Any, **kwargs: Any) -> str:
         queue = self._queue()
@@ -159,7 +182,13 @@ class SlideBatchJobManager:
             func_name = getattr(func, "__name__", "") or ""
             if module_name and func_name:
                 rq_target = f"{module_name}.{func_name}"
-        job = queue.enqueue(rq_target, *args, result_ttl=int(self._result_ttl), **kwargs)
+        job = queue.enqueue(
+            rq_target,
+            *args,
+            result_ttl=int(self._result_ttl),
+            retry=self._rq_retry(),
+            **kwargs,
+        )
         return job.id
 
     def queue_name(self) -> str:

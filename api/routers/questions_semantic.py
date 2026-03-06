@@ -1938,7 +1938,7 @@ def batch_attach_feedback_agent_to_questions(payload: BatchAttachFeedbackAgentRe
             [{"question_id": qid, "code": "NOT_FOUND", "message": "feedback agent not found"} for qid in requested_ids],
         )
 
-    agent_role = str(agent.get("role") or "")
+    agent_role = str(agent.get("role") or "").strip().lower()
     static_feedback_text = (payload.static_feedback_text or "").strip() or None
 
     for question_id in requested_ids:
@@ -1957,6 +1957,7 @@ def batch_attach_feedback_agent_to_questions(payload: BatchAttachFeedbackAgentRe
             existing_link_id = _find_visible_question_version_link(
                 db, question_version_id=current_version_id, agent_id=payload.agent_id
             )
+            was_existing_link = bool(existing_link_id)
             if existing_link_id:
                 # Idempotent attach: reuse existing link and optionally update static text/priority.
                 update_params = {
@@ -2006,6 +2007,9 @@ def batch_attach_feedback_agent_to_questions(payload: BatchAttachFeedbackAgentRe
                             "question_id": question_id,
                             "feedback_link_id": str(attached_link_id),
                             "job_id": str(rq_job_id),
+                            "generation_enqueue_reason": (
+                                "attach_existing_refresh" if was_existing_link else "attach_new"
+                            ),
                         }
                     )
                 except Exception as enqueue_err:
@@ -2029,6 +2033,9 @@ def batch_attach_feedback_agent_to_questions(payload: BatchAttachFeedbackAgentRe
                                 "version_id": inline_fallback.get("version_id"),
                                 "revision_no": inline_fallback.get("revision_no"),
                                 "skipped": bool(inline_fallback.get("skipped")),
+                                "generation_enqueue_reason": (
+                                    "attach_existing_refresh" if was_existing_link else "attach_new"
+                                ),
                             }
                         )
                     else:
@@ -2144,6 +2151,7 @@ def attach_agent_to_single_question(question_id: str, payload: SingleAttachAgent
     existing_link_id = _find_visible_question_version_link(
         db, question_version_id=current_version_id, agent_id=payload.agent_id
     )
+    was_existing_link = bool(existing_link_id)
     attached_link_id = existing_link_id
     if not existing_link_id:
         attached_link_id = _insert_feedback_link(
@@ -2160,7 +2168,7 @@ def attach_agent_to_single_question(question_id: str, payload: SingleAttachAgent
         db.commit()
 
     queued_job = None
-    if str(agent.get("role") or "") == "ai":
+    if str(agent.get("role") or "").strip().lower() == "ai":
         try:
             rq_job_id = slide_batch_job_manager.enqueue_callable(
                 generate_static_feedback_with_version_snapshot_for_feedback_link,
@@ -2168,7 +2176,11 @@ def attach_agent_to_single_question(question_id: str, payload: SingleAttachAgent
                 created_by=payload.updated_by,
             )
             set_feedback_link_generation_job_id(str(attached_link_id), str(rq_job_id))
-            queued_job = {"job_id": str(rq_job_id), "feedback_link_id": str(attached_link_id)}
+            queued_job = {
+                "job_id": str(rq_job_id),
+                "feedback_link_id": str(attached_link_id),
+                "generation_enqueue_reason": "attach_existing_refresh" if was_existing_link else "attach_new",
+            }
         except Exception as enqueue_err:
             inline_fallback = _run_inline_feedback_generation_fallback(
                 feedback_link_id=str(attached_link_id),
@@ -2183,6 +2195,7 @@ def attach_agent_to_single_question(question_id: str, payload: SingleAttachAgent
                 "version_id": inline_fallback.get("version_id"),
                 "revision_no": inline_fallback.get("revision_no"),
                 "error": inline_fallback.get("error"),
+                "generation_enqueue_reason": "attach_existing_refresh" if was_existing_link else "attach_new",
             }
 
     return {
@@ -3027,7 +3040,7 @@ def run_question_feedback_runtime(
                 ).scalar()
         runtime_generated_text = None
         runtime_generation_attempted = False
-        if feedback_text is None and feedback_link_id:
+        if (feedback_text is None or not str(feedback_text).strip()) and feedback_link_id:
             agent = _get_feedback_agent(db, agent_id)
             if agent and str(agent.get("role") or "") == "ai":
                 runtime_generation_attempted = True
