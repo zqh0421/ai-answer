@@ -3,9 +3,10 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import func, text
+from sqlalchemy.exc import OperationalError
 
 from .. import schema
-from ..database import SessionLocal
+from ..database import SessionLocal, reset_database_connection
 from .slide_pages import import_slide_pages
 
 logger = logging.getLogger(__name__)
@@ -145,79 +146,89 @@ def _process_slide_batch_item_wrapper(item_id: str) -> None:
 
 
 def process_slide_page_import_job_item(item_id: str) -> None:
-    db = SessionLocal()
-    try:
-        item = db.query(schema.SlidePageImportJobItem).filter(schema.SlidePageImportJobItem.id == item_id).first()
-        if not item:
-            return
-        job = db.query(schema.SlidePageImportJob).filter(schema.SlidePageImportJob.job_id == item.job_id).first()
-        if not job or item.status != "queued":
-            return
-
-        if job.cancel_requested:
-            item.status = "cancelled"
-            item.current_step_label = "cancelled"
-            item.finished_at = _now()
-            recompute_page_import_job_aggregate(db, job)
-            db.commit()
-            return
-
-        item.status = "processing"
-        item.current_step_label = "fetching_pdf"
-        item.started_at = _now()
-        recompute_page_import_job_aggregate(db, job)
-        db.commit()
-
-        slide = db.query(schema.Slide).filter(schema.Slide.id == item.slide_id).first()
-        if not slide:
-            item.status = "failed"
-            item.error = "Slide not found"
-            item.current_step_label = "failed"
-            item.finished_at = _now()
-            recompute_page_import_job_aggregate(db, job)
-            db.commit()
-            return
-
-        pages = db.query(schema.Page).filter(schema.Page.slide_id == item.slide_id).count()
-        if pages > 0:
-            item.status = "skipped"
-            item.completed_steps = item.total_steps
-            item.current_step_label = "already_imported"
-            item.finished_at = _now()
-            recompute_page_import_job_aggregate(db, job)
-            db.commit()
-            _enqueue_waiting_process_items_for_slide(str(item.slide_id))
-            return
-
+    for attempt in range(2):
+        db = SessionLocal()
         try:
-            from ..config import get_settings
+            item = db.query(schema.SlidePageImportJobItem).filter(schema.SlidePageImportJobItem.id == item_id).first()
+            if not item:
+                return
+            job = db.query(schema.SlidePageImportJob).filter(schema.SlidePageImportJob.job_id == item.job_id).first()
+            if not job or item.status != "queued":
+                return
 
-            import_slide_pages(
-                db,
-                slide_id=str(item.slide_id),
-                slide_google_id=slide.slide_google_id,
-                settings=get_settings(),
-                replace_existing=False,
-            )
-            item.status = "processed"
-            item.completed_steps = item.total_steps
-            item.current_step_label = "done"
-            item.finished_at = _now()
+            if job.cancel_requested:
+                item.status = "cancelled"
+                item.current_step_label = "cancelled"
+                item.finished_at = _now()
+                recompute_page_import_job_aggregate(db, job)
+                db.commit()
+                return
+
+            item.status = "processing"
+            item.current_step_label = "fetching_pdf"
+            item.started_at = _now()
             recompute_page_import_job_aggregate(db, job)
             db.commit()
-        except Exception as exc:
-            logger.exception(
-                "slide_page_import_item_failed",
-                extra={"job_id": str(job.job_id), "slide_id": str(item.slide_id), "error": str(exc)},
-            )
-            item.status = "failed"
-            item.error = str(exc)
-            item.current_step_label = "failed"
-            item.finished_at = _now()
-            recompute_page_import_job_aggregate(db, job)
-            db.commit()
+
+            slide = db.query(schema.Slide).filter(schema.Slide.id == item.slide_id).first()
+            if not slide:
+                item.status = "failed"
+                item.error = "Slide not found"
+                item.current_step_label = "failed"
+                item.finished_at = _now()
+                recompute_page_import_job_aggregate(db, job)
+                db.commit()
+                return
+
+            pages = db.query(schema.Page).filter(schema.Page.slide_id == item.slide_id).count()
+            if pages > 0:
+                item.status = "skipped"
+                item.completed_steps = item.total_steps
+                item.current_step_label = "already_imported"
+                item.finished_at = _now()
+                recompute_page_import_job_aggregate(db, job)
+                db.commit()
+                _enqueue_waiting_process_items_for_slide(str(item.slide_id))
+                return
+
+            try:
+                from ..config import get_settings
+
+                import_slide_pages(
+                    db,
+                    slide_id=str(item.slide_id),
+                    slide_google_id=slide.slide_google_id,
+                    settings=get_settings(),
+                    replace_existing=False,
+                )
+                item.status = "processed"
+                item.completed_steps = item.total_steps
+                item.current_step_label = "done"
+                item.finished_at = _now()
+                recompute_page_import_job_aggregate(db, job)
+                db.commit()
+            except Exception as exc:
+                logger.exception(
+                    "slide_page_import_item_failed",
+                    extra={"job_id": str(job.job_id), "slide_id": str(item.slide_id), "error": str(exc)},
+                )
+                item.status = "failed"
+                item.error = str(exc)
+                item.current_step_label = "failed"
+                item.finished_at = _now()
+                recompute_page_import_job_aggregate(db, job)
+                db.commit()
+            finally:
+                _enqueue_waiting_process_items_for_slide(str(item.slide_id))
+            return
+        except OperationalError:
+            if attempt == 0:
+                logger.warning("slide_page_import_db_connection_lost_retrying", extra={"item_id": item_id})
+                try:
+                    reset_database_connection()
+                except Exception:
+                    logger.exception("slide_page_import_db_reset_failed")
+                continue
+            raise
         finally:
-            _enqueue_waiting_process_items_for_slide(str(item.slide_id))
-    finally:
-        db.close()
-
+            db.close()

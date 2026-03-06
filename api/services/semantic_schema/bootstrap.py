@@ -303,6 +303,7 @@ def _ddl_steps() -> List[DDLStep]:
                 score_normalize_to_maximum BOOLEAN NOT NULL DEFAULT TRUE,
                 score_rounding_mode VARCHAR(10) NOT NULL DEFAULT 'none',
                 score_rounding_step NUMERIC(10,4) NULL,
+                randomize_option_order BOOLEAN NOT NULL DEFAULT TRUE,
                 question_vector DOUBLE PRECISION[] NULL,
                 question_answer_vector DOUBLE PRECISION[] NULL,
                 created_by {ID_TYPE} NOT NULL,
@@ -337,6 +338,13 @@ def _ddl_steps() -> List[DDLStep]:
             ALTER TABLE content_question_version
             ADD COLUMN IF NOT EXISTS question_vector DOUBLE PRECISION[],
             ADD COLUMN IF NOT EXISTS question_answer_vector DOUBLE PRECISION[];
+            """,
+        ),
+        DDLStep(
+            "content_question_version_add_randomize_option_order",
+            """
+            ALTER TABLE content_question_version
+            ADD COLUMN IF NOT EXISTS randomize_option_order BOOLEAN NOT NULL DEFAULT TRUE;
             """,
         ),
         DDLStep(

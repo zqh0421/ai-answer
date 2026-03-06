@@ -6,11 +6,11 @@ from typing import Any
 
 from sqlalchemy import func
 from sqlalchemy import text
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import OperationalError, SQLAlchemyError
 
 from .. import schema
 from ..config import get_settings
-from ..database import SessionLocal
+from ..database import SessionLocal, reset_database_connection
 from .slide_pages import import_slide_pages
 from .vision_jobs import run_vision_for_slide
 
@@ -169,81 +169,121 @@ class SlideBatchJobManager:
         return self._redis_url
 
 
-def process_slide_batch_item(item_id: str) -> None:
-    db = SessionLocal()
-    try:
-        item = db.query(schema.SlideProcessJobItem).filter(schema.SlideProcessJobItem.id == item_id).first()
-        if not item:
-            return
-        job = db.query(schema.SlideProcessJob).filter(schema.SlideProcessJob.job_id == item.job_id).first()
-        if not job:
-            return
+def _process_slide_batch_item_once(db, item_id: str) -> None:
+    item = db.query(schema.SlideProcessJobItem).filter(schema.SlideProcessJobItem.id == item_id).first()
+    if not item:
+        return
+    job = db.query(schema.SlideProcessJob).filter(schema.SlideProcessJob.job_id == item.job_id).first()
+    if not job:
+        return
 
-        if item.status != "queued":
-            return
+    if item.status != "queued":
+        return
 
-        if job.cancel_requested:
-            logger.info(
-                "slide_batch_item_cancelled_before_start",
-                extra={"job_id": str(job.job_id), "slide_id": str(item.slide_id), "step": "precheck", "status": "cancelled"},
-            )
-            item.status = "cancelled"
-            item.finished_at = _now()
-            recompute_job_aggregate(db, job)
-            db.commit()
-            return
-
-        item.status = "processing"
-        item.started_at = _now()
-        item.error = None
-        item.completed_steps = item.completed_steps or 0
-        item.current_step_label = "starting"
+    if job.cancel_requested:
         logger.info(
-            "slide_batch_item_processing",
-            extra={"job_id": str(job.job_id), "slide_id": str(item.slide_id), "step": "start", "status": "processing"},
+            "slide_batch_item_cancelled_before_start",
+            extra={"job_id": str(job.job_id), "slide_id": str(item.slide_id), "step": "precheck", "status": "cancelled"},
         )
+        item.status = "cancelled"
+        item.finished_at = _now()
         recompute_job_aggregate(db, job)
         db.commit()
+        return
 
-        slide = db.query(schema.Slide).filter(schema.Slide.id == item.slide_id).first()
-        if not slide:
+    item.status = "processing"
+    item.started_at = _now()
+    item.error = None
+    item.completed_steps = item.completed_steps or 0
+    item.current_step_label = "starting"
+    logger.info(
+        "slide_batch_item_processing",
+        extra={"job_id": str(job.job_id), "slide_id": str(item.slide_id), "step": "start", "status": "processing"},
+    )
+    recompute_job_aggregate(db, job)
+    db.commit()
+
+    slide = db.query(schema.Slide).filter(schema.Slide.id == item.slide_id).first()
+    if not slide:
+        logger.warning(
+            "slide_batch_item_failed",
+            extra={
+                "job_id": str(job.job_id),
+                "slide_id": str(item.slide_id),
+                "step": "load_slide",
+                "status": "failed",
+                "error": "Slide not found",
+            },
+        )
+        item.status = "failed"
+        item.error = "Slide not found"
+        item.finished_at = _now()
+        recompute_job_aggregate(db, job)
+        db.commit()
+        return
+
+    # Prerequisite: if a page-import job exists for this slide and is not finished, keep this item queued.
+    try:
+        latest_page_import_item = (
+            db.query(schema.SlidePageImportJobItem)
+            .filter(schema.SlidePageImportJobItem.slide_id == item.slide_id)
+            .order_by(schema.SlidePageImportJobItem.updated_at.desc())
+            .first()
+        )
+    except SQLAlchemyError:
+        # Older jobs / deployments may not have page-import job tables yet.
+        db.rollback()
+        latest_page_import_item = None
+    if latest_page_import_item and latest_page_import_item.status in {"queued", "processing"}:
+        item.status = "queued"
+        item.current_step_label = "waiting_page_import"
+        item.started_at = None
+        recompute_job_aggregate(db, job)
+        db.commit()
+        return
+
+    page_stats = (
+        db.query(
+            func.count(schema.Page.page_id).label("total_pages"),
+            func.count(schema.Page.image_text).label("vision_pages"),
+            func.count(schema.Page.vector).label("vector_pages"),
+        )
+        .filter(schema.Page.slide_id == item.slide_id)
+        .one()
+    )
+    total_pages = int(page_stats.total_pages or 0)
+    vision_pages = int(page_stats.vision_pages or 0)
+    vector_pages = int(page_stats.vector_pages or 0)
+
+    if total_pages == 0:
+        try:
+            item.current_step_label = "importing_pages"
+            db.commit()
+            import_slide_pages(
+                db,
+                slide_id=str(item.slide_id),
+                slide_google_id=slide.slide_google_id,
+                settings=get_settings(),
+                replace_existing=False,
+            )
+        except Exception as exc:
             logger.warning(
                 "slide_batch_item_failed",
                 extra={
                     "job_id": str(job.job_id),
                     "slide_id": str(item.slide_id),
-                    "step": "load_slide",
+                    "step": "load_pages",
                     "status": "failed",
-                    "error": "Slide not found",
+                    "error": f"No pages found for this slide ({exc})",
                 },
             )
             item.status = "failed"
-            item.error = "Slide not found"
+            item.error = "No pages found for this slide"
+            item.current_step_label = "failed_no_pages"
             item.finished_at = _now()
             recompute_job_aggregate(db, job)
             db.commit()
             return
-
-        # Prerequisite: if a page-import job exists for this slide and is not finished, keep this item queued.
-        try:
-            latest_page_import_item = (
-                db.query(schema.SlidePageImportJobItem)
-                .filter(schema.SlidePageImportJobItem.slide_id == item.slide_id)
-                .order_by(schema.SlidePageImportJobItem.updated_at.desc())
-                .first()
-            )
-        except SQLAlchemyError:
-            # Older jobs / deployments may not have page-import job tables yet.
-            db.rollback()
-            latest_page_import_item = None
-        if latest_page_import_item and latest_page_import_item.status in {"queued", "processing"}:
-            item.status = "queued"
-            item.current_step_label = "waiting_page_import"
-            item.started_at = None
-            recompute_job_aggregate(db, job)
-            db.commit()
-            return
-
         page_stats = (
             db.query(
                 func.count(schema.Page.page_id).label("total_pages"),
@@ -256,184 +296,160 @@ def process_slide_batch_item(item_id: str) -> None:
         total_pages = int(page_stats.total_pages or 0)
         vision_pages = int(page_stats.vision_pages or 0)
         vector_pages = int(page_stats.vector_pages or 0)
-
         if total_pages == 0:
-            try:
-                item.current_step_label = "importing_pages"
-                db.commit()
-                import_slide_pages(
-                    db,
-                    slide_id=str(item.slide_id),
-                    slide_google_id=slide.slide_google_id,
-                    settings=get_settings(),
-                    replace_existing=False,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "slide_batch_item_failed",
-                    extra={
-                        "job_id": str(job.job_id),
-                        "slide_id": str(item.slide_id),
-                        "step": "load_pages",
-                        "status": "failed",
-                        "error": f"No pages found for this slide ({exc})",
-                    },
-                )
-                item.status = "failed"
-                item.error = "No pages found for this slide"
-                item.current_step_label = "failed_no_pages"
-                item.finished_at = _now()
-                recompute_job_aggregate(db, job)
-                db.commit()
-                return
-            page_stats = (
-                db.query(
-                    func.count(schema.Page.page_id).label("total_pages"),
-                    func.count(schema.Page.image_text).label("vision_pages"),
-                    func.count(schema.Page.vector).label("vector_pages"),
-                )
-                .filter(schema.Page.slide_id == item.slide_id)
-                .one()
+            logger.warning(
+                "slide_batch_item_failed",
+                extra={
+                    "job_id": str(job.job_id),
+                    "slide_id": str(item.slide_id),
+                    "step": "load_pages",
+                    "status": "failed",
+                    "error": "No pages found for this slide",
+                },
             )
-            total_pages = int(page_stats.total_pages or 0)
-            vision_pages = int(page_stats.vision_pages or 0)
-            vector_pages = int(page_stats.vector_pages or 0)
-            if total_pages == 0:
-                logger.warning(
-                    "slide_batch_item_failed",
-                    extra={
-                        "job_id": str(job.job_id),
-                        "slide_id": str(item.slide_id),
-                        "step": "load_pages",
-                        "status": "failed",
-                        "error": "No pages found for this slide",
-                    },
-                )
-                item.status = "failed"
-                item.error = "No pages found for this slide"
-                item.current_step_label = "failed_no_pages"
-                item.finished_at = _now()
-                recompute_job_aggregate(db, job)
-                db.commit()
-                return
-
-        has_summary = bool(slide.vision_summary)
-        has_page_vision = total_pages > 0 and vision_pages == total_pages
-        has_vectors = total_pages > 0 and vector_pages == total_pages
-        item.total_steps = total_pages + 1  # page-level vision + slide summary
-        should_skip = (not job.force_process_all) and has_summary and has_page_vision and has_vectors
-        if should_skip:
-            logger.info(
-                "slide_batch_item_skipped",
-                extra={"job_id": str(job.job_id), "slide_id": str(item.slide_id), "step": "precheck", "status": "skipped"},
-            )
-            item.status = "skipped"
-            item.completed_steps = item.total_steps
-            item.current_step_label = "skipped_existing"
+            item.status = "failed"
+            item.error = "No pages found for this slide"
+            item.current_step_label = "failed_no_pages"
             item.finished_at = _now()
             recompute_job_aggregate(db, job)
             db.commit()
             return
 
-        pages = db.query(schema.Page).filter(schema.Page.slide_id == item.slide_id).all()
-        settings = get_settings()
-        max_attempts = _max_retries()
-        base_wait = _retry_base_seconds()
-        attempt = 0
-        def _update_progress(completed_steps: int, step_label: str) -> None:
-            item.completed_steps = max(0, min(completed_steps, item.total_steps))
-            item.current_step_label = step_label
-            db.add(item)
+    has_summary = bool(slide.vision_summary)
+    has_page_vision = total_pages > 0 and vision_pages == total_pages
+    has_vectors = total_pages > 0 and vector_pages == total_pages
+    item.total_steps = total_pages + 1  # page-level vision + slide summary
+    should_skip = (not job.force_process_all) and has_summary and has_page_vision and has_vectors
+    if should_skip:
+        logger.info(
+            "slide_batch_item_skipped",
+            extra={"job_id": str(job.job_id), "slide_id": str(item.slide_id), "step": "precheck", "status": "skipped"},
+        )
+        item.status = "skipped"
+        item.completed_steps = item.total_steps
+        item.current_step_label = "skipped_existing"
+        item.finished_at = _now()
+        recompute_job_aggregate(db, job)
+        db.commit()
+        return
+
+    pages = db.query(schema.Page).filter(schema.Page.slide_id == item.slide_id).all()
+    settings = get_settings()
+    max_attempts = _max_retries()
+    base_wait = _retry_base_seconds()
+    attempt = 0
+
+    def _update_progress(completed_steps: int, step_label: str) -> None:
+        item.completed_steps = max(0, min(completed_steps, item.total_steps))
+        item.current_step_label = step_label
+        db.add(item)
+        db.commit()
+        db.refresh(item)
+
+    while attempt < max_attempts:
+        db.refresh(job)
+        if job.cancel_requested:
+            logger.info(
+                "slide_batch_item_cancelled",
+                extra={"job_id": str(job.job_id), "slide_id": str(item.slide_id), "step": "before_run", "status": "cancelled"},
+            )
+            item.status = "cancelled"
+            item.current_step_label = "cancelled"
+            item.finished_at = _now()
+            recompute_job_aggregate(db, job)
             db.commit()
-            db.refresh(item)
+            return
 
-        while attempt < max_attempts:
-            db.refresh(job)
-            if job.cancel_requested:
-                logger.info(
-                    "slide_batch_item_cancelled",
-                    extra={"job_id": str(job.job_id), "slide_id": str(item.slide_id), "step": "before_run", "status": "cancelled"},
-                )
-                item.status = "cancelled"
-                item.current_step_label = "cancelled"
-                item.finished_at = _now()
-                recompute_job_aggregate(db, job)
-                db.commit()
-                return
-
-            try:
-                _update_progress(item.completed_steps, "running")
-                run_vision_for_slide(
-                    str(item.slide_id),
-                    slide.slide_google_id,
-                    settings,
-                    force_process_all=job.force_process_all,
-                    progress_callback=lambda progress: _update_progress(
-                        progress.get("completed_steps", item.completed_steps),
-                        progress.get("current_step_label", "running"),
-                    ),
-                )
-                logger.info(
-                    "slide_batch_item_processed",
-                    extra={"job_id": str(job.job_id), "slide_id": str(item.slide_id), "step": "run_vision", "status": "processed"},
-                )
-                item.status = "processed"
-                item.finished_at = _now()
-                item.retry_count = attempt
-                item.completed_steps = item.total_steps
-                item.current_step_label = "done"
-                recompute_job_aggregate(db, job)
-                db.commit()
-                return
-            except Exception as exc:
-                attempt += 1
-                item.retry_count = attempt
-                if attempt >= max_attempts or not _is_transient_error(exc):
-                    logger.exception(
-                        "slide_batch_item_failed",
-                        extra={
-                            "job_id": str(job.job_id),
-                            "slide_id": str(item.slide_id),
-                            "step": "run_vision",
-                            "status": "failed",
-                            "error": str(exc),
-                        },
-                    )
-                    item.status = "failed"
-                    item.error = str(exc)
-                    item.current_step_label = "failed"
-                    item.finished_at = _now()
-                    recompute_job_aggregate(db, job)
-                    db.commit()
-                    return
-                logger.warning(
-                    "slide_batch_item_retry",
+        try:
+            _update_progress(item.completed_steps, "running")
+            run_vision_for_slide(
+                str(item.slide_id),
+                slide.slide_google_id,
+                settings,
+                force_process_all=job.force_process_all,
+                progress_callback=lambda progress: _update_progress(
+                    progress.get("completed_steps", item.completed_steps),
+                    progress.get("current_step_label", "running"),
+                ),
+            )
+            logger.info(
+                "slide_batch_item_processed",
+                extra={"job_id": str(job.job_id), "slide_id": str(item.slide_id), "step": "run_vision", "status": "processed"},
+            )
+            item.status = "processed"
+            item.finished_at = _now()
+            item.retry_count = attempt
+            item.completed_steps = item.total_steps
+            item.current_step_label = "done"
+            recompute_job_aggregate(db, job)
+            db.commit()
+            return
+        except Exception as exc:
+            attempt += 1
+            item.retry_count = attempt
+            if attempt >= max_attempts or not _is_transient_error(exc):
+                logger.exception(
+                    "slide_batch_item_failed",
                     extra={
                         "job_id": str(job.job_id),
                         "slide_id": str(item.slide_id),
                         "step": "run_vision",
-                        "status": "retrying",
+                        "status": "failed",
                         "error": str(exc),
                     },
                 )
-                db.rollback()
-                time.sleep(base_wait * (2 ** (attempt - 1)))
-                item = db.query(schema.SlideProcessJobItem).filter(schema.SlideProcessJobItem.id == item_id).first()
-                if not item:
-                    return
-                job = db.query(schema.SlideProcessJob).filter(schema.SlideProcessJob.job_id == item.job_id).first()
-                if not job:
-                    return
-                slide = db.query(schema.Slide).filter(schema.Slide.id == item.slide_id).first()
-                if not slide:
-                    item.status = "failed"
-                    item.error = "Slide not found after retry"
-                    item.finished_at = _now()
-                    recompute_job_aggregate(db, job)
-                    db.commit()
-                    return
-    finally:
-        db.close()
+                item.status = "failed"
+                item.error = str(exc)
+                item.current_step_label = "failed"
+                item.finished_at = _now()
+                recompute_job_aggregate(db, job)
+                db.commit()
+                return
+            logger.warning(
+                "slide_batch_item_retry",
+                extra={
+                    "job_id": str(job.job_id),
+                    "slide_id": str(item.slide_id),
+                    "step": "run_vision",
+                    "status": "retrying",
+                    "error": str(exc),
+                },
+            )
+            db.rollback()
+            time.sleep(base_wait * (2 ** (attempt - 1)))
+            item = db.query(schema.SlideProcessJobItem).filter(schema.SlideProcessJobItem.id == item_id).first()
+            if not item:
+                return
+            job = db.query(schema.SlideProcessJob).filter(schema.SlideProcessJob.job_id == item.job_id).first()
+            if not job:
+                return
+            slide = db.query(schema.Slide).filter(schema.Slide.id == item.slide_id).first()
+            if not slide:
+                item.status = "failed"
+                item.error = "Slide not found after retry"
+                item.finished_at = _now()
+                recompute_job_aggregate(db, job)
+                db.commit()
+                return
+
+
+def process_slide_batch_item(item_id: str) -> None:
+    for db_retry in range(2):
+        db = SessionLocal()
+        try:
+            _process_slide_batch_item_once(db, item_id)
+            return
+        except OperationalError:
+            if db_retry == 0:
+                logger.warning("slide_batch_db_connection_lost_retrying", extra={"item_id": item_id})
+                try:
+                    reset_database_connection()
+                except Exception:
+                    logger.exception("slide_batch_db_reset_failed")
+                continue
+            raise
+        finally:
+            db.close()
 
 
 def run_slide_batch_worker() -> None:

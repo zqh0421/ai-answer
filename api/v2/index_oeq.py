@@ -25,6 +25,22 @@ def get_db():
     finally:
         db.close()
 
+
+def _parse_feedback_json(feedback: str) -> dict:
+    try:
+        parsed = json.loads(feedback)
+        return parsed if isinstance(parsed, dict) else {}
+    except json.JSONDecodeError:
+        import re
+        json_match = re.search(r'```json\s*(\{.*?\})\s*```', feedback, re.DOTALL)
+        if not json_match:
+            return {}
+        try:
+            parsed = json.loads(json_match.group(1))
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+
 @router.post("/generate_feedback_rag_oeq")
 async def generate_feedback_rag_oeq(request: FeedbackRequestRagModel, settings: Annotated[Settings, Depends(get_settings)], db: Session = Depends(get_db)):
     """
@@ -55,46 +71,23 @@ async def _generate_feedback_rag_cot_oeq_impl(request: FeedbackRequestRagModel, 
         db
     )
 
+    parsed_feedback = _parse_feedback_json(feedback)
     if request.isStructured:
-        # parse feedback to json
-        try:
-            # Try to parse the feedback as JSON directly
-            parsed_feedback = json.loads(feedback)
+        if parsed_feedback:
             return {
                 "score": parsed_feedback.get("score", ""),
-                "feedback": parsed_feedback.get("feedback", ""),
-                "structured_feedback": parsed_feedback.get("structured_feedback", {})
+                "max_score": parsed_feedback.get("max_score", ""),
+                "structured_feedback": parsed_feedback.get("structured_feedback", parsed_feedback.get("feedback", "")),
             }
-        except json.JSONDecodeError:
-            # If direct parsing fails, try to extract JSON from markdown code blocks
-            import re
-            json_match = re.search(r'```json\s*(\{.*?\})\s*```', feedback, re.DOTALL)
-            if json_match:
-                try:
-                    parsed_feedback = json.loads(json_match.group(1))
-                    return {
-                        "score": parsed_feedback.get("score", ""),
-                        "feedback": parsed_feedback.get("feedback", ""),
-                        "structured_feedback": parsed_feedback.get("structured_feedback", {})
-                    }
-                except json.JSONDecodeError:
-                    # If still fails, return default structure
-                    return {
-                        "score": "",
-                        "feedback": feedback,
-                        "structured_feedback": {}
-                    }
-            else:
-                # No JSON found, return default structure
-                return {
-                    "score": "",
-                    "feedback": feedback,
-                    "structured_feedback": {}
-                }
-    else:
+        return {"score": "", "max_score": "", "structured_feedback": feedback}
+
+    if parsed_feedback:
         return {
-            "feedback": feedback
+            "score": parsed_feedback.get("score", ""),
+            "max_score": parsed_feedback.get("max_score", ""),
+            "text_feedback": parsed_feedback.get("text_feedback", parsed_feedback.get("feedback", "")),
         }
+    return {"score": "", "max_score": "", "text_feedback": feedback}
 
 @router.post("/generate_feedback_rag_stream_oeq")
 async def generate_feedback_rag_stream_oeq(request: FeedbackRequestRagModel, settings: Annotated[Settings, Depends(get_settings)], db: Session = Depends(get_db)):

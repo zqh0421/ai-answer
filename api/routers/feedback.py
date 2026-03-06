@@ -24,6 +24,21 @@ from ..tags import Tags
 router = APIRouter(prefix="/api", tags=[Tags.FEEDBACK_CORE_V1])
 
 
+def _parse_feedback_json(feedback: str) -> dict:
+    try:
+        parsed = json.loads(feedback)
+        return parsed if isinstance(parsed, dict) else {}
+    except json.JSONDecodeError:
+        json_match = re.search(r"```json\s*(\{.*?\})\s*```", feedback, re.DOTALL)
+        if not json_match:
+            return {}
+        try:
+            parsed = json.loads(json_match.group(1))
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+
+
 @router.post("/generate_feedback")
 async def generate_feedback(request: FeedbackRequestModel, settings: Annotated[Settings, Depends(get_settings)]):
     if request.promptEngineering == "zero":
@@ -81,30 +96,23 @@ async def generate_feedback_rag(
     else:
         feedback = "Generate Feedback Error: Invalid Request."
 
+    parsed_feedback = _parse_feedback_json(feedback)
     if request.isStructured:
-        try:
-            parsed_feedback = json.loads(feedback)
+        if parsed_feedback:
             return {
                 "score": parsed_feedback.get("score", ""),
-                "feedback": parsed_feedback.get("feedback", ""),
-                "structured_feedback": parsed_feedback.get("structured_feedback", {}),
+                "max_score": parsed_feedback.get("max_score", ""),
+                "structured_feedback": parsed_feedback.get("structured_feedback", parsed_feedback.get("feedback", "")),
             }
-        except json.JSONDecodeError:
-            json_match = re.search(r"```json\s*(\{.*?\})\s*```", feedback, re.DOTALL)
-            if json_match:
-                try:
-                    parsed_feedback = json.loads(json_match.group(1))
-                    return {
-                        "score": parsed_feedback.get("score", ""),
-                        "feedback": parsed_feedback.get("feedback", ""),
-                        "structured_feedback": parsed_feedback.get("structured_feedback", {}),
-                    }
-                except json.JSONDecodeError:
-                    return {"score": "", "feedback": feedback, "structured_feedback": {}}
-            else:
-                return {"score": "", "feedback": feedback, "structured_feedback": {}}
+        return {"score": "", "max_score": "", "structured_feedback": feedback}
     else:
-        return {"feedback": feedback}
+        if parsed_feedback:
+            return {
+                "score": parsed_feedback.get("score", ""),
+                "max_score": parsed_feedback.get("max_score", ""),
+                "text_feedback": parsed_feedback.get("text_feedback", parsed_feedback.get("feedback", "")),
+            }
+        return {"score": "", "max_score": "", "text_feedback": feedback}
 
 
 @router.post("/generate_feedback_rag_stream")

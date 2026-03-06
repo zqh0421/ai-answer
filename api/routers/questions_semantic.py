@@ -108,6 +108,7 @@ class QuestionCreateRequest(BaseModel):
     access_scope: AccessScope = "private"
     content_blocks: list[ContentBlockIn] = Field(default_factory=list)
     interactions: list[InteractionIn] = Field(min_length=1)
+    randomize_option_order: bool = True
     slide_scope: list[SlideScopeIn] = Field(default_factory=list)
     scoring_policy: ScoringPolicyIn
     created_by: str = Field(min_length=16, max_length=16)
@@ -126,6 +127,7 @@ class QuestionVersionCreateRequest(BaseModel):
     title: Optional[str] = None
     content_blocks: list[ContentBlockIn] = Field(default_factory=list)
     interactions: list[InteractionIn] = Field(min_length=1)
+    randomize_option_order: bool = True
     slide_scope: list[SlideScopeIn] = Field(default_factory=list)
     scoring_policy: ScoringPolicyIn
     created_by: str = Field(min_length=16, max_length=16)
@@ -859,6 +861,22 @@ def _question_exists(db: Session, question_id: str) -> bool:
     return bool(db.execute(text("SELECT 1 FROM content_question WHERE question_id = :qid LIMIT 1"), {"qid": question_id}).scalar())
 
 
+def _question_version_has_randomize_option_order_column(db: Session) -> bool:
+    return bool(
+        db.execute(
+            text(
+                """
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_name = 'content_question_version'
+                  AND column_name = 'randomize_option_order'
+                LIMIT 1
+                """
+            )
+        ).scalar()
+    )
+
+
 def _question_row(db: Session, question_id: str) -> dict[str, Any] | None:
     row = db.execute(
         text(
@@ -1236,6 +1254,32 @@ def _build_question_list_interactions(db: Session, version_ids: list[str]) -> di
     return grouped
 
 
+def _shuffle_options(options: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    shuffled = list(options)
+    if len(shuffled) > 1:
+        secrets.SystemRandom().shuffle(shuffled)
+    return shuffled
+
+
+def _apply_option_order_policy(
+    interactions: list[dict[str, Any]],
+    *,
+    randomize_option_order: bool,
+) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for interaction in interactions:
+        item = dict(interaction)
+        options = [dict(x) for x in (item.get("options") or [])]
+        if randomize_option_order:
+            options = _shuffle_options(options)
+            for idx, opt in enumerate(options, start=1):
+                opt["option_order"] = idx
+        item["options"] = options
+        item["interaction_options"] = options
+        normalized.append(item)
+    return normalized
+
+
 def _parse_slide_uuid(value: str) -> UUID:
     try:
         return UUID(value)
@@ -1286,10 +1330,10 @@ def _build_question_embedding_text(payload: QuestionCreateRequest | QuestionVers
         if prompt:
             lines.append(prompt)
         if interaction.options:
-            for opt in sorted(interaction.options, key=lambda x: x.option_order):
+            for idx, opt in enumerate(interaction.options, start=1):
                 value = (opt.option_label or opt.option_value or "").strip()
                 if value:
-                    lines.append(f"Option {opt.option_order}: {value}")
+                    lines.append(f"Option {idx}: {value}")
     return "\n".join(lines).strip()
 
 
@@ -1298,7 +1342,7 @@ def _build_correct_answer_text(payload: QuestionCreateRequest | QuestionVersionC
     for interaction in payload.interactions:
         correct = [
             (opt.option_label or opt.option_value or "").strip()
-            for opt in sorted(interaction.options, key=lambda x: x.option_order)
+            for opt in interaction.options
             if opt.is_correct and (opt.option_label or opt.option_value)
         ]
         if correct:
@@ -1370,37 +1414,58 @@ def _insert_question_version_bundle(
     _ensure_question_embedding_columns(db)
     question_vector, question_answer_vector = _create_question_vectors(payload)
 
-    db.execute(
-        text(
-            """
-            INSERT INTO content_question_version (
-              question_version_id, question_id, version_no, question_type, title, change_note,
-              score_maximum, score_input_format, score_normalize_to_maximum, score_rounding_mode, score_rounding_step,
-              question_vector, question_answer_vector, created_by, created_at
-            ) VALUES (
-              :question_version_id, :question_id, :version_no, :question_type, :title, :change_note,
-              :score_maximum, :score_input_format, :score_normalize_to_maximum, :score_rounding_mode, :score_rounding_step,
-              :question_vector, :question_answer_vector, :created_by, NOW()
-            )
-            """
-        ),
-        {
-            "question_version_id": qv_id,
-            "question_id": question_id,
-            "version_no": version_no,
-            "question_type": payload.question_type,
-            "title": payload.title,
-            "change_note": change_note,
-            "score_maximum": scoring.score_maximum,
-            "score_input_format": scoring.score_input_format,
-            "score_normalize_to_maximum": scoring.score_normalize_to_maximum,
-            "score_rounding_mode": scoring.score_rounding_mode,
-            "score_rounding_step": scoring.score_rounding_step,
-            "question_vector": question_vector,
-            "question_answer_vector": question_answer_vector,
-            "created_by": payload.created_by,
-        },
-    )
+    insert_params = {
+        "question_version_id": qv_id,
+        "question_id": question_id,
+        "version_no": version_no,
+        "question_type": payload.question_type,
+        "title": payload.title,
+        "change_note": change_note,
+        "score_maximum": scoring.score_maximum,
+        "score_input_format": scoring.score_input_format,
+        "score_normalize_to_maximum": scoring.score_normalize_to_maximum,
+        "score_rounding_mode": scoring.score_rounding_mode,
+        "score_rounding_step": scoring.score_rounding_step,
+        "question_vector": question_vector,
+        "question_answer_vector": question_answer_vector,
+        "created_by": payload.created_by,
+    }
+    if _question_version_has_randomize_option_order_column(db):
+        db.execute(
+            text(
+                """
+                INSERT INTO content_question_version (
+                  question_version_id, question_id, version_no, question_type, title, change_note,
+                  score_maximum, score_input_format, score_normalize_to_maximum, score_rounding_mode, score_rounding_step,
+                  randomize_option_order,
+                  question_vector, question_answer_vector, created_by, created_at
+                ) VALUES (
+                  :question_version_id, :question_id, :version_no, :question_type, :title, :change_note,
+                  :score_maximum, :score_input_format, :score_normalize_to_maximum, :score_rounding_mode, :score_rounding_step,
+                  :randomize_option_order,
+                  :question_vector, :question_answer_vector, :created_by, NOW()
+                )
+                """
+            ),
+            {**insert_params, "randomize_option_order": payload.randomize_option_order},
+        )
+    else:
+        db.execute(
+            text(
+                """
+                INSERT INTO content_question_version (
+                  question_version_id, question_id, version_no, question_type, title, change_note,
+                  score_maximum, score_input_format, score_normalize_to_maximum, score_rounding_mode, score_rounding_step,
+                  question_vector, question_answer_vector, created_by, created_at
+                ) VALUES (
+                  :question_version_id, :question_id, :version_no, :question_type, :title, :change_note,
+                  :score_maximum, :score_input_format, :score_normalize_to_maximum, :score_rounding_mode, :score_rounding_step,
+                  :question_vector, :question_answer_vector, :created_by, NOW()
+                )
+                """
+            ),
+            insert_params,
+        )
 
     for idx, block in enumerate(payload.content_blocks, start=1):
         db.execute(
@@ -1451,7 +1516,7 @@ def _insert_question_version_bundle(
             },
         )
 
-        for opt in sorted(interaction.options, key=lambda x: x.option_order):
+        for idx, opt in enumerate(interaction.options, start=1):
             db.execute(
                 text(
                     """
@@ -1465,7 +1530,7 @@ def _insert_question_version_bundle(
                 {
                     "interaction_option_id": _generate_unique_id(db, "content_question_interaction_option", "interaction_option_id", "qo"),
                     "interaction_id": interaction_id,
-                    "option_order": opt.option_order,
+                    "option_order": idx,
                     "option_value": opt.option_value,
                     "option_label": opt.option_label,
                     "is_correct": opt.is_correct,
@@ -1566,6 +1631,11 @@ def create_semantic_question(payload: QuestionCreateRequest, db: Session = Depen
         raise HTTPException(status_code=500, detail=str(e))
 
     detail = get_semantic_question_version_detail(db, version_bundle["question_version_id"])
+    if detail is not None:
+        detail["interactions"] = _apply_option_order_policy(
+            detail.get("interactions") or [],
+            randomize_option_order=bool(detail["question_version"].get("randomize_option_order", True)),
+        )
     return {
         "ok": True,
         "question_id": question_id,
@@ -1595,7 +1665,8 @@ def list_user_semantic_questions(
             f"""
             SELECT q.question_id, q.current_version_id, q.access_scope, q.is_visible, q.created_by, q.created_at,
                    qv.question_type, qv.version_no, qv.title,
-                   qv.score_maximum, qv.score_rounding_mode, qv.score_rounding_step
+                   qv.score_maximum, qv.score_rounding_mode, qv.score_rounding_step,
+                   COALESCE((to_jsonb(qv)->>'randomize_option_order')::boolean, TRUE) AS randomize_option_order
             FROM content_question q
             JOIN content_question_version qv ON qv.question_version_id = q.current_version_id
             WHERE {where_sql}
@@ -1630,7 +1701,10 @@ def list_user_semantic_questions(
     for item in items:
         blocks = content_block_map.get(str(item.get("current_version_id")), [])
         slide_scope = slide_scope_map.get(str(item.get("current_version_id")), [])
-        interactions = interactions_map.get(str(item.get("current_version_id")), [])
+        interactions = _apply_option_order_policy(
+            interactions_map.get(str(item.get("current_version_id")), []),
+            randomize_option_order=bool(item.get("randomize_option_order", True)),
+        )
         item.update(
             {
                 "content_blocks": blocks,
@@ -1670,7 +1744,8 @@ def list_public_semantic_questions(
             f"""
             SELECT q.question_id, q.current_version_id, q.access_scope, q.is_visible, q.created_by, q.created_at,
                    qv.question_type, qv.version_no, qv.title,
-                   qv.score_maximum, qv.score_rounding_mode, qv.score_rounding_step
+                   qv.score_maximum, qv.score_rounding_mode, qv.score_rounding_step,
+                   COALESCE((to_jsonb(qv)->>'randomize_option_order')::boolean, TRUE) AS randomize_option_order
             FROM content_question q
             JOIN content_question_version qv ON qv.question_version_id = q.current_version_id
             WHERE {where_sql}
@@ -1703,7 +1778,10 @@ def list_public_semantic_questions(
     for item in items:
         blocks = content_block_map.get(str(item.get("current_version_id")), [])
         slide_scope = slide_scope_map.get(str(item.get("current_version_id")), [])
-        interactions = interactions_map.get(str(item.get("current_version_id")), [])
+        interactions = _apply_option_order_policy(
+            interactions_map.get(str(item.get("current_version_id")), []),
+            randomize_option_order=bool(item.get("randomize_option_order", True)),
+        )
         item.update(
             {
                 "content_blocks": blocks,
@@ -2748,6 +2826,10 @@ def get_semantic_question(
     detail = get_semantic_question_version_detail(db, q["current_version_id"])
     if detail is None:
         raise HTTPException(status_code=500, detail="current version not found")
+    detail["interactions"] = _apply_option_order_policy(
+        detail.get("interactions") or [],
+        randomize_option_order=bool(detail["question_version"].get("randomize_option_order", True)),
+    )
 
     # Stable default payload for question runtime pages:
     # always expose question_type/content_blocks/interactions(+options) without include flags.
@@ -2758,6 +2840,7 @@ def get_semantic_question(
         "question": q,
         "question_id": q["question_id"],
         "question_type": detail["question_version"]["question_type"],
+        "randomize_option_order": bool(detail["question_version"].get("randomize_option_order", True)),
         "content_blocks": detail["content_blocks"],
         "interactions": detail["interactions"],
         "options": top_level_options,
@@ -3037,6 +3120,11 @@ def create_semantic_question_version(question_id: str, payload: QuestionVersionC
         raise HTTPException(status_code=500, detail=str(e))
 
     detail = get_semantic_question_version_detail(db, bundle["question_version_id"])
+    if detail is not None:
+        detail["interactions"] = _apply_option_order_policy(
+            detail.get("interactions") or [],
+            randomize_option_order=bool(detail["question_version"].get("randomize_option_order", True)),
+        )
     return {
         "ok": True,
         "question_id": question_id,

@@ -2,6 +2,7 @@ from fastapi import Depends
 from openai import OpenAI
 from ...config import Settings, get_settings
 from typing_extensions import Annotated, List
+from typing import Any, Optional, Sequence
 import time
 from openai.types.responses import ResponseInputImageParam, ResponseInputParam
 
@@ -20,7 +21,43 @@ def format_question_oeq(question: List[dict]) -> List[dict]:
             raise ValueError(f"Unsupported question content type: {item['type']}")
     return formatted_question
 
-def call_gpt_oeq(system_prompt: str, user_prompt: List[dict], settings: Annotated[Settings, Depends(get_settings)]) -> str:
+def _build_feedback_output_schema(
+    *,
+    is_structured: bool,
+    max_score: float,
+    allowed_scores: Optional[Sequence[float]] = None,
+) -> dict[str, Any]:
+    score_schema: dict[str, Any] = {"type": "number", "minimum": 0, "maximum": float(max_score)}
+    if allowed_scores:
+        score_schema["enum"] = [float(v) for v in allowed_scores]
+
+    schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "score": score_schema,
+            "max_score": {"type": "number", "const": float(max_score)},
+        },
+        "required": ["score", "max_score"],
+        "additionalProperties": False,
+    }
+    if is_structured:
+        schema["properties"]["structured_feedback"] = {"type": "string", "minLength": 1}
+        schema["required"].append("structured_feedback")
+    else:
+        schema["properties"]["text_feedback"] = {"type": "string", "minLength": 1}
+        schema["required"].append("text_feedback")
+    return schema
+
+
+def call_gpt_oeq(
+    system_prompt: str,
+    user_prompt: List[dict],
+    settings: Annotated[Settings, Depends(get_settings)],
+    *,
+    is_structured: bool = True,
+    max_score: float = 2.0,
+    allowed_scores: Optional[Sequence[float]] = None,
+) -> str:
     api_key = settings.openai_api_key
     api_org = settings.openai_api_org
     api_proj = settings.openai_api_proj
@@ -62,29 +99,11 @@ def call_gpt_oeq(system_prompt: str, user_prompt: List[dict], settings: Annotate
                 "type": "json_schema",
                 "name": "output",
                 "strict": True,
-                "schema": {
-                    "type": "object",
-                    "properties": {
-                        "score": {
-                            "type": "string",
-                            "enum": ["0", "1"]
-                        },
-                        "feedback": {
-                            "type": "string",
-                            "minLength": 1
-                        },
-                        "structured_feedback": {
-                            "type": "string",
-                            "minLength": 20
-                        }
-                    },
-                    "required": [
-                        "score",
-                        "feedback",
-                        "structured_feedback"
-                    ],
-                    "additionalProperties": False
-                }
+                "schema": _build_feedback_output_schema(
+                    is_structured=is_structured,
+                    max_score=max_score,
+                    allowed_scores=allowed_scores,
+                ),
             }
         }
     )

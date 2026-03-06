@@ -57,7 +57,7 @@ def generate_feedback_using_rag_cot_oeq(participant_id: str, question_id: str, q
             f"```json\n"
             f"{{\n"
             f"  \"score\": \"[0 for incorrect, 1 for correct, 2 for partially correct]\",\n"
-            f"  \"feedback\": \"[A clear, concise revision of the original feedback, retaining key points and removing redundancy. Tooltips are integrated as plain terms.]\",\n"
+            f"  \"max_score\": \"[2]\",\n"
             f"  \"structured_feedback\": \"<statement>[Your assessment - whether answer is correct or incorrect].</statement> <explanation>[Detailed explanation with <term explanation='[tooltip text]'>[highlighted terms]</term>].</explanation> <advice>[Actionable advice for improvement].</advice>\"\n"
             f"}}\n"
             f"```\n\n"
@@ -134,7 +134,7 @@ def generate_feedback_using_rag_cot_oeq(participant_id: str, question_id: str, q
             f"```json\n"
             f"{{\n"
             f"  \"score\": \"[0 for incorrect, 1 for correct, 2 for partially correct]\",\n"
-            f"  \"feedback\": \"[Encouraging, learning-focused feedback that guides understanding]\",\n"
+            f"  \"max_score\": \"[2]\",\n"
             f"  \"structured_feedback\": \"<statement>[Supportive assessment of their attempt].</statement> <explanation>[Clear, encouraging explanation with <term explanation='[helpful context]'>[key concepts]</term>].</explanation> <advice>[Constructive suggestions including reflective questions].</advice>\"\n"
             f"}}\n"
             f"```\n\n"
@@ -200,7 +200,7 @@ def generate_feedback_using_rag_cot_oeq(participant_id: str, question_id: str, q
                 print(
                     f"[DEBUG] Using prompt_corrective (attempt #{record_count + 1}) for participant {participant_id}")
 
-        result = call_gpt_oeq(system_prompt, user_prompt, settings)
+        result = call_gpt_oeq(system_prompt, user_prompt, settings, is_structured=True, max_score=2.0, allowed_scores=[0, 1, 2])
         return result
 
     # Original prompts for non-HTML format
@@ -216,6 +216,7 @@ def generate_feedback_using_rag_cot_oeq(participant_id: str, question_id: str, q
         f"2. Your answer is not correct. According to the slides, the link between learning and engineering is an interesting angle, but it needs more substance. Think about what aspects of e-learning design are critical to achieving effective learning outcomes. This could help make your answer more comprehensive.\n"
         f"3. Your answer is correct and consistent with the content in the slides. You did a great job!\n\n"
         f"Slides Content: {slide_text_arr}\n\n"
+        f"Return valid JSON only with exactly 3 keys: score, max_score, text_feedback. Set max_score to 2.\n\n"
     )
 
     prompt_component = (
@@ -261,6 +262,7 @@ def generate_feedback_using_rag_cot_oeq(participant_id: str, question_id: str, q
         f"Now, apply the same process to the Slides Content, provided question and answer."
 
         f"Slides Content: {slide_text_arr}\n\n"
+        f"Return valid JSON only with exactly 3 keys: score, max_score, text_feedback. Set max_score to 2.\n\n"
     )
 
     prompt_feature = (
@@ -282,7 +284,8 @@ def generate_feedback_using_rag_cot_oeq(participant_id: str, question_id: str, q
 
         f"### Slides Content:\n{slide_text_arr}\n"
         f"using above information to generate feedback----,let's think and generate step by step"
-        f"**Do not include your reasoning in the final output; only provide the feedback to the student.**\n\n"
+        f"**Do not include your reasoning in the final output; only provide the feedback to the student.**\n"
+        f"Return valid JSON only with exactly 3 keys: score, max_score, text_feedback. Set max_score to 2.\n\n"
     )
 
     question_message = format_question_oeq(question)
@@ -297,19 +300,28 @@ def generate_feedback_using_rag_cot_oeq(participant_id: str, question_id: str, q
         result = call_gpt_oeq(
             prompt_none,
             user_prompt,
-            settings
+            settings,
+            is_structured=False,
+            max_score=2.0,
+            allowed_scores=[0, 1, 2],
         )
     if feedbackFramework == "component":
         result = call_gpt_oeq(
             prompt_component,
             user_prompt,
-            settings
+            settings,
+            is_structured=False,
+            max_score=2.0,
+            allowed_scores=[0, 1, 2],
         )
     if feedbackFramework == "feature":
         result = call_gpt_oeq(
             prompt_feature,
             user_prompt,
-            settings
+            settings,
+            is_structured=False,
+            max_score=2.0,
+            allowed_scores=[0, 1, 2],
         )
 
     return f"{result}"
@@ -347,7 +359,7 @@ def generate_feedback_using_rag_cot_stream_oeq(participant_id: str, question_id:
         f"```json\n"
         f"{{\n"
         f"  \"score\": \"[0 for incorrect, 1 for correct, 2 for partially correct]\",\n"
-        f"  \"feedback\": \"[A clear, concise revision of the original feedback, retaining key points and removing redundancy. Tooltips are integrated as plain terms.]\",\n"
+        f"  \"max_score\": \"[2]\",\n"
         f"  \"structured_feedback\": \"<statement>[Your assessment - whether answer is correct or incorrect].</statement> <explanation>[Detailed explanation with <term explanation='[tooltip text]'>[highlighted terms]</term>].</explanation> <advice>[Actionable advice for improvement].</advice>\"\n"
         f"}}\n"
         f"```\n\n"
@@ -397,7 +409,7 @@ def generate_feedback_using_rag_cot_stream_oeq(participant_id: str, question_id:
         f"```json\n"
         f"{{\n"
         f"  \"score\": \"[0 for incorrect, 1 for correct, 2 for partially correct]\",\n"
-        f"  \"feedback\": \"[Encouraging, learning-focused feedback that guides understanding]\",\n"
+        f"  \"max_score\": \"[2]\",\n"
         f"  \"structured_feedback\": \"<statement>[Supportive assessment of their attempt].</statement> <explanation>[Clear, encouraging explanation with <term explanation='[helpful context]'>[key concepts]</term>].</explanation> <advice>[Constructive suggestions for learning].</advice>\"\n"
         f"}}\n"
         f"```\n\n"
@@ -482,7 +494,7 @@ def generate_feedback_using_rag_cot_stream_oeq(participant_id: str, question_id:
     yield f"data: {json.dumps(metadata)}\n\n"
 
     # Stream the response chunk by chunk
-    for chunk in call_gpt_oeq(system_prompt, user_prompt, settings):
+    for chunk in call_gpt_oeq(system_prompt, user_prompt, settings, is_structured=True, max_score=2.0, allowed_scores=[0, 1, 2]):
         yield f"data: {chunk}\n\n"
 
     yield "data: [DONE]\n\n"

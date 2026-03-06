@@ -9,25 +9,96 @@ from io import BytesIO
 from .services.question_formatter import format_question
 
 def fetch_pdf_from_drive(file_id: str, settings: Annotated[Settings, Depends(get_settings)]):
-    download_url = f'https://www.googleapis.com/drive/v3/files/{file_id}/export?mimeType=application/pdf&key={settings.next_public_google_drive_api_key}'
-    
-    # Make the request to fetch the PDF content, allowing redirects
-    with requests.Session() as session:
-        response = session.get(download_url, allow_redirects=True)
-        print(response)
-        # Google Drive sometimes serves a confirmation page for large files
-        if 'content-disposition' not in response.headers:
-            # Parse out the confirmation URL from the page
-            confirm_url = f"{download_url}&confirm={response.cookies['download_warning']}"
-            response = session.get(confirm_url)
-        
-        # Check if the file was fetched successfully
-        if response.status_code == 200:
-            print("PDF fetched successfully!")
-            return BytesIO(response.content)  # Return the PDF as a BytesIO stream
-        else:
-            print(f"Failed to fetch PDF: {response.status_code}")
+    file_id = str(file_id or "").strip()
+    if not file_id:
+        raise ValueError("Missing slide file id")
+
+    def _extract_error_hint(resp: requests.Response) -> str:
+        try:
+            payload = resp.json()
+            if isinstance(payload, dict):
+                top_error = payload.get("error")
+                if isinstance(top_error, dict):
+                    msg = top_error.get("message")
+                    if msg:
+                        return str(msg)
+                if top_error:
+                    return str(top_error)
+        except Exception:
+            pass
+        try:
+            text = (resp.text or "").strip()
+        except Exception:
+            text = ""
+        return text[:240] if text else ""
+
+    def _get_refresh_token_access_token() -> str | None:
+        try:
+            response = requests.post(
+                "https://oauth2.googleapis.com/token",
+                data={
+                    "client_id": settings.auth_google_id,
+                    "client_secret": settings.auth_google_secret,
+                    "refresh_token": settings.auth_secret,
+                    "grant_type": "refresh_token",
+                },
+                timeout=8,
+            )
+            response.raise_for_status()
+            token = str((response.json() or {}).get("access_token") or "").strip()
+            return token or None
+        except Exception:
             return None
+
+    auth_token = _get_refresh_token_access_token()
+    request_variants = []
+    if auth_token:
+        request_variants.append(
+            {
+                "url": f"https://www.googleapis.com/drive/v3/files/{file_id}/export",
+                "params": {"mimeType": "application/pdf"},
+                "headers": {"Authorization": f"Bearer {auth_token}"},
+                "mode": "oauth_refresh_token",
+            }
+        )
+    request_variants.append(
+        {
+            "url": f"https://www.googleapis.com/drive/v3/files/{file_id}/export",
+            "params": {"mimeType": "application/pdf", "key": settings.next_public_google_drive_api_key},
+            "headers": {},
+            "mode": "api_key",
+        }
+    )
+
+    errors = []
+    with requests.Session() as session:
+        for variant in request_variants:
+            try:
+                response = session.get(
+                    variant["url"],
+                    params=variant["params"],
+                    headers=variant["headers"],
+                    allow_redirects=True,
+                    timeout=15,
+                )
+            except Exception as exc:
+                errors.append(f"{variant['mode']}: request_exception={type(exc).__name__}")
+                continue
+
+            content_type = str(response.headers.get("content-type") or "").lower()
+            content = response.content or b""
+            if response.status_code == 200 and (
+                "application/pdf" in content_type or content.startswith(b"%PDF")
+            ):
+                return BytesIO(content)
+
+            error_hint = _extract_error_hint(response)
+            errors.append(
+                f"{variant['mode']}: status={response.status_code}"
+                + (f", hint={error_hint}" if error_hint else "")
+            )
+
+    raise ValueError("Failed to fetch PDF from drive; " + " | ".join(errors))
 
 def create_embedding(
     content: List[dict],

@@ -342,7 +342,7 @@ def _human_question_type_label(question_type: str) -> str:
 
 def _score_hint_for_question_type(question_type: str, max_score: float) -> str:
     q = (question_type or "").strip().lower()
-    if q in {"single_choice", "multi_choice", "dropdown", "true_false"}:
+    if q in {"single_choice", "multi_choice", "dropdown", "true_false", "free_text"}:
         return "[0 for incorrect, 1 for correct]"
     if abs(float(max_score) - 2.0) < 1e-9:
         return "[0 for incorrect, 1 for correct, 2 for partially correct]"
