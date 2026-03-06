@@ -29,7 +29,9 @@ export default function RootLayout({
         {/* Redux + SessionProvider 包裹在 ClientProvider 中 */}
         <div className="flex flex-col min-h-screen">
           {/* Header */}
-          <Header />
+          <Suspense fallback={null}>
+            <Header />
+          </Suspense>
           <Suspense fallback={null}>
             <LtiDeepLinkBanner />
           </Suspense>
