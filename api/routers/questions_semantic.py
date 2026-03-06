@@ -271,6 +271,34 @@ def _question_rows_map(db: Session, question_ids: list[str]) -> dict[str, dict[s
     return {str(r["question_id"]): dict(r) for r in rows}
 
 
+def _run_inline_feedback_generation_fallback(
+    *,
+    feedback_link_id: str,
+    updated_by: str | None,
+) -> dict[str, Any]:
+    try:
+        generated = generate_static_feedback_with_version_snapshot_for_feedback_link(
+            str(feedback_link_id),
+            created_by=updated_by,
+        )
+    except Exception as inline_err:
+        return {
+            "ok": False,
+            "feedback_link_id": str(feedback_link_id),
+            "generation_mode": "inline_fallback",
+            "error": str(inline_err),
+        }
+
+    return {
+        "ok": True,
+        "feedback_link_id": str(feedback_link_id),
+        "generation_mode": "inline_fallback",
+        "skipped": bool(generated.get("skipped")),
+        "version_id": generated.get("version_id"),
+        "revision_no": generated.get("revision_no"),
+    }
+
+
 def _find_visible_question_version_link(db: Session, *, question_version_id: str, agent_id: str) -> str | None:
     row = db.execute(
         text(
@@ -1899,7 +1927,7 @@ def batch_attach_feedback_agent_to_questions(payload: BatchAttachFeedbackAgentRe
     question_map = _question_rows_map(db, requested_ids)
     success_ids: list[str] = []
     failed: list[dict[str, str]] = []
-    queued_feedback_generation: list[dict[str, str]] = []
+    queued_feedback_generation: list[dict[str, Any]] = []
     enqueue_failed: list[dict[str, str]] = []
 
     agent = _get_feedback_agent(db, payload.agent_id)
@@ -1988,6 +2016,29 @@ def batch_attach_feedback_agent_to_questions(payload: BatchAttachFeedbackAgentRe
                             "message": str(enqueue_err),
                         }
                     )
+                    inline_fallback = _run_inline_feedback_generation_fallback(
+                        feedback_link_id=str(attached_link_id),
+                        updated_by=payload.updated_by,
+                    )
+                    if inline_fallback.get("ok"):
+                        queued_feedback_generation.append(
+                            {
+                                "question_id": question_id,
+                                "feedback_link_id": str(attached_link_id),
+                                "generation_mode": str(inline_fallback.get("generation_mode")),
+                                "version_id": inline_fallback.get("version_id"),
+                                "revision_no": inline_fallback.get("revision_no"),
+                                "skipped": bool(inline_fallback.get("skipped")),
+                            }
+                        )
+                    else:
+                        enqueue_failed.append(
+                            {
+                                "question_id": question_id,
+                                "code": "INLINE_GENERATION_FAILED",
+                                "message": str(inline_fallback.get("error") or "inline generation failed"),
+                            }
+                        )
         except Exception as e:
             db.rollback()
             failed.append({"question_id": question_id, "code": "CONFLICT", "message": str(e)})
@@ -2119,7 +2170,20 @@ def attach_agent_to_single_question(question_id: str, payload: SingleAttachAgent
             set_feedback_link_generation_job_id(str(attached_link_id), str(rq_job_id))
             queued_job = {"job_id": str(rq_job_id), "feedback_link_id": str(attached_link_id)}
         except Exception as enqueue_err:
-            queued_job = {"error": str(enqueue_err), "feedback_link_id": str(attached_link_id)}
+            inline_fallback = _run_inline_feedback_generation_fallback(
+                feedback_link_id=str(attached_link_id),
+                updated_by=payload.updated_by,
+            )
+            queued_job = {
+                "feedback_link_id": str(attached_link_id),
+                "enqueue_error": str(enqueue_err),
+                "generation_mode": "inline_fallback",
+                "ok": bool(inline_fallback.get("ok")),
+                "skipped": bool(inline_fallback.get("skipped")),
+                "version_id": inline_fallback.get("version_id"),
+                "revision_no": inline_fallback.get("revision_no"),
+                "error": inline_fallback.get("error"),
+            }
 
     return {
         "ok": True,
@@ -2961,6 +3025,23 @@ def run_question_feedback_runtime(
                     text("SELECT static_feedback_text FROM feedback_link WHERE feedback_link_id = :fid LIMIT 1"),
                     {"fid": feedback_link_id},
                 ).scalar()
+        runtime_generated_text = None
+        runtime_generation_attempted = False
+        if feedback_text is None and feedback_link_id:
+            agent = _get_feedback_agent(db, agent_id)
+            if agent and str(agent.get("role") or "") == "ai":
+                runtime_generation_attempted = True
+                generated = generate_static_feedback_for_feedback_link(
+                    str(feedback_link_id),
+                    persist=False,
+                    enforce_ai_role=True,
+                    input_values=runtime_inputs,
+                    include_debug=False,
+                )
+                if generated.get("ok"):
+                    runtime_generated_text = generated.get("static_feedback_text")
+                    if runtime_generated_text is not None:
+                        feedback_text = runtime_generated_text
 
         return {
             "ok": True,
@@ -2978,9 +3059,10 @@ def run_question_feedback_runtime(
             "slide_mode": slide_mode,
             "feedback_link_id": feedback_link_id,
             "feedback": str(feedback_text) if feedback_text is not None else None,
-            "feedback_source": "saved_version",
+            "feedback_source": "runtime_generate_fallback" if runtime_generated_text is not None else "saved_version",
             "has_feedback": bool(feedback_text),
             "ai_score_result": ai_score_result,
+            "runtime_generation_attempted": runtime_generation_attempted,
         }
 
     if feedback_mode == "runtime_generate":
