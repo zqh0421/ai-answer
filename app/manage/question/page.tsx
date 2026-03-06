@@ -14,6 +14,10 @@ import ManageModal from "@/app/components/manage/ManageModal";
 import { useManagePermissionGuard } from "@/app/manage/hooks/useManagePermissionGuard";
 import { formatDateTimeForUser } from "@/app/utils/datetime";
 import { buildStaticPageTitle } from "@/app/utils/title";
+import {
+  FeedbackComposition,
+  parseFeedbackCompositionsResponse,
+} from "@/app/lib/feedbackCompositions";
 
 export interface QuestionContent {
   type: string; // text, image, etc.
@@ -126,6 +130,16 @@ interface BatchQuestionMutationResponse {
   enqueue_failed?: Array<{ question_id?: string; message?: string; code?: string }>;
 }
 
+type AttachedAgentSummary = {
+  attachment_id?: string;
+  agent_id: string;
+  title?: string;
+  role?: string;
+  question_feedback_text?: string;
+  option_feedback_count?: number;
+  generation_status?: string;
+};
+
 type QuestionFeedbackLinkDraftSource = {
   agent_id?: string;
   agent_title?: string;
@@ -178,6 +192,18 @@ const getQuestionTextPreview = (question: Question) => {
 
 const getQuestionImagePreview = (question: Question) =>
   question.image_preview_url ?? question.content?.find((item) => item.type === "image")?.content ?? "";
+
+const getQuestionContentForExport = (question: Question) => {
+  const blocks = (question.content ?? [])
+    .map((item) => {
+      const text = String(item.content ?? "").trim();
+      if (!text) return "";
+      return item.type === "image" ? `[image] ${text}` : text;
+    })
+    .filter(Boolean);
+  if (blocks.length > 0) return blocks.join("\n\n");
+  return getQuestionTextPreview(question);
+};
 
 const formatCreatedAt = (value?: string) => formatDateTimeForUser(value);
 const formatDateTime = (value?: string) => formatDateTimeForUser(value);
@@ -1402,19 +1428,9 @@ const QuestionOverview = () => {
     Record<number, BatchSlideMatchDraftSelection>
   >({});
   const [attachedAgentsByQuestionId, setAttachedAgentsByQuestionId] = useState<
-    Record<
-      string,
-      Array<{
-        attachment_id?: string;
-        agent_id: string;
-        title?: string;
-        role?: string;
-        question_feedback_text?: string;
-        option_feedback_count?: number;
-        generation_status?: string;
-      }>
-    >
+    Record<string, AttachedAgentSummary[]>
   >({});
+  const [isExportingQuestions, setIsExportingQuestions] = useState(false);
 
   const { data } = useSession();
   const { hasManagePermission, isPermissionChecking, manageUserId } = useManagePermissionGuard();
@@ -1986,6 +2002,102 @@ const QuestionOverview = () => {
   const handleClearSelection = () => {
     setSelectedQuestionIds(new Set());
   };
+
+  const handleExportQuestionsToXlsx = useCallback(async () => {
+    if (filteredQuestions.length === 0 || isExportingQuestions) return;
+    setIsExportingQuestions(true);
+    try {
+      const xlsxModule = await import("xlsx");
+      const XLSX: any = (xlsxModule as any).default ?? xlsxModule;
+      const exportQuestions = [...filteredQuestions].sort((a, b) => {
+        const aTs = a.created_at ? Date.parse(a.created_at) : Number.POSITIVE_INFINITY;
+        const bTs = b.created_at ? Date.parse(b.created_at) : Number.POSITIVE_INFINITY;
+        if (aTs !== bTs) return aTs - bTs;
+        return String(a.question_id ?? "").localeCompare(String(b.question_id ?? ""), undefined, {
+          numeric: true,
+          sensitivity: "base",
+        });
+      });
+      const compositionRequests = [
+        axios.get("/api/feedback-compositions", {
+          params: { include_public: true },
+        }),
+      ];
+      if (manageUserId) {
+        compositionRequests.push(
+          axios.get("/api/feedback-compositions", {
+            params: {
+              user_id: manageUserId,
+              include_public: true,
+            },
+          })
+        );
+      }
+      const compositionResponses = await Promise.all(compositionRequests);
+      const mergedCompositions = compositionResponses.flatMap((res) =>
+        parseFeedbackCompositionsResponse(res.data)
+      );
+      const dedupedCompositions = mergedCompositions.filter((item, index, array) => {
+        const id = item.composition_id.toLowerCase();
+        return array.findIndex((candidate) => candidate.composition_id.toLowerCase() === id) === index;
+      });
+      const exportedQuestionIds = new Set(exportQuestions.map((question) => question.question_id));
+      const compositionsForExport = dedupedCompositions.filter(
+        (composition) => composition.question_id && exportedQuestionIds.has(composition.question_id)
+      );
+      const compositionsByQuestionId = compositionsForExport.reduce<Record<string, FeedbackComposition[]>>(
+        (acc, composition) => {
+          const questionId = String(composition.question_id ?? "").trim();
+          if (!questionId) return acc;
+          if (!acc[questionId]) acc[questionId] = [];
+          acc[questionId].push(composition);
+          return acc;
+        },
+        {}
+      );
+
+      const titleCounts = new Map<string, number>();
+      const compositionColumnKeys = compositionsForExport.map((composition) => {
+        const baseTitle = String(composition.title || composition.composition_id).trim() || composition.composition_id;
+        const count = (titleCounts.get(baseTitle) ?? 0) + 1;
+        titleCounts.set(baseTitle, count);
+        const header = count === 1 ? baseTitle : `${baseTitle} (${composition.composition_id})`;
+        return {
+          composition_id: composition.composition_id,
+          header,
+        };
+      });
+
+      const rows = exportQuestions.map((question) => {
+        const questionCompositions = compositionsByQuestionId[question.question_id] ?? [];
+        const questionCompositionSet = new Set(questionCompositions.map((item) => item.composition_id));
+        const output: Record<string, string> = {
+          question_id: question.question_id,
+          question_type: question.question_type_raw || question.type || "",
+          question_content: getQuestionContentForExport(question),
+        };
+        compositionColumnKeys.forEach((column) => {
+          output[column.header] = questionCompositionSet.has(column.composition_id)
+            ? column.composition_id
+            : "";
+        });
+        return output;
+      });
+
+      const worksheet = XLSX.utils.json_to_sheet(rows);
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, "questions");
+      const now = new Date();
+      const pad = (value: number) => String(value).padStart(2, "0");
+      const filename = `manage-question-export-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.xlsx`;
+      XLSX.writeFile(workbook, filename);
+    } catch (error) {
+      console.error("Failed to export questions to xlsx:", error);
+      alert("导出失败：请先安装 xlsx 依赖（如 `npm install xlsx`）后重试。");
+    } finally {
+      setIsExportingQuestions(false);
+    }
+  }, [filteredQuestions, isExportingQuestions, manageUserId]);
 
   const runBatchQuestionMutation = async (endpoint: string, ids: string[], actionLabel: string) => {
     if (!manageUserId) {
@@ -3086,6 +3198,15 @@ const QuestionOverview = () => {
                 className="rounded-xl"
               >
                 {isFetchingQuestions ? "Refreshing..." : "Refresh"}
+              </ActionButton>
+              <ActionButton
+                onClick={() => void handleExportQuestionsToXlsx()}
+                variant="secondary"
+                size="sm"
+                className="rounded-xl"
+                disabled={isExportingQuestions || filteredQuestions.length === 0}
+              >
+                {isExportingQuestions ? "Exporting..." : "Export XLSX"}
               </ActionButton>
             </>
           )}

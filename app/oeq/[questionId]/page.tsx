@@ -10,11 +10,13 @@ import { saveAnswer, saveDraftAnswer, saveDraftQuestion } from "@/app/slices/use
 import { Question, QuestionContent } from "@/app/manage/question/page";
 
 import ParticipantModal from "@/app/components/ParticipantModal";
+import AndrewIdModal from "@/app/components/AndrewIdModal";
 import ImageModal from "@/app/components/ImageModal";
 import LeftFeedbackPanel from "@/app/components/LeftFeedbackPanel";
 import RightInputPanel from "@/app/components/RightInputPanel";
 import { Reference, Course, Module, Slide, RecordResultInput, FeedbackResult } from "@/app/types";
 import { buildDocumentTitle, buildQuestionResourceTitle } from "@/app/utils/title";
+import { getAndrewIdFromCookie, setAndrewIdCookie } from "@/app/utils/andrewIdCookie";
 
 const parseJsonLikeFeedback = (value: unknown) => {
   if (typeof value === "object" && value !== null) return value as Record<string, unknown>;
@@ -48,6 +50,77 @@ const stringifyIfObject = (value: unknown): string => {
   return String(value);
 };
 
+const toFiniteNumber = (value: unknown): number | undefined => {
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  return Number.isFinite(parsed) ? parsed : undefined;
+};
+
+const extractFeedbackFromUnknown = (
+  value: unknown,
+  depth = 0
+): {
+  feedbackText?: string;
+  structuredFeedback?: string;
+  textFeedback?: string;
+  isStructured?: boolean;
+  score?: number;
+  maxScore?: number;
+} => {
+  if (value === null || value === undefined || depth > 3) return {};
+
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return {};
+    const parsed = parseJsonLikeFeedback(trimmed);
+    if (parsed) return extractFeedbackFromUnknown(parsed, depth + 1);
+    return { feedbackText: trimmed, textFeedback: trimmed };
+  }
+
+  if (typeof value !== "object") return {};
+  const record = value as Record<string, unknown>;
+  const nestedCandidates = [record.text_feedback, record.feedback, record.output, record.result, record.message];
+  const nestedExtracted = nestedCandidates
+    .map((candidate) => extractFeedbackFromUnknown(candidate, depth + 1))
+    .find((candidate) => Object.keys(candidate).length > 0);
+
+  const directFeedbackText = readFirstString(
+    record.feedback,
+    record.output,
+    record.result,
+    record.text,
+    record.static_feedback_text,
+    record.question_feedback_text,
+    record.message
+  );
+  const directStructuredFeedback = readFirstString(
+    record.structured_feedback,
+    record.feedback_html,
+    record.static_feedback_text,
+    record.question_feedback_text
+  );
+  const directTextFeedback = readFirstString(
+    record.text_feedback,
+    record.feedback,
+    record.output,
+    record.result,
+    record.text,
+    record.static_feedback_text,
+    record.question_feedback_text
+  );
+
+  return {
+    feedbackText: readFirstString(directFeedbackText, nestedExtracted?.feedbackText),
+    structuredFeedback: readFirstString(directStructuredFeedback, nestedExtracted?.structuredFeedback),
+    textFeedback: readFirstString(directTextFeedback, nestedExtracted?.textFeedback),
+    isStructured:
+      typeof record.is_structured === "boolean"
+        ? record.is_structured
+        : nestedExtracted?.isStructured,
+    score: toFiniteNumber(record.score) ?? nestedExtracted?.score,
+    maxScore: toFiniteNumber(record.max_score) ?? nestedExtracted?.maxScore,
+  };
+};
+
 const resolveRuntimeFeedbackContent = (
   raw: any
 ): {
@@ -58,7 +131,9 @@ const resolveRuntimeFeedbackContent = (
   score?: number;
   maxScore?: number;
 } => {
+  const extracted = extractFeedbackFromUnknown(raw);
   const baseFeedbackText = readFirstString(
+    extracted.feedbackText,
     raw?.feedback,
     raw?.output,
     raw?.result,
@@ -68,12 +143,14 @@ const resolveRuntimeFeedbackContent = (
     raw?.message
   );
   const structuredFeedbackRaw = readFirstString(
+    extracted.structuredFeedback,
     raw?.structured_feedback,
     raw?.feedback_html,
     raw?.static_feedback_text,
     raw?.question_feedback_text
   );
   const textFeedbackRaw = readFirstString(
+    extracted.textFeedback,
     raw?.text_feedback,
     raw?.feedback,
     raw?.output,
@@ -82,23 +159,21 @@ const resolveRuntimeFeedbackContent = (
     raw?.static_feedback_text,
     raw?.question_feedback_text
   );
-  const fallbackFeedback = stringifyIfObject(raw?.feedback || raw?.output || raw?.result);
+  const fallbackFeedback = stringifyIfObject(raw?.feedback || raw?.output || raw?.result || raw);
   const isStructured =
     typeof raw?.is_structured === "boolean"
       ? raw.is_structured
+      : typeof extracted.isStructured === "boolean"
+      ? extracted.isStructured
       : structuredFeedbackRaw && !textFeedbackRaw
       ? true
       : textFeedbackRaw && !structuredFeedbackRaw
       ? false
       : null;
   const scoreCandidate =
-    typeof raw?.score === "number" ? raw.score : typeof raw?.score === "string" ? Number(raw.score) : NaN;
+    toFiniteNumber(raw?.score) ?? extracted.score ?? NaN;
   const maxScoreCandidate =
-    typeof raw?.max_score === "number"
-      ? raw.max_score
-      : typeof raw?.max_score === "string"
-      ? Number(raw.max_score)
-      : NaN;
+    toFiniteNumber(raw?.max_score) ?? extracted.maxScore ?? NaN;
   const aiScoreResult =
     raw?.ai_score_result && typeof raw.ai_score_result === "object" ? raw.ai_score_result : null;
   const aiHasScore = Boolean(aiScoreResult?.has_score);
@@ -279,6 +354,7 @@ function PageChildren({
   const compositionDebugEnabled =
     String(searchParams?.debug_composition ?? "").toLowerCase() === "1" ||
     String(searchParams?.debug_composition ?? "").toLowerCase() === "true";
+  const debugModeEnabled = String(searchParams?.debug ?? "").trim() === "1";
 
   const dispatch = useDispatch<AppDispatch>();
 
@@ -342,10 +418,61 @@ function PageChildren({
   const [saveStatus, setSaveStatus] = useState("Saved");
   const [fallbackLearnerId] = useState(() => createFallbackLearnerId());
   const [testLearnerId, setTestLearnerId] = useState(() => learnerIdFromUrl || fallbackLearnerId);
+  const [andrewId, setAndrewId] = useState("");
+  const [isAndrewModalOpen, setIsAndrewModalOpen] = useState(false);
   const normalizedTestLearnerId = testLearnerId.trim() || fallbackLearnerId;
+  const normalizedAndrewId = andrewId.trim();
   const effectiveLearnerId = isLtiMode
-    ? learnerIdFromUrl || prolificPid || participantId || normalizedTestLearnerId
-    : normalizedTestLearnerId;
+    ? learnerIdFromUrl || prolificPid || participantId || (debugModeEnabled ? normalizedTestLearnerId : normalizedAndrewId)
+    : debugModeEnabled
+      ? normalizedTestLearnerId
+      : normalizedAndrewId;
+
+  useEffect(() => {
+    if (debugModeEnabled) {
+      setIsAndrewModalOpen(false);
+      return;
+    }
+    const savedAndrewId = getAndrewIdFromCookie();
+    if (savedAndrewId) {
+      setAndrewId(savedAndrewId);
+      setIsAndrewModalOpen(false);
+      return;
+    }
+    setAndrewId("");
+    setIsAndrewModalOpen(true);
+  }, [debugModeEnabled]);
+
+  const handleSaveAndrewId = useCallback((value: string) => {
+    const normalized = value.trim();
+    if (!normalized) return;
+    setAndrewId(normalized);
+    setAndrewIdCookie(normalized);
+    setIsAndrewModalOpen(false);
+  }, []);
+
+  const ensureLearnerIdReady = useCallback(() => {
+    if (debugModeEnabled) return true;
+    if (normalizedAndrewId) return true;
+    setIsAndrewModalOpen(true);
+    return false;
+  }, [debugModeEnabled, normalizedAndrewId]);
+
+  useEffect(() => {
+    const handleOpenAndrewIdModal = () => {
+      if (debugModeEnabled) return;
+      setIsAndrewModalOpen(true);
+    };
+    window.addEventListener("open-andrew-id-modal", handleOpenAndrewIdModal);
+    return () => {
+      window.removeEventListener("open-andrew-id-modal", handleOpenAndrewIdModal);
+    };
+  }, [debugModeEnabled]);
+
+  useEffect(() => {
+    if (!effectiveLearnerId) return;
+    window.dispatchEvent(new CustomEvent("learner-id-updated", { detail: { learnerId: effectiveLearnerId } }));
+  }, [effectiveLearnerId]);
 
   const resolveCompositionForQuestion = useCallback(async (resolvedQuestionId?: string) => {
     if (!compositionId || !resolvedQuestionId) return null;
@@ -839,6 +966,7 @@ function PageChildren({
   }
 
   const runOeqRuntimeFeedback = useCallback(async () => {
+    if (!ensureLearnerIdReady()) return;
     if (!questionPreset?.question_id) return;
     const normalizedAnswer = isValidInput(answer) ? answer : "The student haven't provided any answer yet.";
     const startTime = Date.now();
@@ -976,6 +1104,7 @@ function PageChildren({
     }
   }, [
     answer,
+    ensureLearnerIdReady,
     effectiveLearnerId,
     launchId,
     ltiLaunchId,
@@ -1034,24 +1163,16 @@ function PageChildren({
     <div className="px-3 pb-3 pt-4 md:px-4 md:pb-4 md:pt-5">
       {/* If you only want to show the participant modal for Prolific flows, you can also gate this by prolificPid */}
       <ParticipantModal isOpen={!prolificPid && !participantId && !!course_version} />
+      <AndrewIdModal
+        isOpen={isAndrewModalOpen}
+        initialValue={andrewId}
+        isRequired={!normalizedAndrewId}
+        onSave={handleSaveAndrewId}
+        onClose={normalizedAndrewId ? () => setIsAndrewModalOpen(false) : undefined}
+      />
 
       <section className="mb-3 rounded-xl border border-slate-200 bg-white px-4 py-3">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Question</p>
-          {!isLtiMode ? (
-            <div className="flex items-center gap-2">
-              <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">Test Learner ID</label>
-              <input
-                type="text"
-                value={testLearnerId}
-                onChange={(e) => setTestLearnerId(e.target.value)}
-                onBlur={() => setTestLearnerId((prev) => prev.trim() || fallbackLearnerId)}
-                className="w-64 rounded-lg border border-slate-200 bg-white px-2 py-1 font-mono text-xs text-slate-900 outline-none focus:border-slate-300"
-                placeholder="test_learner_xxx"
-              />
-            </div>
-          ) : null}
-        </div>
+        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Question</p>
         {questionLoading ? (
           <div className="mt-2 space-y-2">
             <div className="h-3 w-11/12 animate-pulse rounded bg-slate-200" />
@@ -1090,7 +1211,7 @@ function PageChildren({
           promptVersion={promptVersion}
           recordId={currentRecordId}
           sessionId={sessionId}
-          participantId={prolificPid || participantId || null}
+          participantId={prolificPid || participantId || effectiveLearnerId || null}
         />
 
         <RightInputPanel
