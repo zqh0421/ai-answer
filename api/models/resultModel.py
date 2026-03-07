@@ -1,29 +1,12 @@
 from datetime import datetime
-from typing import List, Literal, Optional
+from typing import Any, List, Literal, Optional
 
-from pydantic import BaseModel
-
-
-class FeedbackRequestModel(BaseModel):
-    question: str
-    answer: str
-    promptEngineering: str
-    feedbackFramework: str
-
-
-class FeedbackRequestRagModel(BaseModel):
-    participant_id: str
-    question_id: str
-    question: str
-    answer: str
-    slide_text_arr: List[str]
-    promptEngineering: str
-    feedbackFramework: str
-    isStructured: bool = False
-    course_version: Optional[str] = None
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 
 class RecordResultModel(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
     learner_id: str
     session_id: str
     lti_launch_id: Optional[str] = None
@@ -36,6 +19,15 @@ class RecordResultModel(BaseModel):
     prompt_engineering_method: str
     feedback_framework: str
     feedback: str
+    llm_system_prompt: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("llm_system_prompt", "system_prompt", "resolved_system_prompt"),
+    )
+    llm_user_prompt: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("llm_user_prompt", "user_prompt", "user_text", "resolved_user_text"),
+    )
+    rendered_prompt: Optional[dict[str, Any]] = None
     score_given: Optional[float] = None
     score_maximum: Optional[float] = None
     reference_slide_id: Optional[str] = None

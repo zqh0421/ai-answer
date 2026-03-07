@@ -1,4 +1,3 @@
-from .embedModel import *
 from .convertModel import *
 from .userModel import *
 from .questionModel import *

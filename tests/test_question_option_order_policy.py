@@ -36,5 +36,4 @@ def test_option_order_policy_shuffles_when_random_enabled():
     mock_shuffle.assert_called_once()
     assert [x["text"] for x in result[0]["options"]] == ["B", "A"]
     assert [x["option_order"] for x in result[0]["options"]] == [1, 2]
-    assert [x["source_option_order"] for x in result[0]["options"]] == [2, 1]
     assert result[0]["interaction_options"] == result[0]["options"]

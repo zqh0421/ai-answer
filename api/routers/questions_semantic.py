@@ -27,7 +27,8 @@ from ..services.feedback_link_job_status import (
     set_feedback_link_generation_job_id,
 )
 from ..services.feedback_composition_expr import CompositionExprError, compile_condition_expression
-from ..services.semantic_schema import generate_short_id, get_semantic_question_version_detail
+from ..services.ids import generate_short_id
+from ..services.readers import get_semantic_question_version_detail
 from ..services.slide_batch_jobs import slide_batch_job_manager
 from ..tags import Tags
 
@@ -209,7 +210,7 @@ class StaticFeedbackRestoreRequest(BaseModel):
     if_match_version_id: Optional[str] = Field(default=None, min_length=16, max_length=16, alias="ifMatchVersionId")
 
 
-class AttachedAgentDryRunRequest(BaseModel):
+class AttachedAgentFeedbackRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
     updated_by: Optional[str] = Field(default=None, min_length=16, max_length=16, alias="updatedBy")
@@ -217,14 +218,108 @@ class AttachedAgentDryRunRequest(BaseModel):
     input_values: Optional[dict[str, Any]] = Field(default=None, alias="inputValues")
 
 
-class QuestionFeedbackRuntimeRequest(BaseModel):
-    composition_id: Optional[str] = Field(default=None, max_length=64)
-    learner_id: Optional[str] = Field(default=None, max_length=128)
-    launch_id: Optional[str] = None
-    lti_launch_id: Optional[str] = None
-    selected_option_index: Optional[int] = Field(default=None, ge=0)
-    answer_text: Optional[str] = None
-    input_values: Optional[dict[str, Any]] = None
+# Backward compatibility for older references.
+AttachedAgentDryRunRequest = AttachedAgentFeedbackRequest
+
+
+class UnifiedQuestionFeedbackRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    mode: Literal["composition", "agent"] = "composition"
+    dry_run: bool = Field(default=True, alias="dryRun")
+    updated_by: Optional[str] = Field(default=None, min_length=16, max_length=16, alias="updatedBy")
+    composition_id: Optional[str] = Field(default=None, max_length=64, alias="compositionId")
+    agent_id: Optional[str] = Field(default=None, min_length=16, max_length=16, alias="agentId")
+    learner_id: Optional[str] = Field(default=None, max_length=128, alias="learnerId")
+    launch_id: Optional[str] = Field(default=None, alias="launchId")
+    lti_launch_id: Optional[str] = Field(default=None, alias="ltiLaunchId")
+    selected_option_index: Optional[int] = Field(default=None, ge=0, alias="selectedOptionIndex")
+    answer_text: Optional[str] = Field(default=None, alias="answerText")
+    input_values: Optional[dict[str, Any]] = Field(default=None, alias="inputValues")
+
+
+def _raise_feedback_api_error(
+    *,
+    status_code: int,
+    code: str,
+    message: str,
+    mode: str | None,
+    question_id: str,
+    agent_id: str | None = None,
+    agent_name: str | None = None,
+    composition_id: str | None = None,
+    reason: str | None = None,
+) -> None:
+    detail: dict[str, Any] = {
+        "ok": False,
+        "code": code,
+        "message": message,
+        "mode": mode,
+        "question_id": question_id,
+    }
+    if agent_id:
+        detail["agent_id"] = agent_id
+    if agent_name:
+        detail["agent_name"] = agent_name
+    if composition_id:
+        detail["composition_id"] = composition_id
+    if reason:
+        detail["reason"] = reason
+    raise HTTPException(status_code=status_code, detail=detail)
+
+
+def _normalize_feedback_error(
+    exc: HTTPException,
+    *,
+    fallback_code: str,
+    mode: str | None,
+    question_id: str,
+    agent_id: str | None = None,
+    agent_name: str | None = None,
+    composition_id: str | None = None,
+) -> HTTPException:
+    if isinstance(exc.detail, dict):
+        detail = dict(exc.detail)
+        detail["ok"] = False
+        detail.setdefault("code", fallback_code)
+        if not detail.get("message"):
+            detail["message"] = str(detail.get("detail") or "Request failed")
+        detail.setdefault("mode", mode)
+        detail.setdefault("question_id", question_id)
+        if agent_id and not detail.get("agent_id"):
+            detail["agent_id"] = agent_id
+        if agent_name and not detail.get("agent_name"):
+            detail["agent_name"] = agent_name
+        if composition_id and not detail.get("composition_id"):
+            detail["composition_id"] = composition_id
+        return HTTPException(status_code=exc.status_code, detail=detail)
+
+    return HTTPException(
+        status_code=exc.status_code,
+        detail={
+            "ok": False,
+            "code": fallback_code,
+            "message": str(exc.detail) if exc.detail is not None else "Request failed",
+            "mode": mode,
+            "question_id": question_id,
+            "agent_id": agent_id,
+            "agent_name": agent_name,
+            "composition_id": composition_id,
+        },
+    )
+
+
+def _compose_feedback_text_for_client(result: dict[str, Any]) -> str | None:
+    structured = result.get("structured_feedback_text")
+    if isinstance(structured, str) and structured.strip():
+        return structured.strip()
+    static_text = result.get("static_feedback_text")
+    if isinstance(static_text, str) and static_text.strip():
+        extracted = _extract_structured_feedback_from_generated_feedback(static_text)
+        if isinstance(extracted, str) and extracted.strip():
+            return extracted.strip()
+        return static_text.strip()
+    return None
 
 
 def _user_exists(db: Session, user_id: str) -> bool:
@@ -452,6 +547,63 @@ def _runtime_feedback_link_id_for_agent(
         db, question_version_id=question_version_id, agent_id=agent_id
     ) or _find_any_visible_question_link(
         db, question_version_id=question_version_id, agent_id=agent_id
+    )
+
+
+def _ensure_feedback_runtime_prompt_cache_schema(db: Session) -> None:
+    db.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS feedback_runtime_prompt_cache (
+                participant_id VARCHAR(255) NOT NULL,
+                question_id VARCHAR(64) NOT NULL,
+                answer_text TEXT NULL,
+                llm_system_prompt TEXT NULL,
+                llm_user_prompt TEXT NULL,
+                updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (participant_id, question_id)
+            )
+            """
+        )
+    )
+
+
+def _cache_runtime_prompt(
+    db: Session,
+    *,
+    participant_id: str,
+    question_id: str,
+    answer_text: str | None,
+    llm_system_prompt: str | None,
+    llm_user_prompt: str | None,
+) -> None:
+    if not llm_system_prompt and not llm_user_prompt:
+        return
+    _ensure_feedback_runtime_prompt_cache_schema(db)
+    db.execute(
+        text(
+            """
+            INSERT INTO feedback_runtime_prompt_cache (
+                participant_id, question_id, answer_text, llm_system_prompt, llm_user_prompt, updated_at
+            )
+            VALUES (
+                :participant_id, :question_id, :answer_text, :llm_system_prompt, :llm_user_prompt, NOW()
+            )
+            ON CONFLICT (participant_id, question_id)
+            DO UPDATE SET
+                answer_text = EXCLUDED.answer_text,
+                llm_system_prompt = EXCLUDED.llm_system_prompt,
+                llm_user_prompt = EXCLUDED.llm_user_prompt,
+                updated_at = NOW()
+            """
+        ),
+        {
+            "participant_id": participant_id,
+            "question_id": question_id,
+            "answer_text": answer_text,
+            "llm_system_prompt": llm_system_prompt,
+            "llm_user_prompt": llm_user_prompt,
+        },
     )
 
 
@@ -2209,18 +2361,20 @@ def attach_agent_to_single_question(question_id: str, payload: SingleAttachAgent
     }
 
 
-@router.post("/questions/{question_id}/attached-agents/{agent_id}/dry-run")
-def dry_run_attached_agent_feedback(
+def _run_attached_agent_feedback(
     question_id: str,
     agent_id: str,
-    payload: Optional[AttachedAgentDryRunRequest] = None,
-    db: Session = Depends(get_db),
-):
+    payload: Optional[AttachedAgentFeedbackRequest],
+    db: Session,
+    *,
+    require_updated_by_for_persist: bool = True,
+    include_debug: bool = True,
+) -> dict[str, Any]:
     dry_run = True if payload is None else bool(payload.dry_run)
     updated_by = (payload.updated_by if payload else None) or None
     if updated_by:
         _require_admin_user(db, updated_by)
-    if not dry_run and not updated_by:
+    if not dry_run and not updated_by and require_updated_by_for_persist:
         raise HTTPException(status_code=403, detail="updatedBy is required when dryRun is false")
     question = _question_row(db, question_id)
     if not question:
@@ -2232,6 +2386,7 @@ def dry_run_attached_agent_feedback(
     agent = _get_feedback_agent(db, agent_id)
     if not agent or not agent.get("is_visible", True):
         raise HTTPException(status_code=404, detail="feedback agent not found")
+    agent_name = str(agent.get("title") or "").strip() or None
     agent_role = str(agent.get("role") or "")
     if agent_role not in {"ai", "human"}:
         raise HTTPException(status_code=400, detail="dry-run generation is only supported for ai or human agents")
@@ -2337,9 +2492,9 @@ def dry_run_attached_agent_feedback(
         result = generate_static_feedback_for_feedback_link(
             str(feedback_link_id),
             persist=not dry_run,
-            enforce_ai_role=not dry_run,
+            enforce_ai_role=True,
             input_values=(payload.input_values if payload else None),
-            include_debug=True,
+            include_debug=include_debug,
         )
         result["ai_score_result"] = None
         result["structured_feedback_text"] = _extract_structured_feedback_from_generated_feedback(
@@ -2351,7 +2506,7 @@ def dry_run_attached_agent_feedback(
         }
 
     created_version: dict[str, Any] | None = None
-    if agent_role == "ai" and not dry_run and result.get("ok") and not result.get("skipped"):
+    if agent_role == "ai" and not dry_run and bool(updated_by) and result.get("ok") and not result.get("skipped"):
         _ensure_static_feedback_version_schema(db)
         latest_before_update = _get_latest_static_feedback_version(db, question_id=question_id, agent_id=agent_id)
         latest_version_id = str(latest_before_update["version_id"]) if latest_before_update else None
@@ -2376,6 +2531,7 @@ def dry_run_attached_agent_feedback(
             "question_id": question_id,
             "question_version_id": current_version_id,
             "agent_id": agent_id,
+            "agent_name": agent_name,
             "dry_run": dry_run,
         }
     )
@@ -2384,6 +2540,189 @@ def dry_run_attached_agent_feedback(
         result["revision_no"] = int(created_version["revision_no"])
         result["version_created_at"] = _to_utc_iso_z(created_version.get("created_at"))
     return result
+
+
+@router.post("/questions/{question_id}/attached-agents/{agent_id}/feedback")
+def get_attached_agent_feedback(
+    question_id: str,
+    agent_id: str,
+    payload: Optional[AttachedAgentFeedbackRequest] = None,
+    db: Session = Depends(get_db),
+):
+    return _run_attached_agent_feedback(question_id=question_id, agent_id=agent_id, payload=payload, db=db)
+
+
+@router.post("/questions/{question_id}/feedback")
+def get_question_feedback(
+    question_id: str,
+    payload: UnifiedQuestionFeedbackRequest,
+    db: Session = Depends(get_db),
+):
+    if payload.mode == "agent":
+        if not payload.agent_id:
+            _raise_feedback_api_error(
+                status_code=400,
+                code="AGENT_ID_REQUIRED",
+                message="agentId is required when mode is 'agent'",
+                mode=payload.mode,
+                question_id=question_id,
+            )
+        agent_profile = _get_feedback_agent(db, str(payload.agent_id))
+        agent_name = str(agent_profile.get("title") or "").strip() if agent_profile else None
+        agent_name = agent_name or None
+        try:
+            agent_payload = AttachedAgentFeedbackRequest.model_validate(
+                {
+                    "updatedBy": payload.updated_by,
+                    "dryRun": payload.dry_run,
+                    "inputValues": payload.input_values,
+                }
+            )
+            return _run_attached_agent_feedback(
+                question_id=question_id,
+                agent_id=str(payload.agent_id),
+                payload=agent_payload,
+                db=db,
+            )
+        except HTTPException as exc:
+            raise _normalize_feedback_error(
+                exc,
+                fallback_code="AGENT_FEEDBACK_FAILED",
+                mode=payload.mode,
+                question_id=question_id,
+                agent_id=str(payload.agent_id),
+                agent_name=agent_name,
+            )
+
+    if payload.mode == "composition":
+        if not payload.composition_id:
+            _raise_feedback_api_error(
+                status_code=400,
+                code="COMPOSITION_ID_REQUIRED",
+                message="compositionId is required when mode is 'composition'",
+                mode=payload.mode,
+                question_id=question_id,
+            )
+        try:
+            question = _question_row(db, question_id)
+            if not question:
+                _raise_feedback_api_error(
+                    status_code=404,
+                    code="QUESTION_NOT_FOUND",
+                    message="question not found",
+                    mode=payload.mode,
+                    question_id=question_id,
+                    composition_id=str(payload.composition_id),
+                )
+
+            learner_id = _coerce_runtime_learner_id(payload.learner_id)
+            matched_rule, variables = _resolve_composition_match(
+                db,
+                composition_id=str(payload.composition_id),
+                question_id=question_id,
+                learner_id=learner_id,
+            )
+            if not matched_rule:
+                _raise_feedback_api_error(
+                    status_code=404,
+                    code="COMPOSITION_RULE_NOT_MATCHED",
+                    message="No enabled composition rule matched current runtime context",
+                    mode=payload.mode,
+                    question_id=question_id,
+                    composition_id=str(payload.composition_id),
+                )
+
+            matched_rule_id = str(matched_rule["rule_id"])
+            feedback_mode = str(matched_rule["feedback_mode"])
+            slide_mode = str(matched_rule["slide_mode"])
+            resolved_agent_id = str(matched_rule.get("feedback_agent_id") or "")
+            if not resolved_agent_id:
+                _raise_feedback_api_error(
+                    status_code=409,
+                    code="COMPOSITION_AGENT_NOT_CONFIGURED",
+                    message="Matched composition rule has no feedback agent configured",
+                    mode=payload.mode,
+                    question_id=question_id,
+                    composition_id=str(payload.composition_id),
+                )
+
+            agent_profile = _get_feedback_agent(db, resolved_agent_id)
+            agent_name = str(agent_profile.get("title") or "").strip() if agent_profile else None
+            agent_name = agent_name or None
+
+            composed_input_values = dict(payload.input_values or {})
+            composed_input_values["learner_id"] = learner_id
+            composed_input_values["question_id"] = question_id
+            if payload.answer_text is not None:
+                composed_input_values["answer_text"] = payload.answer_text
+            if payload.selected_option_index is not None:
+                composed_input_values["selected_option_index"] = payload.selected_option_index
+
+            agent_payload = AttachedAgentFeedbackRequest.model_validate(
+                {
+                    "updatedBy": payload.updated_by,
+                    "dryRun": payload.dry_run,
+                    "inputValues": composed_input_values,
+                }
+            )
+            result = _run_attached_agent_feedback(
+                question_id=question_id,
+                agent_id=resolved_agent_id,
+                payload=agent_payload,
+                db=db,
+                require_updated_by_for_persist=False,
+                include_debug=False,
+            )
+            feedback_text = _compose_feedback_text_for_client(result)
+            result.update(
+                {
+                    "mode": "composition",
+                    "composition_id": str(payload.composition_id),
+                    "matched_rule_id": matched_rule_id,
+                    "feedback_mode": feedback_mode,
+                    "slide_mode": slide_mode,
+                    "feedback_agent_id": resolved_agent_id,
+                    "feedback_agent_name": agent_name,
+                    "variables": variables or _resolve_runtime_attempt_stats(db, learner_id=learner_id, question_id=question_id),
+                    "learner_id": learner_id,
+                    "launch_id": payload.launch_id or payload.lti_launch_id,
+                    "lti_launch_id": payload.lti_launch_id or payload.launch_id,
+                    "feedback": feedback_text,
+                    "has_feedback": bool(feedback_text),
+                    "feedback_source": "runtime_generate",
+                }
+            )
+            result.pop("resolved_input_values", None)
+            result.pop("resolved_system_prompt", None)
+            result.pop("resolved_user_text", None)
+            result.pop("rendered_prompt", None)
+            return result
+        except HTTPException as exc:
+            raise _normalize_feedback_error(
+                exc,
+                fallback_code="COMPOSITION_FEEDBACK_FAILED",
+                mode=payload.mode,
+                question_id=question_id,
+                composition_id=str(payload.composition_id),
+            )
+
+    _raise_feedback_api_error(
+        status_code=400,
+        code="UNSUPPORTED_MODE",
+        message=f"unsupported mode: {payload.mode}",
+        mode=payload.mode,
+        question_id=question_id,
+    )
+
+
+@router.post("/questions/{question_id}/attached-agents/{agent_id}/dry-run")
+def dry_run_attached_agent_feedback(
+    question_id: str,
+    agent_id: str,
+    payload: Optional[AttachedAgentFeedbackRequest] = None,
+    db: Session = Depends(get_db),
+):
+    return _run_attached_agent_feedback(question_id=question_id, agent_id=agent_id, payload=payload, db=db)
 
 
 @router.delete("/questions/{question_id}/attached-agents/{agent_id}")
@@ -2931,195 +3270,6 @@ def get_semantic_question(
     if "feedback_links" in includes:
         payload["feedback_links"] = detail["feedback_links"]
     return payload
-
-
-@router.post("/questions/{question_id}/feedback-runtime")
-def run_question_feedback_runtime(
-    question_id: str,
-    payload: QuestionFeedbackRuntimeRequest,
-    db: Session = Depends(get_db),
-):
-    question = _question_row(db, question_id)
-    if not question:
-        raise HTTPException(status_code=404, detail="question not found")
-    question_version_id = str(question.get("current_version_id") or "")
-    if not question_version_id:
-        raise HTTPException(status_code=409, detail="question has no current version")
-
-    question_type = _question_version_type(db, question_version_id)
-    learner_id = _coerce_runtime_learner_id(payload.learner_id)
-    launch_id = payload.launch_id or payload.lti_launch_id
-
-    matched_rule: dict[str, Any] | None = None
-    variables: dict[str, int] | None = None
-    if payload.composition_id:
-        matched_rule, variables = _resolve_composition_match(
-            db,
-            composition_id=payload.composition_id,
-            question_id=question_id,
-            learner_id=learner_id,
-        )
-    if variables is None:
-        variables = _resolve_runtime_attempt_stats(db, learner_id=learner_id, question_id=question_id)
-
-    if not matched_rule:
-        return {
-            "ok": True,
-            "question_id": question_id,
-            "question_version_id": question_version_id,
-            "question_type": question_type,
-            "composition_id": payload.composition_id,
-            "learner_id": learner_id,
-            "launch_id": launch_id,
-            "lti_launch_id": payload.lti_launch_id or payload.launch_id,
-            "variables": variables,
-            "matched_rule_id": None,
-            "feedback_mode": None,
-            "feedback_agent_id": None,
-            "slide_mode": None,
-            "feedback": None,
-            "fallback_to_legacy": True,
-        }
-
-    matched_rule_id = str(matched_rule["rule_id"])
-    feedback_mode = str(matched_rule["feedback_mode"])
-    agent_id = str(matched_rule["feedback_agent_id"])
-    slide_mode = str(matched_rule["slide_mode"])
-
-    option_ids = _runtime_option_ids_for_version(db, question_version_id)
-    selected_option_id: str | None = None
-    if payload.selected_option_index is not None:
-        if payload.selected_option_index >= len(option_ids):
-            raise HTTPException(status_code=400, detail="selected_option_index out of range")
-        selected_option_id = option_ids[payload.selected_option_index]
-
-    runtime_inputs = dict(payload.input_values or {})
-    if payload.answer_text is not None:
-        runtime_inputs["answer_text"] = payload.answer_text
-    runtime_inputs["learner_id"] = learner_id
-    runtime_inputs["question_id"] = question_id
-    runtime_inputs["question_type"] = question_type
-    if selected_option_id:
-        runtime_inputs["selected_option_id"] = selected_option_id
-        runtime_inputs["selected_option_index"] = payload.selected_option_index
-
-    ai_score_result = _resolve_human_agent_ai_score_result(
-        db,
-        question_version_id=question_version_id,
-        human_agent_id=agent_id,
-        selected_option_id=selected_option_id,
-        runtime_inputs=runtime_inputs,
-    )
-
-    if feedback_mode == "use_latest_version":
-        feedback_link_id = None
-        feedback_text = None
-        if selected_option_id:
-            feedback_link_id = _find_visible_feedback_link_by_target(
-                db,
-                question_version_id=question_version_id,
-                agent_id=agent_id,
-                target_entity_type="interaction_option",
-                target_entity_id=selected_option_id,
-            )
-            if feedback_link_id:
-                feedback_text = db.execute(
-                    text("SELECT static_feedback_text FROM feedback_link WHERE feedback_link_id = :fid LIMIT 1"),
-                    {"fid": feedback_link_id},
-                ).scalar()
-        if not feedback_text:
-            feedback_link_id = _find_visible_question_version_link(
-                db, question_version_id=question_version_id, agent_id=agent_id
-            ) or _find_any_visible_question_link(
-                db, question_version_id=question_version_id, agent_id=agent_id
-            )
-            if feedback_link_id:
-                feedback_text = db.execute(
-                    text("SELECT static_feedback_text FROM feedback_link WHERE feedback_link_id = :fid LIMIT 1"),
-                    {"fid": feedback_link_id},
-                ).scalar()
-        runtime_generated_text = None
-        runtime_generation_attempted = False
-        if (feedback_text is None or not str(feedback_text).strip()) and feedback_link_id:
-            agent = _get_feedback_agent(db, agent_id)
-            if agent and str(agent.get("role") or "") == "ai":
-                runtime_generation_attempted = True
-                generated = generate_static_feedback_for_feedback_link(
-                    str(feedback_link_id),
-                    persist=False,
-                    enforce_ai_role=True,
-                    input_values=runtime_inputs,
-                    include_debug=False,
-                )
-                if generated.get("ok"):
-                    runtime_generated_text = generated.get("static_feedback_text")
-                    if runtime_generated_text is not None:
-                        feedback_text = runtime_generated_text
-
-        return {
-            "ok": True,
-            "question_id": question_id,
-            "question_version_id": question_version_id,
-            "question_type": question_type,
-            "composition_id": payload.composition_id,
-            "learner_id": learner_id,
-            "launch_id": launch_id,
-            "lti_launch_id": payload.lti_launch_id or payload.launch_id,
-            "variables": variables,
-            "matched_rule_id": matched_rule_id,
-            "feedback_mode": feedback_mode,
-            "feedback_agent_id": agent_id,
-            "slide_mode": slide_mode,
-            "feedback_link_id": feedback_link_id,
-            "feedback": str(feedback_text) if feedback_text is not None else None,
-            "feedback_source": "runtime_generate_fallback" if runtime_generated_text is not None else "saved_version",
-            "has_feedback": bool(feedback_text),
-            "ai_score_result": ai_score_result,
-            "runtime_generation_attempted": runtime_generation_attempted,
-        }
-
-    if feedback_mode == "runtime_generate":
-        feedback_link_id = _runtime_feedback_link_id_for_agent(
-            db,
-            question_version_id=question_version_id,
-            agent_id=agent_id,
-            selected_option_id=selected_option_id,
-        )
-        if not feedback_link_id:
-            raise HTTPException(status_code=404, detail="no attached feedback link for runtime generation")
-
-        generated = generate_static_feedback_for_feedback_link(
-            str(feedback_link_id),
-            persist=False,
-            enforce_ai_role=True,
-            input_values=runtime_inputs,
-            include_debug=False,
-        )
-        if not generated.get("ok"):
-            raise HTTPException(status_code=409, detail=f"runtime generation failed: {generated.get('reason') or 'unknown'}")
-
-        return {
-            "ok": True,
-            "question_id": question_id,
-            "question_version_id": question_version_id,
-            "question_type": question_type,
-            "composition_id": payload.composition_id,
-            "learner_id": learner_id,
-            "launch_id": launch_id,
-            "lti_launch_id": payload.lti_launch_id or payload.launch_id,
-            "variables": variables,
-            "matched_rule_id": matched_rule_id,
-            "feedback_mode": feedback_mode,
-            "feedback_agent_id": agent_id,
-            "slide_mode": slide_mode,
-            "feedback_link_id": feedback_link_id,
-            "feedback": generated.get("static_feedback_text"),
-            "feedback_source": "runtime_generate",
-            "has_feedback": bool(generated.get("static_feedback_text")),
-            "ai_score_result": ai_score_result,
-        }
-
-    raise HTTPException(status_code=400, detail=f"unsupported feedback_mode: {feedback_mode}")
 
 
 @router.patch("/questions/{question_id}/scope")

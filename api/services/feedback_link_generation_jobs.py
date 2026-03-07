@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, Optional
 
 from openai import OpenAI
 from sqlalchemy import text
 
 from ..config import get_settings
 from ..database import SessionLocal
-from .semantic_schema import generate_short_id
+from .ids import generate_short_id
 
 _PROMPT_VAR_RE = re.compile(r"\{\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}\}")
 
@@ -555,7 +555,7 @@ def _compose_generation_input_from_values(input_values: dict[str, Any] | None) -
     return "\n\n".join(parts)
 
 
-def _call_openai_static_feedback(*, model: str, system_prompt: str, user_text: str) -> str:
+def _call_openai_static_feedback(*, model: str, system_prompt: str, user_text: Optional[str] = None) -> str:
     settings = get_settings()
     client = OpenAI(
         api_key=settings.openai_api_key,
@@ -565,7 +565,7 @@ def _call_openai_static_feedback(*, model: str, system_prompt: str, user_text: s
     response = client.responses.create(
         model=model,
         instructions=system_prompt,
-        input=user_text,
+        input=(user_text.strip() if isinstance(user_text, str) and user_text.strip() else "Generate feedback to the student response"),
         reasoning={"effort": "low"},
         text={"verbosity": "low"},
     )
@@ -626,6 +626,7 @@ def _generate_feedback_text_from_context(
     if not user_text:
         user_text = fallback_user_text
     generated = _call_openai_static_feedback(model=model, system_prompt=system_prompt, user_text=user_text)
+    
     if not generated:
         raise ValueError("LLM returned empty feedback text")
     debug_payload = {
@@ -634,6 +635,80 @@ def _generate_feedback_text_from_context(
         "resolved_user_text": user_text,
     }
     return generated, debug_payload
+
+
+def resolve_feedback_prompt_for_feedback_link(
+    feedback_link_id: str,
+    *,
+    input_values: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Resolve prompts for a feedback_link without calling the LLM.
+    Useful for recording/debugging prompt payloads.
+    """
+    with SessionLocal() as db:
+        ctx = _load_feedback_link_generation_context(db, feedback_link_id)
+        if not ctx:
+            return {"ok": False, "feedback_link_id": feedback_link_id, "reason": "link_not_found"}
+        if not ctx.get("link_is_visible", True):
+            return {"ok": False, "feedback_link_id": feedback_link_id, "reason": "link_not_visible"}
+        if str(ctx.get("role") or "") != "ai":
+            return {"ok": False, "feedback_link_id": feedback_link_id, "reason": "agent_not_ai"}
+
+        llm_params = _parse_llm_params(ctx.get("llm_params_text"))
+        effective_input_values = dict(input_values or {})
+        fallback_question_payload = _load_question_version_text(db, str(ctx["question_version_id"]))
+        fallback_user_text = _compose_generation_input(fallback_question_payload)
+        existing_retrieved_pages = effective_input_values.get("retrieved_slide_pages")
+        if existing_retrieved_pages in (None, "", [], {}):
+            resolved_pages = _resolve_retrieved_slide_pages(
+                db,
+                ctx=ctx,
+                input_values=effective_input_values if effective_input_values else None,
+                fallback_text=fallback_user_text,
+            )
+            if resolved_pages is not None:
+                effective_input_values["retrieved_slide_pages"] = resolved_pages
+
+        prompt_ctx = _load_question_prompt_context(db, str(ctx["question_version_id"]))
+        question_type = str(prompt_ctx["question_type"])
+        max_score = float(prompt_ctx["max_score"])
+        generation_block = str(
+            llm_params.get("feedback_generation_block")
+            or (ctx.get("prompt_text") or "").strip()
+            or DEFAULT_GENERATION_BLOCK
+        )
+        additional_formatting_instructions = str(llm_params.get("additional_formatting_instructions_block") or "")
+        score_hint = _score_hint_for_question_type(question_type, max_score)
+        output_schema_json = _build_output_schema_json_block(
+            is_structured=bool(ctx.get("is_structured")),
+            score_hint=score_hint,
+            max_score=max_score,
+        )
+        formatting_instructions = _build_formatting_instructions_text(
+            is_structured=bool(ctx.get("is_structured")),
+            max_score=max_score,
+            additional=additional_formatting_instructions,
+        )
+        system_prompt = _build_system_prompt_from_blocks(
+            question_type_label=_human_question_type_label(question_type),
+            generation_block=generation_block,
+            output_schema_json=output_schema_json,
+            formatting_instructions=formatting_instructions,
+        )
+        system_prompt = _render_prompt_template(system_prompt, effective_input_values)
+
+        user_text = _compose_generation_input_from_values(effective_input_values)
+        if not user_text:
+            user_text = fallback_user_text
+
+        return {
+            "ok": True,
+            "feedback_link_id": feedback_link_id,
+            "resolved_input_values": effective_input_values,
+            "resolved_system_prompt": system_prompt,
+            "resolved_user_text": user_text,
+        }
 
 
 def _generate_unique_id(db, table: str, col: str, prefix: str) -> str:

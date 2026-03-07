@@ -8,7 +8,8 @@ from sqlalchemy.orm import Session
 from .. import models
 from ..config import Settings, get_settings
 from ..dependencies import get_db
-from ..services.semantic_schema import generate_short_id
+from ..services.ids import generate_short_id
+from ..services.feedback_link_generation_jobs import resolve_feedback_prompt_for_feedback_link
 from ..tags import Tags
 from ..lti.routes import try_submit_lti_grade_for_launch
 
@@ -66,6 +67,38 @@ def _resolve_mcq_score(db: Session, question_id: str, answer: str) -> tuple[floa
     selected_option = options[selected_index]
     is_correct = bool(selected_option.get("isCorrect")) if isinstance(selected_option, dict) else False
     return (1.0 if is_correct else 0.0, 1.0)
+
+
+def _resolve_mcq_selected_option_id(db: Session, question_id: str, answer: str) -> str | None:
+    if not question_id.startswith("qn_"):
+        return None
+    rows = db.execute(
+        text(
+            """
+            SELECT o.interaction_option_id, o.option_value
+            FROM content_question q
+            JOIN content_question_version qv ON qv.question_version_id = q.current_version_id
+            JOIN content_question_interaction i ON i.question_version_id = qv.question_version_id
+            JOIN content_question_interaction_option o ON o.interaction_id = i.interaction_id
+            WHERE q.question_id = :question_id
+            ORDER BY i.interaction_order ASC, o.option_order ASC
+            """
+        ),
+        {"question_id": question_id},
+    ).mappings().all()
+    if not rows:
+        return None
+
+    normalized_answer = (answer or "").strip()
+    if normalized_answer.isdigit():
+        idx = int(normalized_answer)
+        if 0 <= idx < len(rows):
+            return str(rows[idx]["interaction_option_id"])
+
+    for row in rows:
+        if str(row.get("option_value") or "").strip() == normalized_answer:
+            return str(row["interaction_option_id"])
+    return None
 
 
 def _extract_lti_context_from_request(request: Request) -> dict[str, str]:
@@ -128,6 +161,171 @@ def _semantic_question_version_id(db: Session, question_id: str) -> str | None:
         {"question_id": question_id},
     ).scalar()
     return str(row) if row else None
+
+
+def _select_ai_feedback_link_id(
+    db: Session,
+    *,
+    question_version_id: str,
+    selected_option_id: str | None,
+) -> str | None:
+    if selected_option_id:
+        row = db.execute(
+            text(
+                """
+                SELECT fl.feedback_link_id
+                FROM feedback_link fl
+                JOIN feedback_agent fa ON fa.agent_id = fl.agent_id
+                WHERE fl.question_version_id = :question_version_id
+                  AND fl.target_entity_type = 'interaction_option'
+                  AND fl.target_entity_id = :selected_option_id
+                  AND fl.is_visible = TRUE
+                  AND LOWER(TRIM(COALESCE(fa.role, ''))) = 'ai'
+                ORDER BY fl.priority ASC, fl.created_at ASC
+                LIMIT 1
+                """
+            ),
+            {"question_version_id": question_version_id, "selected_option_id": selected_option_id},
+        ).scalar()
+        if row:
+            return str(row)
+
+    row = db.execute(
+        text(
+            """
+            SELECT fl.feedback_link_id
+            FROM feedback_link fl
+            JOIN feedback_agent fa ON fa.agent_id = fl.agent_id
+            WHERE fl.question_version_id = :question_version_id
+              AND fl.target_entity_type = 'question_version'
+              AND fl.target_entity_id = :question_version_id
+              AND fl.is_visible = TRUE
+              AND LOWER(TRIM(COALESCE(fa.role, ''))) = 'ai'
+            ORDER BY fl.priority ASC, fl.created_at ASC
+            LIMIT 1
+            """
+        ),
+        {"question_version_id": question_version_id},
+    ).scalar()
+    if row:
+        return str(row)
+
+    row = db.execute(
+        text(
+            """
+            SELECT fl.feedback_link_id
+            FROM feedback_link fl
+            JOIN feedback_agent fa ON fa.agent_id = fl.agent_id
+            WHERE fl.question_version_id = :question_version_id
+              AND fl.is_visible = TRUE
+              AND LOWER(TRIM(COALESCE(fa.role, ''))) = 'ai'
+            ORDER BY
+              CASE WHEN fl.target_entity_type = 'question_version' THEN 0 ELSE 1 END ASC,
+              fl.priority ASC,
+              fl.created_at ASC
+            LIMIT 1
+            """
+        ),
+        {"question_version_id": question_version_id},
+    ).scalar()
+    return str(row) if row else None
+
+
+def _resolve_prompt_from_feedback_link(
+    db: Session,
+    *,
+    question_id: str,
+    question_version_id: str,
+    participant_id: str,
+    answer_text: str,
+) -> tuple[str | None, str | None]:
+    selected_option_id = _resolve_mcq_selected_option_id(db, question_id, answer_text)
+    feedback_link_id = _select_ai_feedback_link_id(
+        db,
+        question_version_id=question_version_id,
+        selected_option_id=selected_option_id,
+    )
+    if not feedback_link_id:
+        return None, None
+
+    resolved = resolve_feedback_prompt_for_feedback_link(
+        str(feedback_link_id),
+        input_values={
+            "answer_text": answer_text,
+            "learner_id": participant_id,
+            "question_id": question_id,
+            "selected_option_id": selected_option_id,
+        },
+    )
+    if not resolved.get("ok"):
+        return None, None
+    system_prompt = (
+        str(resolved.get("resolved_system_prompt")) if resolved.get("resolved_system_prompt") is not None else None
+    )
+    user_prompt = str(resolved.get("resolved_user_text")) if resolved.get("resolved_user_text") is not None else None
+    return system_prompt, user_prompt
+
+
+def _ensure_feedback_record_result_prompt_columns(db: Session) -> None:
+    db.execute(
+        text(
+            """
+            ALTER TABLE feedback_record_result
+            ADD COLUMN IF NOT EXISTS llm_system_prompt TEXT NULL,
+            ADD COLUMN IF NOT EXISTS llm_user_prompt TEXT NULL
+            """
+        )
+    )
+
+
+def _ensure_feedback_runtime_prompt_cache_schema(db: Session) -> None:
+    db.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS feedback_runtime_prompt_cache (
+                participant_id VARCHAR(255) NOT NULL,
+                question_id VARCHAR(64) NOT NULL,
+                answer_text TEXT NULL,
+                llm_system_prompt TEXT NULL,
+                llm_user_prompt TEXT NULL,
+                updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (participant_id, question_id)
+            )
+            """
+        )
+    )
+
+
+def _load_cached_runtime_prompt(
+    db: Session,
+    *,
+    participant_id: str,
+    question_id: str,
+    answer_text: str | None,
+) -> tuple[str | None, str | None]:
+    _ensure_feedback_runtime_prompt_cache_schema(db)
+    row = db.execute(
+        text(
+            """
+            SELECT llm_system_prompt, llm_user_prompt, answer_text
+            FROM feedback_runtime_prompt_cache
+            WHERE participant_id = :participant_id
+              AND question_id = :question_id
+            LIMIT 1
+            """
+        ),
+        {"participant_id": participant_id, "question_id": question_id},
+    ).mappings().first()
+    if not row:
+        return None, None
+
+    cached_answer = str(row["answer_text"]) if row.get("answer_text") is not None else None
+    if answer_text is not None and cached_answer is not None and str(answer_text).strip() != cached_answer.strip():
+        return None, None
+
+    system_prompt = str(row["llm_system_prompt"]) if row.get("llm_system_prompt") is not None else None
+    user_prompt = str(row["llm_user_prompt"]) if row.get("llm_user_prompt") is not None else None
+    return system_prompt, user_prompt
 
 
 def _attempt_lti_grade_passback(
@@ -300,6 +498,29 @@ def record_result(
         ).scalar()
         attempt_count = int(previous_attempts or 0) + 1
         semantic_record_id = _next_feedback_record_result_id(db)
+        _ensure_feedback_record_result_prompt_columns(db)
+        rendered_prompt = result.rendered_prompt if isinstance(result.rendered_prompt, dict) else {}
+        llm_system_prompt = result.llm_system_prompt or rendered_prompt.get("system_prompt")
+        llm_user_prompt = result.llm_user_prompt or rendered_prompt.get("user_text") or rendered_prompt.get("user_prompt")
+        if not llm_system_prompt and not llm_user_prompt:
+            cached_system_prompt, cached_user_prompt = _load_cached_runtime_prompt(
+                db,
+                participant_id=result.learner_id,
+                question_id=result.question_id,
+                answer_text=result.answer,
+            )
+            llm_system_prompt = llm_system_prompt or cached_system_prompt
+            llm_user_prompt = llm_user_prompt or cached_user_prompt
+        if not llm_system_prompt and not llm_user_prompt:
+            reconstructed_system, reconstructed_user = _resolve_prompt_from_feedback_link(
+                db,
+                question_id=result.question_id,
+                question_version_id=question_version_id,
+                participant_id=result.learner_id,
+                answer_text=result.answer,
+            )
+            llm_system_prompt = llm_system_prompt or reconstructed_system
+            llm_user_prompt = llm_user_prompt or reconstructed_user
 
         db.execute(
             text(
@@ -319,6 +540,8 @@ def record_result(
                     preferred_info_type,
                     generation_strategy,
                     feedback_framework,
+                    llm_system_prompt,
+                    llm_user_prompt,
                     system_total_response_time_ms
                 )
                 VALUES (
@@ -336,6 +559,8 @@ def record_result(
                     :preferred_info_type,
                     :generation_strategy,
                     :feedback_framework,
+                    :llm_system_prompt,
+                    :llm_user_prompt,
                     :system_total_response_time_ms
                 )
                 """
@@ -355,6 +580,8 @@ def record_result(
                 "preferred_info_type": result.preferred_info_type,
                 "generation_strategy": result.prompt_engineering_method,
                 "feedback_framework": result.feedback_framework,
+                "llm_system_prompt": llm_system_prompt,
+                "llm_user_prompt": llm_user_prompt,
                 "system_total_response_time_ms": result.system_total_response_time,
             },
         )

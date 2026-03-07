@@ -11,7 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from ..dependencies import get_db
-from ..services.semantic_schema import generate_short_id
+from ..services.ids import generate_short_id
 from ..tags import Tags
 
 router = APIRouter(prefix="/api", tags=[Tags.FEEDBACK_AGENTS])

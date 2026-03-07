@@ -15,7 +15,7 @@ import requests
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from ...config import get_settings
+from ..config import get_settings
 
 
 _GOOGLE_TOKEN_CACHE: dict[str, Any] = {"access_token": None, "expires_at": 0.0}
@@ -329,94 +329,6 @@ def _build_most_relevant_slide_embed_url(
         f"https://docs.google.com/presentation/d/{slide_google_id}/embed"
         f"?slide={slide_anchor}#slide={slide_anchor}"
     ), None
-
-
-def get_semantic_question_type_distribution(db: Session) -> dict[str, Any]:
-    rows = db.execute(
-        text(
-            """
-            SELECT qv.question_type, COUNT(*)::int AS count
-            FROM content_question_version qv
-            GROUP BY qv.question_type
-            ORDER BY count DESC, qv.question_type ASC
-            """
-        )
-    ).mappings().all()
-    total = sum(int(r["count"]) for r in rows)
-    return {
-        "ok": True,
-        "total_question_versions": total,
-        "items": [dict(r) for r in rows],
-    }
-
-
-def list_semantic_question_samples(
-    db: Session,
-    *,
-    limit: int = 20,
-    offset: int = 0,
-    question_type: str | None = None,
-) -> dict[str, Any]:
-    where_sql = ""
-    params: dict[str, Any] = {"limit": limit, "offset": offset}
-    if question_type:
-        where_sql = "WHERE qv.question_type = :question_type"
-        params["question_type"] = question_type
-
-    rows = db.execute(
-        text(
-            f"""
-            SELECT
-              q.question_id,
-              q.current_version_id,
-              q.access_scope,
-              q.is_visible,
-              q.created_by,
-              q.created_at,
-              qv.question_type,
-              qv.version_no,
-              qv.title,
-              qv.score_maximum,
-              qv.score_rounding_mode,
-              qv.score_rounding_step,
-              (SELECT COUNT(*)::int FROM content_question_content_block b WHERE b.question_version_id = qv.question_version_id) AS content_block_count,
-              (SELECT COUNT(*)::int FROM content_question_interaction i WHERE i.question_version_id = qv.question_version_id) AS interaction_count,
-              (SELECT COUNT(*)::int
-                 FROM content_question_interaction i
-                 JOIN content_question_interaction_option o ON o.interaction_id = i.interaction_id
-                WHERE i.question_version_id = qv.question_version_id) AS option_count,
-              (SELECT COUNT(*)::int FROM content_question_slide_scope s WHERE s.question_version_id = qv.question_version_id) AS slide_scope_count,
-              (SELECT COUNT(*)::int FROM feedback_link fl WHERE fl.question_version_id = qv.question_version_id AND fl.is_visible = TRUE) AS feedback_link_count
-            FROM content_question q
-            JOIN content_question_version qv ON qv.question_version_id = q.current_version_id
-            {where_sql}
-            ORDER BY q.created_at DESC, q.question_id ASC
-            LIMIT :limit OFFSET :offset
-            """
-        ),
-        params,
-    ).mappings().all()
-
-    total_row = db.execute(
-        text(
-            f"""
-            SELECT COUNT(*)::int AS total
-            FROM content_question q
-            JOIN content_question_version qv ON qv.question_version_id = q.current_version_id
-            {where_sql}
-            """
-        ),
-        {k: v for k, v in params.items() if k == "question_type"},
-    ).mappings().one()
-
-    return {
-        "ok": True,
-        "limit": limit,
-        "offset": offset,
-        "question_type": question_type,
-        "total": int(total_row["total"]),
-        "items": [dict(r) for r in rows],
-    }
 
 
 def get_semantic_question_version_detail(db: Session, question_version_id: str) -> dict[str, Any] | None:
