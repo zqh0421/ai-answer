@@ -137,6 +137,66 @@ def _runtime_option_ids_for_version(db: Session, question_version_id: str) -> li
     return [str(r["interaction_option_id"]) for r in rows]
 
 
+def _runtime_selected_option_id_from_inputs(
+    db: Session,
+    *,
+    question_version_id: str,
+    runtime_inputs: dict[str, Any],
+) -> str | None:
+    if runtime_inputs.get("selected_option_id"):
+        return str(runtime_inputs.get("selected_option_id"))
+
+    if isinstance(runtime_inputs.get("selected_option_index"), int):
+        option_ids = _runtime_option_ids_for_version(db, question_version_id)
+        idx = int(runtime_inputs["selected_option_index"])
+        if 0 <= idx < len(option_ids):
+            return option_ids[idx]
+        return None
+
+    answer_text_raw = runtime_inputs.get("answer_text")
+    answer_text = str(answer_text_raw or "").strip()
+    if not answer_text:
+        return None
+
+    rows = db.execute(
+        text(
+            """
+            SELECT
+              o.interaction_option_id,
+              o.option_order,
+              o.option_label,
+              o.option_value
+            FROM content_question_interaction i
+            JOIN content_question_interaction_option o ON o.interaction_id = i.interaction_id
+            WHERE i.question_version_id = :qv
+            ORDER BY i.interaction_order ASC, o.option_order ASC
+            """
+        ),
+        {"qv": question_version_id},
+    ).mappings().all()
+    if not rows:
+        return None
+
+    if answer_text.isdigit():
+        idx = int(answer_text)
+        # Keep compatibility with selected_option_index (0-based),
+        # and also allow 1-based human-entered ordinal as fallback.
+        if 0 <= idx < len(rows):
+            return str(rows[idx]["interaction_option_id"])
+        if 1 <= idx <= len(rows):
+            return str(rows[idx - 1]["interaction_option_id"])
+
+    normalized = answer_text.casefold()
+    for row in rows:
+        label = str(row.get("option_label") or "").strip()
+        value = str(row.get("option_value") or "").strip()
+        if label and label.casefold() == normalized:
+            return str(row["interaction_option_id"])
+        if value and value.casefold() == normalized:
+            return str(row["interaction_option_id"])
+    return None
+
+
 def _default_question_content_blocks_text(db: Session, question_version_id: str) -> str | None:
     block_rows = db.execute(
         text(
@@ -723,14 +783,11 @@ def run_feedback_generation_flow(
         # always includes any reference answer for free_text/essay.
         runtime_inputs["question_content_blocks"] = default_q_blocks
 
-    selected_option_id: str | None = None
-    if runtime_inputs.get("selected_option_id"):
-        selected_option_id = str(runtime_inputs.get("selected_option_id"))
-    elif isinstance(runtime_inputs.get("selected_option_index"), int):
-        option_ids = _runtime_option_ids_for_version(db, current_version_id)
-        idx = int(runtime_inputs["selected_option_index"])
-        if 0 <= idx < len(option_ids):
-            selected_option_id = option_ids[idx]
+    selected_option_id = _runtime_selected_option_id_from_inputs(
+        db,
+        question_version_id=current_version_id,
+        runtime_inputs=runtime_inputs,
+    )
 
     if execution_mode == "async":
         if dry_run:
@@ -789,31 +846,91 @@ def run_feedback_generation_flow(
 
     if agent_role == "human":
         if not dry_run:
-            raise HTTPException(status_code=400, detail="persisting dry-run output is only supported for ai agents")
-        feedback_row = db.execute(
-            text(
-                """
-                SELECT static_feedback_text, structured_feedback_text
-                FROM feedback_link
-                WHERE feedback_link_id = :fid
-                LIMIT 1
-                """
-            ),
-            {"fid": feedback_link_id},
-        ).mappings().first()
+            # Human agents do not run LLM generation/persistence at runtime.
+            # Gracefully downgrade to read-only dry-run semantics.
+            dry_run = True
+        runtime_feedback_link_id = _runtime_feedback_link_id_for_agent(
+            db,
+            question_version_id=current_version_id,
+            agent_id=agent_id,
+            selected_option_id=selected_option_id,
+        )
+        if runtime_feedback_link_id:
+            feedback_link_id = runtime_feedback_link_id
+
         static_feedback_text = None
         structured_feedback_text = None
-        if feedback_row:
-            static_feedback_text = (
-                str(feedback_row.get("static_feedback_text"))
-                if feedback_row.get("static_feedback_text") is not None
-                else None
-            )
-            structured_feedback_text = (
-                str(feedback_row.get("structured_feedback_text"))
-                if feedback_row.get("structured_feedback_text") is not None
-                else None
-            )
+
+        if selected_option_id:
+            selected_row = db.execute(
+                text(
+                    """
+                    SELECT static_feedback_text, structured_feedback_text
+                    FROM feedback_link
+                    WHERE question_version_id = :question_version_id
+                      AND agent_id = :agent_id
+                      AND target_entity_type = 'interaction_option'
+                      AND target_entity_id = :selected_option_id
+                      AND is_visible = TRUE
+                      AND (
+                        static_feedback_text IS NOT NULL
+                        OR structured_feedback_text IS NOT NULL
+                      )
+                    ORDER BY created_at ASC
+                    LIMIT 1
+                    """
+                ),
+                {
+                    "question_version_id": current_version_id,
+                    "agent_id": agent_id,
+                    "selected_option_id": selected_option_id,
+                },
+            ).mappings().first()
+            if selected_row:
+                static_feedback_text = (
+                    str(selected_row.get("static_feedback_text"))
+                    if selected_row.get("static_feedback_text") is not None
+                    else None
+                )
+                structured_feedback_text = (
+                    str(selected_row.get("structured_feedback_text"))
+                    if selected_row.get("structured_feedback_text") is not None
+                    else None
+                )
+
+        if not static_feedback_text and not structured_feedback_text:
+            question_row = db.execute(
+                text(
+                    """
+                    SELECT static_feedback_text, structured_feedback_text
+                    FROM feedback_link
+                    WHERE question_version_id = :question_version_id
+                      AND agent_id = :agent_id
+                      AND target_entity_type = 'question_version'
+                      AND target_entity_id = :question_version_id
+                      AND is_visible = TRUE
+                      AND (
+                        static_feedback_text IS NOT NULL
+                        OR structured_feedback_text IS NOT NULL
+                      )
+                    ORDER BY created_at ASC
+                    LIMIT 1
+                    """
+                ),
+                {"question_version_id": current_version_id, "agent_id": agent_id},
+            ).mappings().first()
+            if question_row:
+                static_feedback_text = (
+                    str(question_row.get("static_feedback_text"))
+                    if question_row.get("static_feedback_text") is not None
+                    else None
+                )
+                structured_feedback_text = (
+                    str(question_row.get("structured_feedback_text"))
+                    if question_row.get("structured_feedback_text") is not None
+                    else None
+                )
+
         if not static_feedback_text and not structured_feedback_text:
             fallback_row = db.execute(
                 text(
@@ -827,9 +944,7 @@ def run_feedback_generation_flow(
                         static_feedback_text IS NOT NULL
                         OR structured_feedback_text IS NOT NULL
                       )
-                    ORDER BY
-                      CASE WHEN target_entity_type = 'question_version' THEN 0 ELSE 1 END ASC,
-                      created_at ASC
+                    ORDER BY created_at ASC
                     LIMIT 1
                     """
                 ),
