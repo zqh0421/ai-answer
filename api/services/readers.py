@@ -383,9 +383,20 @@ def get_semantic_question_version_detail(db: Session, question_version_id: str) 
     interactions = db.execute(
         text(
             """
-            SELECT interaction_id, question_version_id, interaction_order, interaction_type, prompt_text, is_required, max_score, created_by, created_at
-            FROM content_question_interaction
-            WHERE question_version_id = :question_version_id
+            SELECT
+              i.interaction_id,
+              i.question_version_id,
+              i.interaction_order,
+              i.interaction_type,
+              i.prompt_text,
+              i.is_required,
+              i.max_score,
+              (to_jsonb(i)->>'reference_answer_text') AS reference_answer_text,
+              (to_jsonb(i)->'reference_answer_meta') AS reference_answer_meta,
+              i.created_by,
+              i.created_at
+            FROM content_question_interaction i
+            WHERE i.question_version_id = :question_version_id
             ORDER BY interaction_order ASC
             """
         ),

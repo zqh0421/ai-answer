@@ -70,9 +70,15 @@ def _load_question_version_text(db, question_version_id: str) -> dict[str, Any]:
     interactions = db.execute(
         text(
             """
-            SELECT interaction_id, interaction_order, interaction_type, prompt_text
-            FROM content_question_interaction
-            WHERE question_version_id = :qv
+            SELECT
+              i.interaction_id,
+              i.interaction_order,
+              i.interaction_type,
+              i.prompt_text,
+              (to_jsonb(i)->>'reference_answer_text') AS reference_answer_text,
+              (to_jsonb(i)->'reference_answer_meta') AS reference_answer_meta
+            FROM content_question_interaction i
+            WHERE i.question_version_id = :qv
             ORDER BY interaction_order ASC
             """
         ),
@@ -127,11 +133,51 @@ def _compose_generation_input(question_payload: dict[str, Any]) -> str:
             parts.append(
                 f"- type={it.get('interaction_type')} prompt={it.get('prompt_text') or ''}".strip()
             )
+            interaction_type = str(it.get("interaction_type") or "").strip().lower()
+            reference_answer_text = str(it.get("reference_answer_text") or "").strip()
+            if interaction_type in {"free_text", "essay"} and reference_answer_text:
+                parts.append(f"  - correct_answer: {reference_answer_text}")
             for opt in it.get("options") or []:
                 label = opt.get("option_label") or opt.get("option_value") or ""
                 parts.append(f"  - option {opt.get('option_order')}: {label}")
 
     return "\n".join(parts).strip() or "No question content available."
+
+
+def _default_question_content_blocks_text(question_payload: dict[str, Any]) -> str | None:
+    lines: list[str] = []
+    pending_correct_answers: list[str] = []
+    for interaction in question_payload.get("interactions") or []:
+        interaction_type = str(interaction.get("interaction_type") or "").strip().lower()
+        prompt_text = str(interaction.get("prompt_text") or "").strip()
+        if prompt_text:
+            lines.append(prompt_text)
+        options = interaction.get("options") or []
+        correct_options: list[str] = []
+        for idx, option in enumerate(options, start=1):
+            label = str(option.get("option_label") or option.get("option_value") or "").strip()
+            if not label:
+                continue
+            lines.append(f"Option {idx}: {label}")
+            if bool(option.get("is_correct")):
+                correct_options.append(label)
+        if correct_options:
+            pending_correct_answers.append(f"Correct Answer: {'; '.join(correct_options)}")
+        reference_answer_text = str(interaction.get("reference_answer_text") or "").strip()
+        if interaction_type in {"free_text", "essay"} and reference_answer_text:
+            pending_correct_answers.append(f"Correct Answer: {reference_answer_text}")
+    for block in question_payload.get("blocks") or []:
+        block_type = str(block.get("block_type") or "text")
+        if block_type == "image":
+            content = str(block.get("alt_text") or block.get("media_url") or "").strip()
+        else:
+            content = str(block.get("text_content") or block.get("media_url") or "").strip()
+        if content:
+            lines.append(f"- [{block_type}] {content}")
+    lines.extend(pending_correct_answers)
+    if not lines:
+        return None
+    return "\n".join(lines)
 
 
 def _cosine_similarity(vec_a: list[float], vec_b: list[float]) -> float:
@@ -271,13 +317,16 @@ def _format_retrieved_slide_pages_for_prompt(value: Any) -> str:
     for idx, item in enumerate(value, start=1):
         if not isinstance(item, dict):
             fallback = _stringify_prompt_value(item).strip() or "none"
-            lines.append(f"{idx}. Slide Title: none | Page Number: none | Content: {fallback}")
+            lines.append(
+                f"{idx}. Slide Title: none | Page Number: none | Similarity Val: none | Content: {fallback}"
+            )
             continue
         slide_title = (_stringify_prompt_value(item.get("slide_title")).strip() or "none")
         page_number = (_stringify_prompt_value(item.get("page_number")).strip() or "none")
+        similarity_val = (_stringify_prompt_value(item.get("similarity")).strip() or "none")
         content = (_stringify_prompt_value(item.get("content")).strip() or "none")
         lines.append(
-            f"{idx}. Slide Title: {slide_title} | Page Number: {page_number} | Content: {content}"
+            f"{idx}. Slide Title: {slide_title} | Page Number: {page_number} | Similarity Val: {similarity_val} | Content: {content}"
         )
     return "\n".join(lines) if lines else "none"
 
@@ -555,19 +604,82 @@ def _compose_generation_input_from_values(input_values: dict[str, Any] | None) -
     return "\n\n".join(parts)
 
 
-def _call_openai_static_feedback(*, model: str, system_prompt: str, user_text: Optional[str] = None) -> str:
+def _normalize_effort(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"minimal", "low", "medium", "high"}:
+        return normalized
+    return "low"
+
+
+def _normalize_verbosity(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"low", "medium", "high"}:
+        return normalized
+    return "low"
+
+
+def _positive_int_or_none(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+        return parsed if parsed > 0 else None
+    except Exception:
+        return None
+
+
+def _float_or_none(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _call_feedback(
+    *,
+    provider: str,
+    model: str,
+    system_prompt: str,
+    user_text: str,
+    llm_params: dict[str, Any] | None = None,
+) -> str:
+    normalized_provider = (provider or "openai").strip().lower()
+    if normalized_provider not in {"", "openai"}:
+        raise ValueError(f"Unsupported provider for static auto-generation: {normalized_provider}")
+
+    params = dict(llm_params or {})
+    effort = _normalize_effort(params.get("effort") or params.get("reasoning_effort"))
+    verbosity = _normalize_verbosity(params.get("verbosity") or params.get("text_verbosity"))
+    max_output_tokens = _positive_int_or_none(params.get("max_output_tokens"))
+    temperature = _float_or_none(params.get("temperature"))
+    top_p = _float_or_none(params.get("top_p"))
+
     settings = get_settings()
     client = OpenAI(
         api_key=settings.openai_api_key,
         organization=settings.openai_api_org,
         project=settings.openai_api_proj,
     )
+    request_payload: dict[str, Any] = {
+        "model": model,
+        "reasoning": {"effort": effort},
+        "text": {"verbosity": verbosity},
+        "instructions": system_prompt,
+        # Responses API requires non-empty `input`. Keep logical user prompt empty
+        # while sending a minimal transport placeholder.
+        "input": (user_text if user_text != "" else " "),
+    }
+    if max_output_tokens is not None:
+        request_payload["max_output_tokens"] = max_output_tokens
+    if temperature is not None:
+        request_payload["temperature"] = temperature
+    if top_p is not None:
+        request_payload["top_p"] = top_p
+
     response = client.responses.create(
-        model=model,
-        instructions=system_prompt,
-        input=(user_text.strip() if isinstance(user_text, str) and user_text.strip() else "Generate feedback to the student response"),
-        reasoning={"effort": "low"},
-        text={"verbosity": "low"},
+        **request_payload,
     )
     return (response.output_text or "").strip()
 
@@ -579,13 +691,15 @@ def _generate_feedback_text_from_context(
     input_values: dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     provider = (ctx.get("provider") or "openai").strip().lower()
-    if provider not in {"", "openai"}:
-        raise ValueError(f"Unsupported provider for static auto-generation: {provider}")
-
     model = (ctx.get("model") or "").strip() or "gpt-5"
     llm_params = _parse_llm_params(ctx.get("llm_params_text"))
     effective_input_values = dict(input_values or {})
     fallback_question_payload = _load_question_version_text(db, str(ctx["question_version_id"]))
+    default_question_blocks = _default_question_content_blocks_text(fallback_question_payload)
+    if default_question_blocks:
+        # Use backend-built question blocks as the source of truth so
+        # reference answers are always part of question_content_blocks.
+        effective_input_values["question_content_blocks"] = default_question_blocks
     fallback_user_text = _compose_generation_input(fallback_question_payload)
     existing_retrieved_pages = effective_input_values.get("retrieved_slide_pages")
     if existing_retrieved_pages in (None, "", [], {}):
@@ -622,10 +736,15 @@ def _generate_feedback_text_from_context(
     )
     system_prompt = _render_prompt_template(system_prompt, effective_input_values)
 
-    user_text = _compose_generation_input_from_values(effective_input_values)
-    if not user_text:
-        user_text = fallback_user_text
-    generated = _call_openai_static_feedback(model=model, system_prompt=system_prompt, user_text=user_text)
+    # Keep user prompt empty; all context should be encoded via system prompt template variables.
+    user_text = ""
+    generated = _call_feedback(
+        provider=provider,
+        model=model,
+        system_prompt=system_prompt,
+        user_text=user_text,
+        llm_params=llm_params,
+    )
     
     if not generated:
         raise ValueError("LLM returned empty feedback text")
@@ -658,6 +777,9 @@ def resolve_feedback_prompt_for_feedback_link(
         llm_params = _parse_llm_params(ctx.get("llm_params_text"))
         effective_input_values = dict(input_values or {})
         fallback_question_payload = _load_question_version_text(db, str(ctx["question_version_id"]))
+        default_question_blocks = _default_question_content_blocks_text(fallback_question_payload)
+        if default_question_blocks:
+            effective_input_values["question_content_blocks"] = default_question_blocks
         fallback_user_text = _compose_generation_input(fallback_question_payload)
         existing_retrieved_pages = effective_input_values.get("retrieved_slide_pages")
         if existing_retrieved_pages in (None, "", [], {}):
@@ -698,9 +820,7 @@ def resolve_feedback_prompt_for_feedback_link(
         )
         system_prompt = _render_prompt_template(system_prompt, effective_input_values)
 
-        user_text = _compose_generation_input_from_values(effective_input_values)
-        if not user_text:
-            user_text = fallback_user_text
+        user_text = ""
 
         return {
             "ok": True,

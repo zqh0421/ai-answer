@@ -19,17 +19,15 @@ from ..dependencies import get_db
 from .feedback_links import _get_agent as _get_feedback_agent, _insert_feedback_link
 from ..services.feedback_link_generation_jobs import (
     generate_static_feedback_for_feedback_link,
-    generate_static_feedback_with_version_snapshot_for_feedback_link,
 )
+from ..services.feedback_generation_flow import run_feedback_generation_flow
 from ..services.feedback_link_job_status import (
     get_feedback_link_generation_status,
     get_rq_job_status,
-    set_feedback_link_generation_job_id,
 )
 from ..services.feedback_composition_expr import CompositionExprError, compile_condition_expression
 from ..services.ids import generate_short_id
 from ..services.readers import get_semantic_question_version_detail
-from ..services.slide_batch_jobs import slide_batch_job_manager
 from ..tags import Tags
 
 router = APIRouter(prefix="/api", tags=[Tags.CONTENT_QUESTIONS])
@@ -72,6 +70,8 @@ class InteractionIn(BaseModel):
     prompt_text: Optional[str] = None
     is_required: bool = True
     max_score: Optional[float] = Field(default=None, ge=0)
+    reference_answer_text: Optional[str] = None
+    reference_answer_meta: Optional[dict[str, Any]] = None
     options: list[InteractionOptionIn] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -86,6 +86,22 @@ class InteractionIn(BaseModel):
         if self.interaction_type == "single_choice":
             if sum(1 for x in self.options if x.is_correct) > 1:
                 raise ValueError("single_choice supports at most one correct option")
+        normalized_reference_answer_text = (
+            self.reference_answer_text.strip() if isinstance(self.reference_answer_text, str) else None
+        )
+        if not normalized_reference_answer_text:
+            normalized_reference_answer_text = None
+        normalized_reference_answer_meta = (
+            self.reference_answer_meta if isinstance(self.reference_answer_meta, dict) and self.reference_answer_meta else None
+        )
+        if self.interaction_type in option_required_types and (
+            normalized_reference_answer_text is not None or normalized_reference_answer_meta is not None
+        ):
+            raise ValueError(
+                f"interaction_type '{self.interaction_type}' cannot have reference_answer_text/reference_answer_meta"
+            )
+        self.reference_answer_text = normalized_reference_answer_text
+        self.reference_answer_meta = normalized_reference_answer_meta
         return self
 
 
@@ -364,34 +380,6 @@ def _question_rows_map(db: Session, question_ids: list[str]) -> dict[str, dict[s
         {"question_ids": question_ids},
     ).mappings().all()
     return {str(r["question_id"]): dict(r) for r in rows}
-
-
-def _run_inline_feedback_generation_fallback(
-    *,
-    feedback_link_id: str,
-    updated_by: str | None,
-) -> dict[str, Any]:
-    try:
-        generated = generate_static_feedback_with_version_snapshot_for_feedback_link(
-            str(feedback_link_id),
-            created_by=updated_by,
-        )
-    except Exception as inline_err:
-        return {
-            "ok": False,
-            "feedback_link_id": str(feedback_link_id),
-            "generation_mode": "inline_fallback",
-            "error": str(inline_err),
-        }
-
-    return {
-        "ok": True,
-        "feedback_link_id": str(feedback_link_id),
-        "generation_mode": "inline_fallback",
-        "skipped": bool(generated.get("skipped")),
-        "version_id": generated.get("version_id"),
-        "revision_no": generated.get("revision_no"),
-    }
 
 
 def _find_visible_question_version_link(db: Session, *, question_version_id: str, agent_id: str) -> str | None:
@@ -1057,6 +1045,31 @@ def _question_version_has_randomize_option_order_column(db: Session) -> bool:
     )
 
 
+def _question_interaction_has_column(db: Session, column_name: str) -> bool:
+    return bool(
+        db.execute(
+            text(
+                """
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_name = 'content_question_interaction'
+                  AND column_name = :column_name
+                LIMIT 1
+                """
+            ),
+            {"column_name": column_name},
+        ).scalar()
+    )
+
+
+def _question_interaction_has_reference_answer_text_column(db: Session) -> bool:
+    return _question_interaction_has_column(db, "reference_answer_text")
+
+
+def _question_interaction_has_reference_answer_meta_column(db: Session) -> bool:
+    return _question_interaction_has_column(db, "reference_answer_meta")
+
+
 def _question_row(db: Session, question_id: str) -> dict[str, Any] | None:
     row = db.execute(
         text(
@@ -1379,16 +1392,18 @@ def _build_question_list_interactions(db: Session, version_ids: list[str]) -> di
         text(
             """
             SELECT
-              interaction_id,
-              question_version_id,
-              interaction_order,
-              interaction_type,
-              prompt_text,
-              is_required,
-              max_score
-            FROM content_question_interaction
-            WHERE question_version_id = ANY(CAST(:version_ids AS TEXT[]))
-            ORDER BY question_version_id ASC, interaction_order ASC
+              i.interaction_id,
+              i.question_version_id,
+              i.interaction_order,
+              i.interaction_type,
+              i.prompt_text,
+              i.is_required,
+              i.max_score,
+              (to_jsonb(i)->>'reference_answer_text') AS reference_answer_text,
+              (to_jsonb(i)->'reference_answer_meta') AS reference_answer_meta
+            FROM content_question_interaction i
+            WHERE i.question_version_id = ANY(CAST(:version_ids AS TEXT[]))
+            ORDER BY i.question_version_id ASC, i.interaction_order ASC
             """
         ),
         {"version_ids": version_ids},
@@ -1593,6 +1608,8 @@ def _insert_question_version_bundle(
     scoring = payload.scoring_policy
     _ensure_question_embedding_columns(db)
     question_vector, question_answer_vector = _create_question_vectors(payload)
+    has_reference_answer_text_column = _question_interaction_has_reference_answer_text_column(db)
+    has_reference_answer_meta_column = _question_interaction_has_reference_answer_meta_column(db)
 
     insert_params = {
         "question_version_id": qv_id,
@@ -1676,13 +1693,45 @@ def _insert_question_version_bundle(
         interaction_id_map[interaction.interaction_order] = interaction_id
         db.execute(
             text(
-                """
-                INSERT INTO content_question_interaction (
-                  interaction_id, question_version_id, interaction_order, interaction_type, prompt_text, is_required, max_score, created_by, created_at
-                ) VALUES (
-                  :interaction_id, :question_version_id, :interaction_order, :interaction_type, :prompt_text, :is_required, :max_score, :created_by, NOW()
+                (
+                    """
+                    INSERT INTO content_question_interaction (
+                      interaction_id, question_version_id, interaction_order, interaction_type, prompt_text, is_required, max_score,
+                      reference_answer_text, reference_answer_meta, created_by, created_at
+                    ) VALUES (
+                      :interaction_id, :question_version_id, :interaction_order, :interaction_type, :prompt_text, :is_required, :max_score,
+                      :reference_answer_text, CAST(:reference_answer_meta AS JSONB), :created_by, NOW()
+                    )
+                    """
+                    if has_reference_answer_text_column and has_reference_answer_meta_column
+                    else """
+                    INSERT INTO content_question_interaction (
+                      interaction_id, question_version_id, interaction_order, interaction_type, prompt_text, is_required, max_score,
+                      reference_answer_text, created_by, created_at
+                    ) VALUES (
+                      :interaction_id, :question_version_id, :interaction_order, :interaction_type, :prompt_text, :is_required, :max_score,
+                      :reference_answer_text, :created_by, NOW()
+                    )
+                    """
+                    if has_reference_answer_text_column
+                    else """
+                    INSERT INTO content_question_interaction (
+                      interaction_id, question_version_id, interaction_order, interaction_type, prompt_text, is_required, max_score,
+                      reference_answer_meta, created_by, created_at
+                    ) VALUES (
+                      :interaction_id, :question_version_id, :interaction_order, :interaction_type, :prompt_text, :is_required, :max_score,
+                      CAST(:reference_answer_meta AS JSONB), :created_by, NOW()
+                    )
+                    """
+                    if has_reference_answer_meta_column
+                    else """
+                    INSERT INTO content_question_interaction (
+                      interaction_id, question_version_id, interaction_order, interaction_type, prompt_text, is_required, max_score, created_by, created_at
+                    ) VALUES (
+                      :interaction_id, :question_version_id, :interaction_order, :interaction_type, :prompt_text, :is_required, :max_score, :created_by, NOW()
+                    )
+                    """
                 )
-                """
             ),
             {
                 "interaction_id": interaction_id,
@@ -1692,6 +1741,10 @@ def _insert_question_version_bundle(
                 "prompt_text": interaction.prompt_text,
                 "is_required": interaction.is_required,
                 "max_score": interaction.max_score,
+                "reference_answer_text": interaction.reference_answer_text,
+                "reference_answer_meta": (
+                    json.dumps(interaction.reference_answer_meta) if interaction.reference_answer_meta is not None else None
+                ),
                 "created_by": payload.created_by,
             },
         )
@@ -2147,57 +2200,41 @@ def batch_attach_feedback_agent_to_questions(payload: BatchAttachFeedbackAgentRe
             db.commit()
             success_ids.append(question_id)
             if agent_role == "ai":
-                try:
-                    rq_job_id = slide_batch_job_manager.enqueue_callable(
-                        generate_static_feedback_with_version_snapshot_for_feedback_link,
-                        str(attached_link_id),
-                        created_by=payload.updated_by,
-                    )
-                    set_feedback_link_generation_job_id(str(attached_link_id), str(rq_job_id))
+                flow = run_feedback_generation_flow(
+                    db,
+                    question_id=question_id,
+                    agent_id=payload.agent_id,
+                    dry_run=False,
+                    updated_by=payload.updated_by,
+                    input_values=None,
+                    require_updated_by_for_persist=False,
+                    include_debug=False,
+                    snapshot_on_persist=True,
+                    execution_mode="async",
+                    enqueue_reason=("attach_existing_refresh" if was_existing_link else "attach_new"),
+                )
+                if flow.get("ok"):
                     queued_feedback_generation.append(
                         {
                             "question_id": question_id,
                             "feedback_link_id": str(attached_link_id),
-                            "job_id": str(rq_job_id),
-                            "generation_enqueue_reason": (
-                                "attach_existing_refresh" if was_existing_link else "attach_new"
-                            ),
+                            "job_id": flow.get("job_id"),
+                            "generation_mode": flow.get("generation_mode"),
+                            "version_id": flow.get("version_id"),
+                            "revision_no": flow.get("revision_no"),
+                            "skipped": bool(flow.get("skipped")),
+                            "generation_enqueue_reason": flow.get("generation_enqueue_reason"),
+                            "enqueue_error": flow.get("enqueue_error"),
                         }
                     )
-                except Exception as enqueue_err:
+                elif flow.get("enqueue_error"):
                     enqueue_failed.append(
                         {
                             "question_id": question_id,
                             "code": "JOB_ENQUEUE_FAILED",
-                            "message": str(enqueue_err),
+                            "message": str(flow.get("enqueue_error")),
                         }
                     )
-                    inline_fallback = _run_inline_feedback_generation_fallback(
-                        feedback_link_id=str(attached_link_id),
-                        updated_by=payload.updated_by,
-                    )
-                    if inline_fallback.get("ok"):
-                        queued_feedback_generation.append(
-                            {
-                                "question_id": question_id,
-                                "feedback_link_id": str(attached_link_id),
-                                "generation_mode": str(inline_fallback.get("generation_mode")),
-                                "version_id": inline_fallback.get("version_id"),
-                                "revision_no": inline_fallback.get("revision_no"),
-                                "skipped": bool(inline_fallback.get("skipped")),
-                                "generation_enqueue_reason": (
-                                    "attach_existing_refresh" if was_existing_link else "attach_new"
-                                ),
-                            }
-                        )
-                    else:
-                        enqueue_failed.append(
-                            {
-                                "question_id": question_id,
-                                "code": "INLINE_GENERATION_FAILED",
-                                "message": str(inline_fallback.get("error") or "inline generation failed"),
-                            }
-                        )
         except Exception as e:
             db.rollback()
             failed.append({"question_id": question_id, "code": "CONFLICT", "message": str(e)})
@@ -2321,34 +2358,19 @@ def attach_agent_to_single_question(question_id: str, payload: SingleAttachAgent
 
     queued_job = None
     if str(agent.get("role") or "").strip().lower() == "ai":
-        try:
-            rq_job_id = slide_batch_job_manager.enqueue_callable(
-                generate_static_feedback_with_version_snapshot_for_feedback_link,
-                str(attached_link_id),
-                created_by=payload.updated_by,
-            )
-            set_feedback_link_generation_job_id(str(attached_link_id), str(rq_job_id))
-            queued_job = {
-                "job_id": str(rq_job_id),
-                "feedback_link_id": str(attached_link_id),
-                "generation_enqueue_reason": "attach_existing_refresh" if was_existing_link else "attach_new",
-            }
-        except Exception as enqueue_err:
-            inline_fallback = _run_inline_feedback_generation_fallback(
-                feedback_link_id=str(attached_link_id),
-                updated_by=payload.updated_by,
-            )
-            queued_job = {
-                "feedback_link_id": str(attached_link_id),
-                "enqueue_error": str(enqueue_err),
-                "generation_mode": "inline_fallback",
-                "ok": bool(inline_fallback.get("ok")),
-                "skipped": bool(inline_fallback.get("skipped")),
-                "version_id": inline_fallback.get("version_id"),
-                "revision_no": inline_fallback.get("revision_no"),
-                "error": inline_fallback.get("error"),
-                "generation_enqueue_reason": "attach_existing_refresh" if was_existing_link else "attach_new",
-            }
+        queued_job = run_feedback_generation_flow(
+            db,
+            question_id=question_id,
+            agent_id=payload.agent_id,
+            dry_run=False,
+            updated_by=payload.updated_by,
+            input_values=None,
+            require_updated_by_for_persist=False,
+            include_debug=False,
+            snapshot_on_persist=True,
+            execution_mode="async",
+            enqueue_reason=("attach_existing_refresh" if was_existing_link else "attach_new"),
+        )
 
     return {
         "ok": True,
@@ -2370,176 +2392,18 @@ def _run_attached_agent_feedback(
     require_updated_by_for_persist: bool = True,
     include_debug: bool = True,
 ) -> dict[str, Any]:
-    dry_run = True if payload is None else bool(payload.dry_run)
-    updated_by = (payload.updated_by if payload else None) or None
-    if updated_by:
-        _require_admin_user(db, updated_by)
-    if not dry_run and not updated_by and require_updated_by_for_persist:
-        raise HTTPException(status_code=403, detail="updatedBy is required when dryRun is false")
-    question = _question_row(db, question_id)
-    if not question:
-        raise HTTPException(status_code=404, detail="question not found")
-    current_version_id = str(question.get("current_version_id") or "")
-    if not current_version_id:
-        raise HTTPException(status_code=409, detail="question has no current version")
-
-    agent = _get_feedback_agent(db, agent_id)
-    if not agent or not agent.get("is_visible", True):
-        raise HTTPException(status_code=404, detail="feedback agent not found")
-    agent_name = str(agent.get("title") or "").strip() or None
-    agent_role = str(agent.get("role") or "")
-    if agent_role not in {"ai", "human"}:
-        raise HTTPException(status_code=400, detail="dry-run generation is only supported for ai or human agents")
-
-    feedback_link_id = _find_visible_question_version_link(
-        db, question_version_id=current_version_id, agent_id=agent_id
-    ) or _find_any_visible_question_link(
-        db, question_version_id=current_version_id, agent_id=agent_id
+    return run_feedback_generation_flow(
+        db,
+        question_id=question_id,
+        agent_id=agent_id,
+        dry_run=(True if payload is None else bool(payload.dry_run)),
+        updated_by=((payload.updated_by if payload else None) or None),
+        input_values=dict((payload.input_values if payload else None) or {}),
+        require_updated_by_for_persist=require_updated_by_for_persist,
+        include_debug=include_debug,
+        snapshot_on_persist=True,
+        execution_mode="sync",
     )
-    if not feedback_link_id:
-        raise HTTPException(status_code=404, detail="agent is not attached to this question")
-    runtime_inputs = dict((payload.input_values if payload else None) or {})
-    selected_option_id: str | None = None
-    if runtime_inputs.get("selected_option_id"):
-        selected_option_id = str(runtime_inputs.get("selected_option_id"))
-    elif isinstance(runtime_inputs.get("selected_option_index"), int):
-        option_ids = _runtime_option_ids_for_version(db, current_version_id)
-        idx = int(runtime_inputs["selected_option_index"])
-        if 0 <= idx < len(option_ids):
-            selected_option_id = option_ids[idx]
-
-    if agent_role == "human":
-        if not dry_run:
-            raise HTTPException(status_code=400, detail="persisting dry-run output is only supported for ai agents")
-        feedback_row = db.execute(
-            text(
-                """
-                SELECT static_feedback_text, structured_feedback_text
-                FROM feedback_link
-                WHERE feedback_link_id = :fid
-                LIMIT 1
-                """
-            ),
-            {"fid": feedback_link_id},
-        ).mappings().first()
-        static_feedback_text = None
-        structured_feedback_text = None
-        if feedback_row:
-            static_feedback_text = (
-                str(feedback_row.get("static_feedback_text"))
-                if feedback_row.get("static_feedback_text") is not None
-                else None
-            )
-            structured_feedback_text = (
-                str(feedback_row.get("structured_feedback_text"))
-                if feedback_row.get("structured_feedback_text") is not None
-                else None
-            )
-        if not static_feedback_text and not structured_feedback_text:
-            fallback_row = db.execute(
-                text(
-                    """
-                    SELECT static_feedback_text, structured_feedback_text
-                    FROM feedback_link
-                    WHERE question_version_id = :question_version_id
-                      AND agent_id = :agent_id
-                      AND is_visible = TRUE
-                      AND (
-                        static_feedback_text IS NOT NULL
-                        OR structured_feedback_text IS NOT NULL
-                      )
-                    ORDER BY
-                      CASE WHEN target_entity_type = 'question_version' THEN 0 ELSE 1 END ASC,
-                      created_at ASC
-                    LIMIT 1
-                    """
-                ),
-                {"question_version_id": current_version_id, "agent_id": agent_id},
-            ).mappings().first()
-            if fallback_row:
-                static_feedback_text = (
-                    str(fallback_row.get("static_feedback_text"))
-                    if fallback_row.get("static_feedback_text") is not None
-                    else None
-                )
-                structured_feedback_text = (
-                    str(fallback_row.get("structured_feedback_text"))
-                    if fallback_row.get("structured_feedback_text") is not None
-                    else None
-                )
-        display_feedback_text = static_feedback_text or structured_feedback_text
-        result = {
-            "ok": True,
-            "feedback_link_id": str(feedback_link_id),
-            "persisted": False,
-            "static_feedback_text": display_feedback_text,
-            "structured_feedback_text": structured_feedback_text,
-            "has_feedback": bool(display_feedback_text),
-            "ai_score_result": _resolve_human_agent_ai_score_result(
-                db,
-                question_version_id=current_version_id,
-                human_agent_id=agent_id,
-                selected_option_id=selected_option_id,
-                runtime_inputs=runtime_inputs,
-            ),
-            "rendered_prompt": None,
-        }
-        if isinstance(result.get("ai_score_result"), dict):
-            rp = result["ai_score_result"].get("rendered_prompt")
-            if isinstance(rp, dict):
-                result["rendered_prompt"] = rp
-    else:
-        result = generate_static_feedback_for_feedback_link(
-            str(feedback_link_id),
-            persist=not dry_run,
-            enforce_ai_role=True,
-            input_values=(payload.input_values if payload else None),
-            include_debug=include_debug,
-        )
-        result["ai_score_result"] = None
-        result["structured_feedback_text"] = _extract_structured_feedback_from_generated_feedback(
-            result.get("static_feedback_text")
-        )
-        result["rendered_prompt"] = {
-            "system_prompt": result.get("resolved_system_prompt"),
-            "user_text": result.get("resolved_user_text"),
-        }
-
-    created_version: dict[str, Any] | None = None
-    if agent_role == "ai" and not dry_run and bool(updated_by) and result.get("ok") and not result.get("skipped"):
-        _ensure_static_feedback_version_schema(db)
-        latest_before_update = _get_latest_static_feedback_version(db, question_id=question_id, agent_id=agent_id)
-        latest_version_id = str(latest_before_update["version_id"]) if latest_before_update else None
-        current_q_text, current_option_feedback = _read_current_feedback_link_state(
-            db, question_version_id=current_version_id, agent_id=agent_id
-        )
-        created_version = _create_static_feedback_version_snapshot(
-            db,
-            question_id=question_id,
-            question_version_id=current_version_id,
-            agent_id=agent_id,
-            created_by=str(updated_by),
-            question_feedback_text=current_q_text,
-            option_feedback=current_option_feedback,
-            parent_version_id=latest_version_id,
-            restored_from_version_id=None,
-        )
-        db.commit()
-
-    result.update(
-        {
-            "question_id": question_id,
-            "question_version_id": current_version_id,
-            "agent_id": agent_id,
-            "agent_name": agent_name,
-            "dry_run": dry_run,
-        }
-    )
-    if created_version:
-        result["version_id"] = created_version["version_id"]
-        result["revision_no"] = int(created_version["revision_no"])
-        result["version_created_at"] = _to_utc_iso_z(created_version.get("created_at"))
-    return result
 
 
 @router.post("/questions/{question_id}/attached-agents/{agent_id}/feedback")
@@ -2671,8 +2535,25 @@ def get_question_feedback(
                 payload=agent_payload,
                 db=db,
                 require_updated_by_for_persist=False,
-                include_debug=False,
+                include_debug=True,
             )
+            _cache_runtime_prompt(
+                db,
+                participant_id=learner_id,
+                question_id=question_id,
+                answer_text=payload.answer_text,
+                llm_system_prompt=(
+                    str(result.get("resolved_system_prompt"))
+                    if result.get("resolved_system_prompt") is not None
+                    else None
+                ),
+                llm_user_prompt=(
+                    str(result.get("resolved_user_text"))
+                    if result.get("resolved_user_text") is not None
+                    else None
+                ),
+            )
+            db.commit()
             feedback_text = _compose_feedback_text_for_client(result)
             result.update(
                 {
