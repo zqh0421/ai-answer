@@ -455,6 +455,7 @@ function QuestionWorkspace({
   const [isFeedbackLoading, setIsFeedbackLoading] = useState(false);
   const [currentRecordId, setCurrentRecordId] = useState<number | null>(null);
   const [hasSubmitted, setHasSubmitted] = useState(false);
+  const [debugLastFeedbackPayload, setDebugLastFeedbackPayload] = useState<unknown>(null);
 
   const [course, setCourse] = useState<string>();
   const [courses, setCourses] = useState<Course[]>([]);
@@ -631,36 +632,81 @@ function QuestionWorkspace({
     e.target.style.height = `${e.target.scrollHeight}px`;
   };
 
-  const handlePdfImage = async (pageNumber: number, slideId: string) => {
-    try {
-      const response = await axios.post(
-        "/api/pdf-to-image",
-        { slide_id: slideId, page_number: pageNumber },
-        { timeout: 60000 }
-      );
-      return response.data.img_base64 as string | null;
-    } catch (error) {
-      console.error("Error fetching image:", error);
-      return null;
-    }
-  };
-
   const applyReferenceFromRuntimeResponse = async (feedbackData: any): Promise<boolean> => {
     const runtimeReference = feedbackData?.reference && typeof feedbackData.reference === "object" ? feedbackData.reference : null;
+    const resolvedInputValues =
+      feedbackData?.resolved_input_values && typeof feedbackData.resolved_input_values === "object"
+        ? feedbackData.resolved_input_values
+        : null;
+    const retrievedSlidePages = Array.isArray((resolvedInputValues as any)?.retrieved_slide_pages)
+      ? ((resolvedInputValues as any).retrieved_slide_pages as Array<Record<string, unknown>>)
+      : [];
+    const firstRetrievedSlidePage = retrievedSlidePages.find(
+      (item) => item && typeof item === "object"
+    ) as Record<string, unknown> | undefined;
+
+    const normalizeTitle = (value: unknown) =>
+      String(value ?? "")
+        .trim()
+        .toLowerCase()
+        .replace(/\s+/g, " ");
+
+    const retrievedSlideTitle = String(firstRetrievedSlidePage?.slide_title ?? "").trim();
+    const retrievedSlideId = String(firstRetrievedSlidePage?.slide_id ?? "").trim();
+    const retrievedSlideGoogleId = String(firstRetrievedSlidePage?.slide_google_id ?? "").trim();
+    const retrievedContent = String(firstRetrievedSlidePage?.content ?? firstRetrievedSlidePage?.text ?? "").trim();
+    const retrievedPageRaw =
+      firstRetrievedSlidePage?.most_relevant_page_number ??
+      firstRetrievedSlidePage?.page_number ??
+      firstRetrievedSlidePage?.reference_slide_page_number;
+
+    const matchedSlideByTitle = retrievedSlideTitle
+      ? availableSlides.find((item) => {
+          const slideTitle = normalizeTitle(item?.slide_title);
+          const targetTitle = normalizeTitle(retrievedSlideTitle);
+          return slideTitle === targetTitle || slideTitle.includes(targetTitle) || targetTitle.includes(slideTitle);
+        })
+      : undefined;
+    const matchedScopeByTitle = retrievedSlideTitle
+      ? question.slideScope.find((scopeItem) => {
+          const scopeTitle = normalizeTitle((scopeItem as any)?.slide_title);
+          const targetTitle = normalizeTitle(retrievedSlideTitle);
+          return scopeTitle === targetTitle || scopeTitle.includes(targetTitle) || targetTitle.includes(scopeTitle);
+        })
+      : undefined;
+
     const slideGoogleId = String(
       runtimeReference?.slide_google_id ??
         feedbackData?.reference_slide_google_id ??
         feedbackData?.slide_google_id ??
+        retrievedSlideGoogleId ??
+        (matchedSlideByTitle as any)?.slide_google_id ??
+        (matchedScopeByTitle as any)?.slide_google_id ??
         ""
     ).trim();
-    const slideId = String(runtimeReference?.slide_id ?? feedbackData?.reference_slide_id ?? "").trim();
-    const slideTitle = String(runtimeReference?.slide_title ?? feedbackData?.reference_slide_title ?? "Open slide").trim();
+    const slideId = String(
+      runtimeReference?.slide_id ??
+        feedbackData?.reference_slide_id ??
+        retrievedSlideId ??
+        (matchedSlideByTitle as any)?.id ??
+        (matchedScopeByTitle as any)?.slide_id ??
+        ""
+    ).trim();
+    const slideTitle = String(
+      runtimeReference?.slide_title ??
+        feedbackData?.reference_slide_title ??
+        retrievedSlideTitle ??
+        (matchedSlideByTitle as any)?.slide_title ??
+        (matchedScopeByTitle as any)?.slide_title ??
+        "Open slide"
+    ).trim();
     const mostRelevantPageRaw =
       runtimeReference?.most_relevant_page_number ??
       feedbackData?.most_relevant_page_number ??
       runtimeReference?.page_number ??
       runtimeReference?.reference_slide_page_number ??
-      feedbackData?.reference_slide_page_number;
+      feedbackData?.reference_slide_page_number ??
+      retrievedPageRaw;
     const mostRelevantPage =
       mostRelevantPageRaw === null || mostRelevantPageRaw === undefined
         ? null
@@ -671,8 +717,8 @@ function QuestionWorkspace({
         : null;
     const hasMostRelevantPage = Number.isFinite(mostRelevantPage as number) && (mostRelevantPage as number) > 0;
 
-    const imageText = String(runtimeReference?.image_text ?? feedbackData?.reference_slide_content ?? "");
-    const text = String(runtimeReference?.text ?? feedbackData?.reference_slide_content ?? "");
+    const imageText = String(runtimeReference?.image_text ?? feedbackData?.reference_slide_content ?? retrievedContent ?? "");
+    const text = String(runtimeReference?.text ?? feedbackData?.reference_slide_content ?? retrievedContent ?? "");
     const displayText = imageText.trim() || text.trim();
 
     if (!slideGoogleId && !slideId && !displayText) {
@@ -724,17 +770,10 @@ function QuestionWorkspace({
       return true;
     }
 
-    setIsImageLoading(true);
-    setTotalCount(1);
-    setLoadedCount(0);
-    const image = await handlePdfImage(Number(mostRelevantPage), slideGoogleId);
-    if (image) {
-      setImages([image]);
-      setLoadedCount(1);
-    } else {
-      setImages(null);
-      setLoadedCount(0);
-    }
+    // PDF-to-image flow removed: rely on embed URL + textual reference only.
+    setImages(null);
+    setTotalCount(-1);
+    setLoadedCount(-1);
     setIsImageLoading(false);
     return true;
   };
@@ -840,6 +879,7 @@ function QuestionWorkspace({
     try {
       const response = await axios.post(`/api/questions/${encodeURIComponent(targetQuestionId)}/feedback`, payload);
       const feedbackData = response.data || {};
+      if (debugModeEnabled) setDebugLastFeedbackPayload(feedbackData);
       const feedbackText = readFirstString(feedbackData?.feedback);
       const hasFeedback = typeof feedbackData?.has_feedback === "boolean" ? feedbackData.has_feedback : true;
       const feedbackSource = readFirstString(feedbackData?.feedback_source);
@@ -948,6 +988,7 @@ function QuestionWorkspace({
       const detail = error?.response?.data?.detail ?? error?.detail ?? null;
       console.error("Feedback error detail:", detail);
       const errorData = error?.response?.data || {};
+      if (debugModeEnabled) setDebugLastFeedbackPayload(errorData);
       const code = readFirstString(errorData?.code, errorData?.detail?.code);
       const message =
         readFirstString(errorData?.message, errorData?.detail?.message) ||
@@ -1034,6 +1075,8 @@ function QuestionWorkspace({
           recordId={currentRecordId}
           sessionId={sessionId}
           participantId={effectiveLearnerId || null}
+          debugEnabled={debugModeEnabled}
+          debugData={debugLastFeedbackPayload}
         />
 
         <section className="z-1 order-1 col-span-11 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:order-2 lg:col-span-5 lg:sticky lg:top-[75px] lg:p-6">

@@ -37,6 +37,8 @@ interface LeftFeedbackPanelProps {
   recordId?: number | null; // Add recordId prop for rating functionality
   sessionId?: string;
   participantId?: string | null;
+  debugEnabled?: boolean;
+  debugData?: unknown;
 }
 
 export default function LeftFeedbackPanel({
@@ -61,6 +63,8 @@ export default function LeftFeedbackPanel({
   recordId,
   sessionId,
   participantId,
+  debugEnabled = false,
+  debugData,
 }: LeftFeedbackPanelProps) {
   const feedbackHtml = (() => {
     if (isStreaming) return streamingContent;
@@ -122,6 +126,8 @@ export default function LeftFeedbackPanel({
           recordId={recordId}
           sessionId={sessionId}
           participantId={participantId}
+          debugEnabled={debugEnabled}
+          debugData={debugData}
         />
       )}
     </motion.div>

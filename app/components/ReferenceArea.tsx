@@ -1,4 +1,3 @@
-import ReactMarkdown from "react-markdown";
 import { Reference } from "@/app/types";
 import {
   Layers,
@@ -35,6 +34,8 @@ interface ReferenceAreaProps {
   recordId?: number | null;
   sessionId?: string;
   participantId?: string | null;
+  debugEnabled?: boolean;
+  debugData?: unknown;
 }
 
 export default function ReferenceArea({
@@ -53,7 +54,28 @@ export default function ReferenceArea({
   recordId,
   sessionId,
   participantId,
+  debugEnabled = false,
+  debugData,
 }: ReferenceAreaProps) {
+  const appendSlidePageAnchor = useCallback((url: string, pageNumber?: number | null) => {
+    const raw = String(url || "").trim();
+    if (!raw) return "";
+    const page = Number(pageNumber);
+    if (!Number.isFinite(page) || page <= 0) return raw;
+    // If backend already provided an explicit slide target (e.g. slide=id.g...),
+    // do not override it with a page-based anchor.
+    if (/slide=id\.[^&#\s]+/i.test(raw)) return raw;
+
+    const hashIndex = raw.indexOf("#");
+    if (hashIndex >= 0) {
+      const base = raw.slice(0, hashIndex);
+      const hash = raw.slice(hashIndex + 1).trim();
+      if (!hash) return `${base}#slide=id.p${page}`;
+      return `${base}#${hash}&slide=id.p${page}`;
+    }
+    return `${raw}#slide=id.p${page}`;
+  }, []);
+
   const validImages = useMemo(() => images ?? [], [images]);
   const slideEmbedUrl = useMemo(() => {
     if (!reference) return "";
@@ -62,16 +84,40 @@ export default function ReferenceArea({
       reference.slide_embed_url ??
       ""
     ).trim();
-    if (backendEmbedUrl) return backendEmbedUrl;
+    const pageNumber = reference.most_relevant_page_number ?? reference.page_number ?? null;
+    if (backendEmbedUrl) return appendSlidePageAnchor(backendEmbedUrl, pageNumber);
     if (!reference.slide_google_id) return "";
-    return `https://docs.google.com/presentation/d/${reference.slide_google_id}/embed`;
-  }, [reference]);
+    return appendSlidePageAnchor(
+      `https://docs.google.com/presentation/d/${reference.slide_google_id}/embed`,
+      pageNumber
+    );
+  }, [appendSlidePageAnchor, reference]);
   const slideEmbedUrlError = useMemo(
     () => String(reference?.most_relevant_slide_embed_url_error ?? "").trim(),
     [reference?.most_relevant_slide_embed_url_error]
   );
-  const slideOpenUrl = useMemo(() => {
-    return slideEmbedUrl;
+  const slideOpenUrl = useMemo(() => slideEmbedUrl, [slideEmbedUrl]);
+  const debugQueryParams = useMemo(() => {
+    if (typeof window === "undefined") return {};
+    return Object.fromEntries(new URLSearchParams(window.location.search).entries());
+  }, []);
+  const debugSlideUrlInfo = useMemo(() => {
+    if (!slideEmbedUrl) return null;
+    try {
+      const parsed = new URL(slideEmbedUrl);
+      return {
+        href: parsed.href,
+        origin: parsed.origin,
+        pathname: parsed.pathname,
+        search: parsed.search,
+        hash: parsed.hash,
+      };
+    } catch {
+      return {
+        href: slideEmbedUrl,
+        parse_error: "Invalid URL",
+      };
+    }
   }, [slideEmbedUrl]);
   const [audioError, setAudioError] = useState<string | null>(null);
   const [isRealtimeSessionActive, setIsRealtimeSessionActive] = useState(false);
@@ -712,15 +758,7 @@ export default function ReferenceArea({
                   </p>
                 </div>
               </div>
-            ) : (
-              reference.display && (
-                <div className="prose prose-sm max-w-none mb-6">
-                  <div className="text-xs text-slate-500 leading-relaxed italic">
-                    <ReactMarkdown>{reference.display}</ReactMarkdown>
-                  </div>
-                </div>
-              )
-            )}
+            ) : null}
 
             {/* Footer with page info and link */}
             {/* Inline slide file preview (anchored to most relevant page when available) */}
@@ -763,6 +801,27 @@ export default function ReferenceArea({
               </div>
 
             </div>
+            {debugEnabled ? (
+              <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3">
+                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-amber-800">
+                  Debug Params
+                </div>
+                <pre className="overflow-auto whitespace-pre-wrap break-all rounded border border-amber-200 bg-white p-2 text-[11px] text-slate-700">
+{JSON.stringify(
+  {
+    query_params: debugQueryParams,
+    reference,
+    computed_slide_embed_url: slideEmbedUrl,
+    computed_slide_open_url: slideOpenUrl,
+    parsed_slide_url: debugSlideUrlInfo,
+    feedback_payload: debugData,
+  },
+  null,
+  2
+)}
+                </pre>
+              </div>
+            ) : null}
           </div>
         </div>
       ) : (
