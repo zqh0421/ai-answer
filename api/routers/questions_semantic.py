@@ -27,7 +27,7 @@ from ..services.feedback_link_job_status import (
 )
 from ..services.feedback_composition_expr import CompositionExprError, compile_condition_expression
 from ..services.ids import generate_short_id
-from ..services.readers import get_semantic_question_version_detail
+from ..services.readers import _get_presentation_slide_object_ids, get_semantic_question_version_detail
 from ..tags import Tags
 
 router = APIRouter(prefix="/api", tags=[Tags.CONTENT_QUESTIONS])
@@ -336,6 +336,96 @@ def _compose_feedback_text_for_client(result: dict[str, Any]) -> str | None:
             return extracted.strip()
         return static_text.strip()
     return None
+
+
+def _compose_reference_from_retrieved_pages(
+    *,
+    db: Session,
+    question_id: str,
+    retrieved_pages: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if not retrieved_pages:
+        return None
+    first_page = retrieved_pages[0] if isinstance(retrieved_pages[0], dict) else {}
+    if not isinstance(first_page, dict):
+        return None
+
+    slide_scope_item: dict[str, Any] = {}
+    question = _question_row(db, question_id)
+    current_version_id = str(question.get("current_version_id") or "") if question else ""
+    if current_version_id:
+        detail = get_semantic_question_version_detail(db, current_version_id)
+        scopes = (detail or {}).get("slide_scope") if isinstance(detail, dict) else None
+        if isinstance(scopes, list):
+            target_title = str(first_page.get("slide_title") or "").strip()
+            for item in scopes:
+                if not isinstance(item, dict):
+                    continue
+                title = str(item.get("slide_title") or "").strip()
+                if target_title and title and title == target_title:
+                    slide_scope_item = item
+                    break
+            if not slide_scope_item and scopes and isinstance(scopes[0], dict):
+                slide_scope_item = scopes[0]
+
+    page_number_int: int | None = None
+    try:
+        raw_page_number = first_page.get("page_number")
+        page_number_int = int(raw_page_number) if raw_page_number is not None else None
+    except Exception:
+        page_number_int = None
+
+    content = str(first_page.get("content") or "").strip()
+    embed_url = slide_scope_item.get("most_relevant_slide_embed_url")
+    slide_google_id = str(slide_scope_item.get("slide_google_id") or "").strip()
+    computed_slide_embed_url: str | None = None
+    computed_slide_open_url: str | None = None
+    computed_slide_object_id: str | None = None
+    computed_slide_url_error: str | None = None
+    slide_page_object_ids: list[str] | None = None
+    if slide_google_id and page_number_int is not None and page_number_int >= 1:
+        object_ids, object_id_error = _get_presentation_slide_object_ids(slide_google_id)
+        if object_ids:
+            slide_page_object_ids = list(object_ids)
+            if page_number_int <= len(object_ids):
+                object_id_raw = object_ids[page_number_int - 1]
+                anchor = object_id_raw if str(object_id_raw).startswith("id.") else f"id.{object_id_raw}"
+                computed_slide_object_id = anchor
+                computed_slide_embed_url = (
+                    f"https://docs.google.com/presentation/d/{slide_google_id}/embed"
+                    f"?slide={anchor}#slide={anchor}"
+                )
+                computed_slide_open_url = (
+                    f"https://docs.google.com/presentation/d/{slide_google_id}/edit"
+                    f"#slide={anchor}"
+                )
+            else:
+                computed_slide_url_error = "page_out_of_bounds"
+        else:
+            computed_slide_url_error = object_id_error or "missing_slide_page_object_ids"
+
+    resolved_embed_url = computed_slide_embed_url or embed_url
+    return {
+        "text": content,
+        "image_text": "",
+        "display": content,
+        "page_number": (page_number_int if page_number_int is not None else -1),
+        "most_relevant_page_number": page_number_int,
+        "slide_total_pages": slide_scope_item.get("slide_total_pages"),
+        "slide_id": slide_scope_item.get("slide_id"),
+        "slide_google_id": slide_google_id or slide_scope_item.get("slide_google_id"),
+        "most_relevant_slide_embed_url": resolved_embed_url,
+        "slide_embed_url": resolved_embed_url,
+        "most_relevant_slide_embed_url_error": (
+            computed_slide_url_error or slide_scope_item.get("most_relevant_slide_embed_url_error")
+        ),
+        "slide_title": str(first_page.get("slide_title") or slide_scope_item.get("slide_title") or ""),
+        "slide_page_object_ids": slide_page_object_ids,
+        "computed_slide_object_id": computed_slide_object_id,
+        "computed_slide_embed_url": computed_slide_embed_url,
+        "computed_slide_open_url": computed_slide_open_url,
+        "computed_slide_url_error": computed_slide_url_error,
+    }
 
 
 def _user_exists(db: Session, user_id: str) -> bool:
@@ -1356,9 +1446,11 @@ def _build_question_list_slide_scope(db: Session, version_ids: list[str]) -> dic
             page_end = item.get("page_end")
             best_similarity = -1.0
             for page in pages_by_slide.get(sid, []):
-                page_number = int(page.get("page_number") or 0)
-                if page_number <= 0:
+                raw_page_number = int(page.get("page_number") or 0)
+                if raw_page_number < 0:
                     continue
+                # `page.page_number` is stored 0-based; expose/compare as 1-based.
+                page_number = raw_page_number + 1
                 if page_start is not None and page_number < int(page_start):
                     continue
                 if page_end is not None and page_number > int(page_end):
@@ -2573,6 +2665,21 @@ def get_question_feedback(
                     "feedback_source": "runtime_generate",
                 }
             )
+            if slide_mode == "most_relevant_slide_page":
+                resolved_input_values = result.get("resolved_input_values")
+                retrieved_pages: list[dict[str, Any]] = []
+                if isinstance(resolved_input_values, dict):
+                    raw_pages = resolved_input_values.get("retrieved_slide_pages")
+                    if isinstance(raw_pages, list):
+                        retrieved_pages = [item for item in raw_pages if isinstance(item, dict)]
+                result["most_relevant_slide_pages"] = retrieved_pages
+                reference = _compose_reference_from_retrieved_pages(
+                    db=db,
+                    question_id=question_id,
+                    retrieved_pages=retrieved_pages,
+                )
+                if reference is not None:
+                    result["reference"] = reference
             result.pop("resolved_input_values", None)
             result.pop("resolved_system_prompt", None)
             result.pop("resolved_user_text", None)

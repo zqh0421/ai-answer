@@ -3,7 +3,6 @@ from fastapi import FastAPI
 from api.lti import lti_router
 from .routers import (
     system,
-    conversion,
     identity,
     courses,
     modules,
@@ -33,7 +32,6 @@ app.include_router(lti_router)
 
 # v1 / legacy routers grouped by domain
 app.include_router(system.router)
-app.include_router(conversion.router)
 app.include_router(identity.router)
 app.include_router(courses.router)
 app.include_router(modules.router)

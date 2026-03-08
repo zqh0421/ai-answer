@@ -103,9 +103,11 @@ def _resolve_scope_most_relevant_pages(
         scope = scope_by_slide.get(sid)
         if not scope:
             continue
-        page_number = int(row.get("page_number") or 0)
-        if page_number <= 0:
+        raw_page_number = int(row.get("page_number") or 0)
+        if raw_page_number < 0:
             continue
+        # `page.page_number` is stored 0-based; expose/compare as 1-based.
+        page_number = raw_page_number + 1
         page_start = scope.get("page_start")
         page_end = scope.get("page_end")
         if page_start is not None and page_number < int(page_start):
