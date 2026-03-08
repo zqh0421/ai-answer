@@ -4,6 +4,7 @@ import axios from 'axios';
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSession } from 'next-auth/react';
 import ActionButton from '@/app/components/ActionButton';
+import ManageBreadcrumb from '@/app/components/manage/ManageBreadcrumb';
 import ManageDataTable, { ManageTableColumn } from '@/app/components/manage/ManageDataTable';
 import ManageListPanel from '@/app/components/manage/ManageListPanel';
 import { useManagePermissionGuard } from '@/app/manage/hooks/useManagePermissionGuard';
@@ -1408,8 +1409,16 @@ export default function AgentManagementPage() {
 
     try {
       const res = await axios.post(
-        `/api/questions/${selectedDryRunQuestion.question_id}/attached-agents/${selectedDryRunAgent.agent_id}/dry-run`,
-        { dryRun: true, inputValues }
+        `/api/questions/${selectedDryRunQuestion.question_id}/feedback`,
+        {
+          mode: 'agent',
+          agentId: selectedDryRunAgent.agent_id,
+          agent_id: selectedDryRunAgent.agent_id,
+          dryRun: true,
+          dry_run: true,
+          answerText,
+          inputValues,
+        }
       );
       const response = res.data ?? {};
       const resolvedFromBackend =
@@ -1938,6 +1947,10 @@ export default function AgentManagementPage() {
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top_right,_rgba(59,130,246,0.08),_transparent_45%),radial-gradient(circle_at_top_left,_rgba(14,165,233,0.06),_transparent_40%),linear-gradient(to_bottom,_#f8fafc,_#ffffff)] p-8">
       <div className="mx-auto flex w-full max-w-[1500px] flex-col gap-8 p-4 md:p-6">
+        <section className="">
+          <ManageBreadcrumb />
+        </section>
+
         <section className="rounded-3xl border border-slate-200 bg-white/90 p-5 shadow-sm ring-1 ring-white md:p-6">
           <div className="flex flex-col gap-4 md:items-start">
             <div className="min-w-0">

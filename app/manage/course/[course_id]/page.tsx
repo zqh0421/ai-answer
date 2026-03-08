@@ -6,6 +6,7 @@ import { usePathname } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import { useDispatch, useSelector } from 'react-redux';
 import ActionButton from '@/app/components/ActionButton';
+import ManageBreadcrumb from '@/app/components/manage/ManageBreadcrumb';
 import AddSlidesModal from './components/AddSlidesModal';
 import ConfirmUploadModal from './components/ConfirmUploadModal';
 import CreateModuleModal from './components/CreateModuleModal';
@@ -1049,6 +1050,10 @@ const CoursePage = () => {
         </div>
       )}
       <div className="mx-auto flex w-full max-w-[1500px] flex-col gap-8 p-4 md:p-6">
+      <section className="">
+        <ManageBreadcrumb />
+      </section>
+
       <section className="rounded-3xl border border-slate-200 bg-white/90 p-5 shadow-sm ring-1 ring-white md:p-6">
         <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div className="min-w-0">

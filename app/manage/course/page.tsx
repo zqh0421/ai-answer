@@ -6,6 +6,7 @@ import { useSearchParams } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import { FormEvent, useCallback, useEffect, useState } from 'react';
 import ActionButton from '@/app/components/ActionButton';
+import ManageBreadcrumb from '@/app/components/manage/ManageBreadcrumb';
 import ManageDataTable, { ManageTableColumn } from '@/app/components/manage/ManageDataTable';
 import ManageListPanel from '@/app/components/manage/ManageListPanel';
 import ManageModal from '@/app/components/manage/ManageModal';
@@ -351,6 +352,10 @@ const CourseOverview = () => {
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top_right,_rgba(59,130,246,0.08),_transparent_45%),radial-gradient(circle_at_top_left,_rgba(14,165,233,0.06),_transparent_40%),linear-gradient(to_bottom,_#f8fafc,_#ffffff)] p-8">
       <div className="mx-auto flex w-full max-w-[1500px] flex-col gap-8 p-4 md:p-6">
+        <section className="">
+          <ManageBreadcrumb />
+        </section>
+
         <section className="rounded-3xl border border-slate-200 bg-white/90 p-5 shadow-sm ring-1 ring-white md:p-6">
           <div className="flex flex-col gap-4 md:items-start">
             <div className="min-w-0">

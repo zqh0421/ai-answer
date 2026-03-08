@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import SignIn from "@/app/components/manage/SignIn";
+import ManageBreadcrumb from "@/app/components/manage/ManageBreadcrumb";
 import { auth } from "@/auth";
 import { redirect } from 'next/navigation'
 import { buildStaticPageTitle } from "@/app/utils/title";
@@ -40,8 +41,13 @@ export default async function ManageLogin({ searchParams: _searchParams }: Manag
     return (
         <main className="bg-[radial-gradient(circle_at_top_right,_rgba(59,130,246,0.08),_transparent_45%),radial-gradient(circle_at_top_left,_rgba(14,165,233,0.06),_transparent_40%),linear-gradient(to_bottom,_#f8fafc,_#ffffff)] px-6 py-4 md:px-8 md:py-5">
             <div className="mx-auto flex min-h-[calc(100vh-90px)] max-h-[calc(100vh-90px)] w-full max-w-[1500px] items-center justify-center">
-                <section className="w-full max-w-xl -translate-y-2 rounded-3xl border border-slate-200 bg-white/95 p-7 shadow-sm ring-1 ring-white md:-translate-y-6 md:p-8">
-                    <div className="mb-8">
+                <div className="w-full max-w-xl space-y-6">
+                    <section className="">
+                        <ManageBreadcrumb />
+                    </section>
+
+                    <section className="-translate-y-2 rounded-3xl border border-slate-200 bg-white/95 p-7 shadow-sm ring-1 ring-white md:-translate-y-6 md:p-8">
+                        <div className="mb-8">
                         <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
                             Management Console
                         </p>
@@ -56,7 +62,8 @@ export default async function ManageLogin({ searchParams: _searchParams }: Manag
                     <div className="pt-1">
                         <SignIn redirectTo={withLtiMode(isDeepLinkMode ? "/lti/questions" : "/manage")} />
                     </div>
-                </section>
+                    </section>
+                </div>
             </div>
         </main>
     )

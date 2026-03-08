@@ -5,6 +5,7 @@ import { usePathname, useSearchParams } from 'next/navigation';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import ActionButton from '@/app/components/ActionButton';
 import DynamicImage from '@/app/components/DynamicImage';
+import ManageBreadcrumb from '@/app/components/manage/ManageBreadcrumb';
 import { useManagePermissionGuard } from '@/app/manage/hooks/useManagePermissionGuard';
 import { formatDateTimeForUser, getUserTimeZone } from '@/app/utils/datetime';
 import { Question } from '../page';
@@ -1246,6 +1247,10 @@ export default function ManageQuestion() {
         </div>
       ) : null}
       <div className="mx-auto max-w-5xl space-y-6">
+        <section className="">
+          <ManageBreadcrumb />
+        </section>
+
         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <h1 className="text-2xl font-bold text-slate-900">Question {question.question_id}</h1>
           <div className="mt-4 space-y-5">

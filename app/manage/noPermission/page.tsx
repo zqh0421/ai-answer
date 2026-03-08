@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { auth, signOut } from "@/auth";
 import Link from "next/link";
 import ActionButton from "@/app/components/ActionButton";
+import ManageBreadcrumb from "@/app/components/manage/ManageBreadcrumb";
 import { redirect } from 'next/navigation'
 import { buildStaticPageTitle } from "@/app/utils/title";
 
@@ -40,9 +41,14 @@ export default async function NoPermission({ searchParams }: NoPermissionProps) 
   return (
     <main className="bg-[radial-gradient(circle_at_top_right,_rgba(59,130,246,0.08),_transparent_45%),radial-gradient(circle_at_top_left,_rgba(14,165,233,0.06),_transparent_40%),linear-gradient(to_bottom,_#f8fafc,_#ffffff)] px-6 py-4 md:px-8 md:py-5">
       <div className="mx-auto flex min-h-[calc(100vh-130px)] max-h-[calc(100vh-90px)] w-full max-w-[1500px] items-center justify-center">
-        <section className="w-full max-w-2xl rounded-3xl border border-slate-200 bg-white/95 p-7 shadow-sm ring-1 ring-white md:p-8">
-          <div className="flex flex-col gap-6">
-            <div>
+        <div className="w-full max-w-2xl space-y-6">
+          <section className="">
+            <ManageBreadcrumb />
+          </section>
+
+          <section className="rounded-3xl border border-slate-200 bg-white/95 p-7 shadow-sm ring-1 ring-white md:p-8">
+            <div className="flex flex-col gap-6">
+              <div>
               <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
                 Management Console
               </p>
@@ -77,7 +83,8 @@ export default async function NoPermission({ searchParams }: NoPermissionProps) 
               </form>
             </div>
           </div>
-        </section>
+          </section>
+        </div>
       </div>
     </main>
   );

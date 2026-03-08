@@ -8,6 +8,7 @@ import ActionButton from "@/app/components/ActionButton";
 import { Slide } from "@/app/types";
 import ContentEditor from "@/app/components/ContentEditor";
 import DynamicImage from "@/app/components/DynamicImage";
+import ManageBreadcrumb from "@/app/components/manage/ManageBreadcrumb";
 import ManageDataTable, { ManageTableColumn } from "@/app/components/manage/ManageDataTable";
 import ManageListPanel from "@/app/components/manage/ManageListPanel";
 import ManageModal from "@/app/components/manage/ManageModal";
@@ -3120,6 +3121,10 @@ const QuestionOverview = () => {
         </div>
       ) : null}
       <div className="mx-auto flex w-full max-w-[1500px] flex-col gap-8 p-4 md:p-6">
+        <section className="">
+          <ManageBreadcrumb />
+        </section>
+
         <section className="rounded-3xl border border-slate-200 bg-white/90 p-5 shadow-sm ring-1 ring-white md:p-6">
           <div className="flex flex-col gap-4">
             <div className="min-w-0">

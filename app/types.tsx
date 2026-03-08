@@ -72,6 +72,7 @@ export type RecordResultInput = {
   question_id: string,
   answer: string,
   feedback: string,
+  llm_system_prompt?: string,
   prompt_engineering_method: string,
   preferred_info_type: string,
   feedback_framework: string,
