@@ -286,14 +286,22 @@ def _select_retrieved_pages(
 ) -> list[dict[str, Any]]:
     if not scored_pages:
         return []
+    limit_count = int(max_pages) if max_pages is not None and int(max_pages) > 0 else None
+
+    def _apply_limit(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if limit_count is None:
+            return items
+        return items[:limit_count]
+
     if selection_mode == "all":
-        return list(scored_pages)
+        return _apply_limit(list(scored_pages))
     if selection_mode == "threshold":
         if similarity_threshold is None:
-            return list(scored_pages)
-        return [p for p in scored_pages if float(p["similarity"]) >= float(similarity_threshold)]
+            return _apply_limit(list(scored_pages))
+        filtered = [p for p in scored_pages if float(p["similarity"]) >= float(similarity_threshold)]
+        return _apply_limit(filtered)
 
-    top_k = int(max_pages) if max_pages is not None and int(max_pages) > 0 else 3
+    top_k = limit_count if limit_count is not None else 3
     if selection_mode == "threshold_then_top_k":
         if similarity_threshold is not None:
             filtered = [p for p in scored_pages if float(p["similarity"]) >= float(similarity_threshold)]
@@ -516,7 +524,11 @@ def _resolve_retrieved_slide_pages(
         content_value = image_text_value or text_value or "none"
         row = {
             "slide_title": page.get("slide_title"),
-            "page_number": int(page["page_number"]) if page.get("page_number") is not None else None,
+            "page_number": (
+                int(page["page_number"]) + 1
+                if page.get("page_number") is not None
+                else None
+            ),
             "content": content_value,
         }
         if include_similarity:
