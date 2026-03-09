@@ -599,10 +599,6 @@ function QuestionWorkspace({
 
   const handleAnswerChange = (value: string) => {
     setAnswerText(value);
-    // Clear previously displayed feedback once the learner edits the answer.
-    setHasSubmitted(false);
-    setResult("");
-    setPromptVersion(null);
     setSaveStatus("Saving...");
     debouncedSaveAnswer(value);
   };
@@ -1258,6 +1254,7 @@ function QuestionWorkspace({
           showFeedback={true}
           showReference={!shouldHideReferencePanel}
           isFeedbackLoading={isFeedbackLoading}
+          hasSubmitted={hasSubmitted}
           promptVersion={promptVersion}
           question={questionTextForPanel}
           options={question.options}

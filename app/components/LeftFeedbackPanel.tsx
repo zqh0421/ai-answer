@@ -32,6 +32,7 @@ interface LeftFeedbackPanelProps {
   isStreaming?: boolean;
   streamingContent?: string;
   isFeedbackLoading?: boolean;
+  hasSubmitted?: boolean;
   promptVersion?: string | null;
   question?: string | any[];
   options?: any[];
@@ -58,6 +59,7 @@ export default function LeftFeedbackPanel({
   isStreaming = false,
   streamingContent = "",
   isFeedbackLoading = false,
+  hasSubmitted = false,
   promptVersion = null,
   question,
   options,
@@ -108,6 +110,7 @@ export default function LeftFeedbackPanel({
         <HTMLFeedbackArea
           html={feedbackHtml}
           isFeedbackLoading={isFeedbackLoading}
+          hasSubmitted={hasSubmitted}
           score={feedbackScore}
           maxScore={feedbackMaxScore}
           isStreaming={isStreaming}

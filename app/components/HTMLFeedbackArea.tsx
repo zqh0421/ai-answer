@@ -12,6 +12,7 @@ import {
 interface HTMLFeedbackAreaProps {
   html: string;
   isFeedbackLoading: boolean;
+  hasSubmitted?: boolean;
   score?: string | number;
   maxScore?: string | number;
   isStreaming?: boolean;
@@ -23,6 +24,7 @@ interface HTMLFeedbackAreaProps {
 const HTMLFeedbackArea: React.FC<HTMLFeedbackAreaProps> = ({
   html,
   isFeedbackLoading,
+  hasSubmitted = false,
   score,
   maxScore,
   isStreaming = false,
@@ -369,7 +371,9 @@ const HTMLFeedbackArea: React.FC<HTMLFeedbackAreaProps> = ({
         <div className="text-center py-8">
           <MessageSquare className="w-10 h-10 text-slate-300 mx-auto mb-2" />
           <p className="text-sm text-slate-500">
-            No feedback yet. Submit your answer to get started.
+            {hasSubmitted
+              ? "No feedback returned for this submission. Please submit again."
+              : "No feedback yet. Submit your answer to get started."}
           </p>
         </div>
       )}
