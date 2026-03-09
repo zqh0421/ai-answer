@@ -35,6 +35,7 @@ type QuestionContentItem = {
 type NormalizedQuestion = {
   questionId: string;
   questionType: "single_choice" | "free_text" | "unknown";
+  scoreMaximum: number;
   content: QuestionContentItem[];
   options: Array<{ text: string; isCorrect: boolean }>;
   slideIds: string[];
@@ -222,11 +223,20 @@ const normalizeFeedbackResult = (raw: any): FeedbackResultPayload => {
   );
   const structuredFeedback = readFirstString(extracted.structuredFeedback, raw?.structured_feedback, raw?.feedback_html);
   const textFeedback = readFirstString(extracted.textFeedback, raw?.text_feedback, raw?.feedback, raw?.output, raw?.result);
-  const scoreCandidate = toFiniteNumber(raw?.score) ?? extracted.score;
-  const maxScoreCandidate = toFiniteNumber(raw?.max_score) ?? extracted.maxScore;
-  const aiHasScore = Boolean(raw?.ai_score_result?.has_score);
+  const scoreCandidate =
+    toFiniteNumber(raw?.score) ??
+    toFiniteNumber(raw?.score_given) ??
+    toFiniteNumber(raw?.ai_score_result?.score_given) ??
+    extracted.score;
+  const maxScoreCandidate =
+    toFiniteNumber(raw?.max_score) ??
+    toFiniteNumber(raw?.score_maximum) ??
+    toFiniteNumber(raw?.score_max) ??
+    toFiniteNumber(raw?.maxScore) ??
+    extracted.maxScore;
   const aiScore = toFiniteNumber(raw?.ai_score_result?.score);
   const aiMaxScore = toFiniteNumber(raw?.ai_score_result?.max_score);
+  const aiHasScore = Boolean(raw?.ai_score_result?.has_score) || aiScore !== undefined;
   const effectiveScore = scoreCandidate ?? (aiHasScore ? aiScore : undefined);
   const effectiveMaxScore = maxScoreCandidate ?? (aiHasScore ? aiMaxScore : undefined);
   const uiStructuredFeedback = structuredFeedback;
@@ -260,6 +270,12 @@ const normalizeQuestionType = (value: unknown): NormalizedQuestion["questionType
   if (normalized === "single_choice") return "single_choice";
   if (normalized === "free_text") return "free_text";
   return "unknown";
+};
+
+const defaultScoreMaximumForQuestionType = (questionType: NormalizedQuestion["questionType"]): number => {
+  if (questionType === "single_choice") return 1;
+  if (questionType === "free_text") return 2;
+  return 2;
 };
 
 const extractQuestionPayload = (raw: QuestionPayload): QuestionPayload => {
@@ -373,6 +389,11 @@ const normalizeQuestion = (raw: QuestionPayload, fallbackQuestionId: string): No
       : fallbackInteractionOptions;
 
   const questionType = normalizedTypeFromPayload;
+  const explicitScoreMaximum =
+    toFiniteNumber(payload?.content_question_version?.score_maximum) ??
+    toFiniteNumber(payload?.current_version?.score_maximum) ??
+    toFiniteNumber(payload?.score_maximum);
+  const scoreMaximum = explicitScoreMaximum ?? defaultScoreMaximumForQuestionType(questionType);
 
   const rawSlideScope = payload?.slide_scope ?? payload?.current_version?.slide_scope;
   const normalizedSlideScope = Array.isArray(rawSlideScope)
@@ -406,6 +427,7 @@ const normalizeQuestion = (raw: QuestionPayload, fallbackQuestionId: string): No
   return {
     questionId,
     questionType,
+    scoreMaximum,
     content: normalizedContent,
     options,
     slideIds,
@@ -414,6 +436,23 @@ const normalizeQuestion = (raw: QuestionPayload, fallbackQuestionId: string): No
 };
 
 const createFallbackLearnerId = () => `test_learner_${Math.random().toString(36).slice(2, 10)}`;
+const DEBUG_LEARNER_STORAGE_KEY = "ai_answer_debug_learner_id_v1";
+const getStoredDebugLearnerId = (): string => {
+  if (typeof window === "undefined") return "";
+  try {
+    return String(window.localStorage.getItem(DEBUG_LEARNER_STORAGE_KEY) || "").trim();
+  } catch {
+    return "";
+  }
+};
+const setStoredDebugLearnerId = (value: string) => {
+  if (typeof window === "undefined") return;
+  try {
+    if (value.trim()) window.localStorage.setItem(DEBUG_LEARNER_STORAGE_KEY, value.trim());
+  } catch {
+    // ignore storage write errors
+  }
+};
 
 const normalizeQuestionMarkdown = (value: string): string =>
   value
@@ -426,26 +465,110 @@ type ScoringAttemptStats = {
   attemptCount: number | null;
   maxAttempts: number | null;
   isUnlimited: boolean | null;
-  bestScore: number | null;
-  bestScoreMax: number | null;
+  firstAttemptScore: number | null;
+  firstAttemptScoreMax: number | null;
 };
 
 const parseSubmissionStats = (raw: unknown): ScoringAttemptStats => {
-  const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
-  const attemptCount = toFiniteNumber(record.attempt_count);
-  const maxAttempts = toFiniteNumber(record.max_attempts);
-  const bestScore = toFiniteNumber(record.best_score);
-  const isUnlimited = typeof record.is_unlimited === "boolean" ? record.is_unlimited : null;
+  const root = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const hasStatsShape = (obj: Record<string, unknown>) =>
+    [
+      "attempt_count",
+      "attemptCount",
+      "attempted_count",
+      "attempts",
+      "submission_count",
+      "max_attempts",
+      "maxAttempts",
+      "max_submissions",
+      "first_attempt_score",
+      "firstAttemptScore",
+      "final_score",
+      "finalScore",
+    ].some((key) => key in obj);
+  const findStatsLikeRecord = (value: unknown, depth = 0): Record<string, unknown> | null => {
+    if (!value || typeof value !== "object" || depth > 4) return null;
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const found = findStatsLikeRecord(item, depth + 1);
+        if (found) return found;
+      }
+      return null;
+    }
+    const obj = value as Record<string, unknown>;
+    if (hasStatsShape(obj)) return obj;
+    for (const nested of Object.values(obj)) {
+      const found = findStatsLikeRecord(nested, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  };
+  const nestedCandidate =
+    (root.data && typeof root.data === "object" ? (root.data as Record<string, unknown>) : null) ??
+    (root.stats && typeof root.stats === "object" ? (root.stats as Record<string, unknown>) : null) ??
+    (root.result && typeof root.result === "object" ? (root.result as Record<string, unknown>) : null) ??
+    (root.variables && typeof root.variables === "object" ? (root.variables as Record<string, unknown>) : null) ??
+    (root.submission_stats && typeof root.submission_stats === "object"
+      ? (root.submission_stats as Record<string, unknown>)
+      : null);
+  const discoveredRecord = findStatsLikeRecord(root);
+  const variablesRecord =
+    root.variables && typeof root.variables === "object" ? (root.variables as Record<string, unknown>) : null;
+  const records = [root, nestedCandidate, variablesRecord, discoveredRecord].filter(
+    (item): item is Record<string, unknown> => Boolean(item && typeof item === "object")
+  );
+  const pickNumber = (...keys: string[]) => {
+    for (const record of records) {
+      for (const key of keys) {
+        const parsed = toFiniteNumber(record[key]);
+        if (parsed !== undefined) return parsed;
+      }
+    }
+    return undefined;
+  };
+  const pickBoolean = (...keys: string[]) => {
+    for (const record of records) {
+      for (const key of keys) {
+        if (typeof record[key] === "boolean") return record[key] as boolean;
+      }
+    }
+    return null;
+  };
+  const attemptCount = pickNumber("attempt_count", "attemptCount", "attempted_count", "attempts", "submission_count");
+  const maxAttempts = pickNumber(
+    "max_attempts",
+    "maxAttempts",
+    "max_submissions",
+    "maxSubmissions",
+    "attempt_limit",
+    "submission_limit"
+  );
+  const firstAttemptScore = pickNumber(
+    "first_attempt_score",
+    "firstAttemptScore",
+    "first_attempt_score_given",
+    "firstAttemptScoreGiven",
+    "final_score",
+    "finalScore"
+  );
+  const isUnlimitedRaw = pickBoolean("is_unlimited", "isUnlimited", "unlimited");
+  const isUnlimited = typeof isUnlimitedRaw === "boolean" ? isUnlimitedRaw : null;
   return {
     attemptCount: Number.isFinite(attemptCount as number) ? Math.max(0, Math.floor(attemptCount as number)) : null,
     maxAttempts: Number.isFinite(maxAttempts as number) ? Math.max(0, Math.floor(maxAttempts as number)) : null,
     isUnlimited,
-    bestScore: Number.isFinite(bestScore as number) ? (bestScore as number) : null,
-    bestScoreMax: (() => {
-      const maxScore =
-        toFiniteNumber(record.best_score_max) ??
-        toFiniteNumber(record.max_score) ??
-        toFiniteNumber(record.score_maximum);
+    firstAttemptScore: Number.isFinite(firstAttemptScore as number) ? (firstAttemptScore as number) : null,
+    firstAttemptScoreMax: (() => {
+      const maxScore = pickNumber(
+        "first_attempt_score_max",
+        "firstAttemptScoreMax",
+        "max_score",
+        "maxScore",
+        "score_maximum",
+        "scoreMaximum",
+        "best_score_max",
+        "bestScoreMax"
+      );
       return Number.isFinite(maxScore as number) ? (maxScore as number) : null;
     })(),
   };
@@ -467,6 +590,7 @@ function QuestionWorkspace({
   const [question, setQuestion] = useState<NormalizedQuestion>({
     questionId: qid,
     questionType: "unknown",
+    scoreMaximum: 2,
     content: [],
     options: [],
     slideIds: [],
@@ -486,7 +610,7 @@ function QuestionWorkspace({
   const debugModeEnabled = String(searchParams?.debug ?? "").trim() === "1";
 
   const [fallbackLearnerId] = useState(() => createFallbackLearnerId());
-  const [testLearnerId] = useState(() => learnerIdFromUrl || fallbackLearnerId);
+  const [testLearnerId] = useState(() => learnerIdFromUrl || getStoredDebugLearnerId() || fallbackLearnerId);
   const [andrewId, setAndrewId] = useState("");
   const [isAndrewModalOpen, setIsAndrewModalOpen] = useState(false);
 
@@ -505,12 +629,13 @@ function QuestionWorkspace({
   const [currentRecordId, setCurrentRecordId] = useState<number | null>(null);
   const [hasSubmitted, setHasSubmitted] = useState(false);
   const [debugLastFeedbackPayload, setDebugLastFeedbackPayload] = useState<unknown>(null);
+  const [debugLastSubmissionStatsPayload, setDebugLastSubmissionStatsPayload] = useState<unknown>(null);
   const [scoringStats, setScoringStats] = useState<ScoringAttemptStats>({
     attemptCount: null,
     maxAttempts: null,
     isUnlimited: null,
-    bestScore: null,
-    bestScoreMax: null,
+    firstAttemptScore: null,
+    firstAttemptScoreMax: null,
   });
   const [isScoringStatsLoading, setIsScoringStatsLoading] = useState(false);
 
@@ -527,6 +652,12 @@ function QuestionWorkspace({
   const normalizedTestLearnerId = testLearnerId.trim() || fallbackLearnerId;
   const normalizedAndrewId = andrewId.trim();
   const effectiveLearnerId = learnerIdFromUrl || prolificPid || participantId || (debugModeEnabled ? normalizedTestLearnerId : normalizedAndrewId);
+
+  useEffect(() => {
+    if (!debugModeEnabled) return;
+    if (!normalizedTestLearnerId) return;
+    setStoredDebugLearnerId(normalizedTestLearnerId);
+  }, [debugModeEnabled, normalizedTestLearnerId]);
 
   useEffect(() => {
     if (debugModeEnabled) {
@@ -884,6 +1015,10 @@ function QuestionWorkspace({
   };
 
   const isMCQ = question.questionType === "single_choice";
+  const questionScoreMaximum = useMemo(
+    () => toFiniteNumber(question.scoreMaximum) ?? defaultScoreMaximumForQuestionType(question.questionType),
+    [question.questionType, question.scoreMaximum]
+  );
   const hasAnswer = Boolean(answerText.trim());
   const normalizedCompositionId = (compositionId || "").trim();
   const isScoringComposition = /scoring/i.test(normalizedCompositionId);
@@ -901,7 +1036,6 @@ function QuestionWorkspace({
     isScoringComposition &&
     !canSubmitByStats;
   const submitDisabled = questionLoading || isFeedbackLoading || !hasAnswer || attemptsExhausted;
-  const shouldHideReferencePanel = /scoring/i.test(normalizedCompositionId);
   const isValidInput = (input: string): boolean => {
     const alphanumericRegex = /[a-zA-Z0-9]/;
     return input.trim() !== "" && alphanumericRegex.test(input);
@@ -919,22 +1053,41 @@ function QuestionWorkspace({
         question_id: targetQuestionId,
         composition_id: normalizedCompositionId,
       });
-      const statsRes = await fetch(`/api/submission-stats?${qs.toString()}`, {
+      let statsRes = await fetch(`/api/submission_stats?${qs.toString()}`, {
         method: "GET",
         credentials: "include",
       });
+      if (!statsRes.ok && statsRes.status === 404) {
+        // Backward compatibility with older route naming.
+        statsRes = await fetch(`/api/submission-stats?${qs.toString()}`, {
+          method: "GET",
+          credentials: "include",
+        });
+      }
       if (!statsRes.ok) {
         throw new Error(`Failed to fetch submission stats: HTTP ${statsRes.status}`);
       }
-      const parsedStats = parseSubmissionStats(await statsRes.json());
+      const rawStats = await statsRes.json();
+      const parsedStats = parseSubmissionStats(rawStats);
+      if (debugModeEnabled) {
+        setDebugLastSubmissionStatsPayload({
+          request: {
+            learner_id: effectiveLearnerId,
+            question_id: targetQuestionId,
+            composition_id: normalizedCompositionId,
+          },
+          response: rawStats,
+          parsed: parsedStats,
+        });
+      }
 
       if (!isScoringComposition) {
         setScoringStats({
           attemptCount: parsedStats.attemptCount,
           maxAttempts: null,
           isUnlimited: true,
-          bestScore: null,
-          bestScoreMax: null,
+          firstAttemptScore: null,
+          firstAttemptScoreMax: null,
         });
         return;
       }
@@ -943,17 +1096,22 @@ function QuestionWorkspace({
         attemptCount: parsedStats.attemptCount,
         maxAttempts: Number.isFinite(parsedStats.maxAttempts as number) ? parsedStats.maxAttempts : 3,
         isUnlimited: parsedStats.isUnlimited === true ? true : false,
-        bestScore: parsedStats.bestScore,
-        bestScoreMax: parsedStats.bestScoreMax,
+        firstAttemptScore: parsedStats.firstAttemptScore,
+        firstAttemptScoreMax: parsedStats.firstAttemptScoreMax,
       });
     } catch (error) {
       console.error("Failed to fetch submission stats:", error);
+      if (debugModeEnabled) {
+        setDebugLastSubmissionStatsPayload({
+          error: String((error as Error)?.message || error),
+        });
+      }
       setScoringStats({
         attemptCount: null,
         maxAttempts: isScoringComposition ? 3 : null,
         isUnlimited: isScoringComposition ? false : true,
-        bestScore: null,
-        bestScoreMax: null,
+        firstAttemptScore: null,
+        firstAttemptScoreMax: null,
       });
     } finally {
       setIsScoringStatsLoading(false);
@@ -1023,6 +1181,7 @@ function QuestionWorkspace({
     try {
       const response = await axios.post(`/api/questions/${encodeURIComponent(targetQuestionId)}/feedback`, payload);
       const feedbackData = response.data || {};
+      const extractedFromFeedbackField = extractFeedbackFromUnknown(feedbackData?.feedback);
       if (debugModeEnabled) {
         setDebugLastFeedbackPayload({
           request: payload,
@@ -1030,11 +1189,37 @@ function QuestionWorkspace({
         });
       }
       const feedbackText = readFirstString(feedbackData?.feedback);
+      const feedbackVariables =
+        feedbackData?.variables && typeof feedbackData.variables === "object"
+          ? (feedbackData.variables as Record<string, unknown>)
+          : null;
+      const attemptedCountFromFeedback =
+        toFiniteNumber(feedbackVariables?.attempted_count) ??
+        toFiniteNumber(feedbackVariables?.attempt_count) ??
+        toFiniteNumber(feedbackData?.attempted_count) ??
+        toFiniteNumber(feedbackData?.attempt_count);
+      const maxAttemptsFromFeedback =
+        toFiniteNumber(feedbackData?.max_attempts) ??
+        toFiniteNumber(feedbackData?.maxAttempts) ??
+        toFiniteNumber(feedbackData?.attempt_limit);
+      if (isScoringComposition && attemptedCountFromFeedback !== undefined) {
+        setScoringStats((prev) => ({
+          ...prev,
+          attemptCount: Math.max(0, Math.floor(attemptedCountFromFeedback)),
+          ...(maxAttemptsFromFeedback !== undefined
+            ? { maxAttempts: Math.max(0, Math.floor(maxAttemptsFromFeedback)), isUnlimited: false }
+            : {}),
+        }));
+      }
       const hasFeedback = typeof feedbackData?.has_feedback === "boolean" ? feedbackData.has_feedback : true;
       const feedbackSource = readFirstString(feedbackData?.feedback_source);
       const hasAnyScoreSignal =
         toFiniteNumber(feedbackData?.score) !== undefined ||
+        toFiniteNumber(feedbackData?.score_given) !== undefined ||
         toFiniteNumber(feedbackData?.max_score) !== undefined ||
+        toFiniteNumber(feedbackData?.score_maximum) !== undefined ||
+        extractedFromFeedbackField.score !== undefined ||
+        extractedFromFeedbackField.maxScore !== undefined ||
         Boolean(feedbackData?.ai_score_result?.has_score) ||
         toFiniteNumber(feedbackData?.ai_score_result?.score) !== undefined;
       const hasScoringOnlySignal = Boolean(feedbackData?.scoring_only) || Boolean(feedbackData?.hide_structured_feedback_in_ui);
@@ -1057,26 +1242,36 @@ function QuestionWorkspace({
 
       const normalizedResult = normalizeFeedbackResult({
         ...feedbackData,
+        // For scoring compositions, keep feedback text visible in UI (score + explanation).
+        ...(isScoringComposition ? { hide_structured_feedback_in_ui: false } : {}),
         feedback: feedbackText || stringifyIfObject(feedbackData?.feedback),
       });
 
       if (typeof normalizedResult === "string") {
         setResult(normalizedResult);
       } else {
-        const explicitScore = toFiniteNumber((normalizedResult as any)?.score) ?? toFiniteNumber(feedbackData?.score);
-        const explicitMaxScore = toFiniteNumber((normalizedResult as any)?.max_score) ?? toFiniteNumber(feedbackData?.max_score);
-        const aiHasScore = Boolean(feedbackData?.ai_score_result?.has_score);
+        const explicitScore =
+          toFiniteNumber((normalizedResult as any)?.score) ??
+          toFiniteNumber(feedbackData?.score) ??
+          toFiniteNumber(feedbackData?.score_given) ??
+          extractedFromFeedbackField.score;
+        const explicitMaxScore =
+          toFiniteNumber((normalizedResult as any)?.max_score) ??
+          toFiniteNumber(feedbackData?.max_score) ??
+          toFiniteNumber(feedbackData?.score_maximum) ??
+          extractedFromFeedbackField.maxScore;
         const aiScore = toFiniteNumber(feedbackData?.ai_score_result?.score);
         const aiMaxScore = toFiniteNumber(feedbackData?.ai_score_result?.max_score);
+        const aiHasScore = Boolean(feedbackData?.ai_score_result?.has_score) || aiScore !== undefined;
         const effectiveExplicitScore = explicitScore ?? (aiHasScore ? aiScore : undefined);
         const effectiveExplicitMaxScore = explicitMaxScore ?? (aiHasScore ? aiMaxScore : undefined);
         if (effectiveExplicitScore !== undefined) {
           setResult({
             ...normalizedResult,
             score: effectiveExplicitScore,
-            max_score: effectiveExplicitMaxScore ?? 1,
+            max_score: effectiveExplicitMaxScore ?? (isScoringComposition ? questionScoreMaximum : 1),
           });
-        } else if (isMCQ) {
+        } else if (isMCQ && !isScoringComposition) {
           const selected = question.options[selectedOptionIndex ?? 0];
           const score = selected?.isCorrect ? 1 : 0;
           setResult({
@@ -1112,20 +1307,25 @@ function QuestionWorkspace({
           ? (normalizedResult as Record<string, unknown>)
           : null;
       const aiScoreCandidate = toFiniteNumber((feedbackData as any)?.ai_score_result?.score);
+      const aiScoreGivenCandidate = toFiniteNumber((feedbackData as any)?.ai_score_result?.score_given);
       const aiMaxScoreCandidate =
         toFiniteNumber((feedbackData as any)?.ai_score_result?.max_score) ??
         toFiniteNumber((feedbackData as any)?.ai_score_result?.score_maximum);
       const finalScore =
         toFiniteNumber(normalizedResultRecord?.score) ??
         toFiniteNumber((feedbackData as any)?.score) ??
+        toFiniteNumber((feedbackData as any)?.score_given) ??
+        extractedFromFeedbackField.score ??
         aiScoreCandidate ??
-        (selected ? (selected.isCorrect ? 1 : 0) : undefined);
+        aiScoreGivenCandidate ??
+        (!isScoringComposition && selected ? (selected.isCorrect ? 1 : 0) : undefined);
       const finalMaxScore =
         toFiniteNumber(normalizedResultRecord?.max_score) ??
         toFiniteNumber((feedbackData as any)?.max_score) ??
         toFiniteNumber((feedbackData as any)?.score_maximum) ??
+        extractedFromFeedbackField.maxScore ??
         aiMaxScoreCandidate ??
-        (finalScore !== undefined ? 1 : undefined);
+        (finalScore !== undefined ? (isScoringComposition ? questionScoreMaximum : 1) : undefined);
       const scoreGivenRaw =
         readFirstString(
           (feedbackData as any)?.score_given_raw,
@@ -1155,9 +1355,6 @@ function QuestionWorkspace({
         system_total_response_time: endTime - startTime,
       };
       await recordResultToDatabase(recordPayload);
-      if (normalizedCompositionId) {
-        await fetchSubmissionStats();
-      }
     } catch (error: any) {
       console.error("Failed to fetch feedback:", error);
       const detail = error?.response?.data?.detail ?? error?.detail ?? null;
@@ -1185,6 +1382,13 @@ function QuestionWorkspace({
       setReference(undefined);
       setImages(null);
     } finally {
+      if (normalizedCompositionId) {
+        try {
+          await fetchSubmissionStats();
+        } catch (statsRefreshError) {
+          console.error("Failed to refresh submission stats after submit:", statsRefreshError);
+        }
+      }
       setIsFeedbackLoading(false);
       setIsReferenceLoading(false);
       setIsImageLoading(false);
@@ -1252,7 +1456,7 @@ function QuestionWorkspace({
           onImageClick={() => {}}
           studentAnswer={answerText}
           showFeedback={true}
-          showReference={!shouldHideReferencePanel}
+          showReference={true}
           isFeedbackLoading={isFeedbackLoading}
           hasSubmitted={hasSubmitted}
           promptVersion={promptVersion}
@@ -1262,7 +1466,10 @@ function QuestionWorkspace({
           sessionId={sessionId}
           participantId={effectiveLearnerId || null}
           debugEnabled={debugModeEnabled}
-          debugData={debugLastFeedbackPayload}
+          debugData={{
+            feedback: debugLastFeedbackPayload,
+            submission_stats: debugLastSubmissionStatsPayload,
+          }}
         />
 
         <section className="z-1 order-1 col-span-11 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:order-2 lg:col-span-5 lg:sticky lg:top-[75px] lg:p-6">
@@ -1398,12 +1605,12 @@ function QuestionWorkspace({
                 </div>
                 {isScoringComposition ? (
                   <div className="mt-1">
-                    Best Score:{" "}
+                    Final Score:{" "}
                     <span className="font-semibold">
                       {isScoringStatsLoading
                         ? "..."
-                        : `${Number.isFinite(scoringStats.bestScore as number) ? scoringStats.bestScore : "-"} / ${
-                            Number.isFinite(scoringStats.bestScoreMax as number) ? scoringStats.bestScoreMax : "-"
+                        : `${Number.isFinite(scoringStats.firstAttemptScore as number) ? scoringStats.firstAttemptScore : "-"} / ${
+                            questionScoreMaximum
                           }`}
                     </span>
                   </div>
