@@ -398,6 +398,15 @@ def _format_max_score_for_prompt(max_score: float) -> str:
     return str(round(max_score, 4))
 
 
+def _default_max_score_for_question_type(question_type: str) -> float:
+    q = (question_type or "").strip().lower()
+    if q == "single_choice":
+        return 1.0
+    if q in {"free_text", "essay", "open-ended", "open_ended"}:
+        return 2.0
+    return 1.0
+
+
 def _load_question_prompt_context(db, question_version_id: str) -> dict[str, Any]:
     row = db.execute(
         text(
@@ -411,10 +420,14 @@ def _load_question_prompt_context(db, question_version_id: str) -> dict[str, Any
         {"question_version_id": question_version_id},
     ).mappings().first()
     if not row:
-        return {"question_type": "open-ended", "max_score": 1.0}
+        return {"question_type": "open-ended", "max_score": 2.0}
 
     question_type = str(row.get("question_type") or "open-ended")
-    score_maximum = float(row.get("score_maximum") or 1)
+    raw_score_maximum = row.get("score_maximum")
+    if raw_score_maximum is None:
+        score_maximum = _default_max_score_for_question_type(question_type)
+    else:
+        score_maximum = float(raw_score_maximum)
     return {"question_type": question_type, "max_score": score_maximum}
 
 
@@ -422,17 +435,19 @@ def _human_question_type_label(question_type: str) -> str:
     q = (question_type or "").strip().lower()
     if q in {"single_choice", "multi_choice", "dropdown", "true_false"}:
         return "multiple-choice"
-    if q in {"free_text", "essay"}:
+    if q in {"free_text", "essay", "open-ended", "open_ended"}:
         return "open-ended"
     return "open-ended"
 
 
 def _score_hint_for_question_type(question_type: str, max_score: float) -> str:
     q = (question_type or "").strip().lower()
-    if q in {"single_choice", "multi_choice", "dropdown", "true_false", "free_text"}:
+    if q in {"single_choice", "multi_choice", "dropdown", "true_false"}:
         return "[0 for incorrect, 1 for correct]"
+    if q in {"free_text", "essay", "open-ended", "open_ended"} and abs(float(max_score) - 2.0) < 1e-9:
+        return "[0 for incorrect, 1 for partially correct, 2 for correct]"
     if abs(float(max_score) - 2.0) < 1e-9:
-        return "[0 for incorrect, 1 for correct, 2 for partially correct]"
+        return "[Numeric score from 0 to 2]"
     return f"[Numeric score from 0 to { _format_max_score_for_prompt(float(max_score)) }]"
 
 
@@ -553,6 +568,8 @@ def _resolve_retrieved_slide_pages(
         text_value = (page.get("text") or "").strip()
         content_value = image_text_value or text_value or "none"
         row = {
+            "slide_id": page.get("slide_id"),
+            "slide_google_id": page.get("slide_google_id"),
             "slide_title": page.get("slide_title"),
             "page_number": (
                 int(page["page_number"]) + 1
@@ -798,6 +815,9 @@ def _generate_feedback_text_from_context(
         "resolved_input_values": effective_input_values,
         "resolved_system_prompt": system_prompt,
         "resolved_user_text": user_text,
+        "resolved_question_type": question_type,
+        "resolved_max_score": max_score,
+        "resolved_score_hint": score_hint,
     }
     return generated, debug_payload
 
@@ -914,6 +934,9 @@ def resolve_feedback_prompt_for_feedback_link(
             "resolved_input_values": effective_input_values,
             "resolved_system_prompt": system_prompt,
             "resolved_user_text": user_text,
+            "resolved_question_type": question_type,
+            "resolved_max_score": max_score,
+            "resolved_score_hint": score_hint,
         }
 
 

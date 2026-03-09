@@ -393,7 +393,8 @@ def _compose_reference_from_retrieved_pages(
 
     content = str(first_page.get("content") or "").strip()
     embed_url = slide_scope_item.get("most_relevant_slide_embed_url")
-    slide_google_id = str(slide_scope_item.get("slide_google_id") or "").strip()
+    slide_google_id = str(first_page.get("slide_google_id") or slide_scope_item.get("slide_google_id") or "").strip()
+    slide_id = first_page.get("slide_id") or slide_scope_item.get("slide_id")
     computed_slide_embed_url: str | None = None
     computed_slide_open_url: str | None = None
     computed_slide_object_id: str | None = None
@@ -428,7 +429,7 @@ def _compose_reference_from_retrieved_pages(
         "page_number": (page_number_int if page_number_int is not None else -1),
         "most_relevant_page_number": page_number_int,
         "slide_total_pages": slide_scope_item.get("slide_total_pages"),
-        "slide_id": slide_scope_item.get("slide_id"),
+        "slide_id": slide_id,
         "slide_google_id": slide_google_id or slide_scope_item.get("slide_google_id"),
         "most_relevant_slide_embed_url": resolved_embed_url,
         "slide_embed_url": resolved_embed_url,
@@ -441,6 +442,58 @@ def _compose_reference_from_retrieved_pages(
         "computed_slide_embed_url": computed_slide_embed_url,
         "computed_slide_open_url": computed_slide_open_url,
         "computed_slide_url_error": computed_slide_url_error,
+    }
+
+
+def _fallback_retrieved_pages_from_question_scope(
+    *,
+    db: Session,
+    question_id: str,
+) -> list[dict[str, Any]]:
+    question = _question_row(db, question_id)
+    current_version_id = str(question.get("current_version_id") or "") if question else ""
+    if not current_version_id:
+        return []
+    detail = get_semantic_question_version_detail(db, current_version_id)
+    scopes = (detail or {}).get("slide_scope") if isinstance(detail, dict) else None
+    if not isinstance(scopes, list):
+        return []
+    for item in scopes:
+        if not isinstance(item, dict):
+            continue
+        page_no = item.get("most_relevant_page_number")
+        try:
+            page_no_int = int(page_no) if page_no is not None else None
+        except Exception:
+            page_no_int = None
+        if page_no_int is None or page_no_int < 1:
+            continue
+        return [
+            {
+                "slide_id": item.get("slide_id"),
+                "slide_google_id": item.get("slide_google_id"),
+                "slide_title": item.get("slide_title"),
+                "page_number": page_no_int,
+                "content": "",
+            }
+        ]
+    return []
+
+
+def _empty_reference_payload() -> dict[str, Any]:
+    return {
+        "text": "",
+        "image_text": "",
+        "display": "",
+        "page_number": -1,
+        "most_relevant_page_number": None,
+        "slide_total_pages": None,
+        "slide_id": None,
+        "slide_google_id": None,
+        "most_relevant_slide_embed_url": None,
+        "slide_embed_url": None,
+        "most_relevant_slide_embed_url_error": None,
+        "slide_title": "",
     }
 
 
@@ -1532,7 +1585,7 @@ def _resolve_runtime_attempt_stats(
     learner_id: str,
     question_id: str,
     composition_id: str | None = None,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     try:
         row = db.execute(
             text(
@@ -1544,7 +1597,9 @@ def _resolve_runtime_attempt_stats(
                       WHEN COALESCE(score_maximum, 0) > 0
                        AND COALESCE(score_given, 0) >= COALESCE(score_maximum, 0)
                       THEN 1 ELSE 0 END
-                  ), 0)::INT AS correct_count
+                  ), 0)::INT AS correct_count,
+                  MAX(score_given) AS best_score,
+                  MAX(score_maximum) AS best_score_max
                 FROM feedback_record_result
                 WHERE question_id = :question_id
                   AND participant_id = :learner_id
@@ -1567,7 +1622,9 @@ def _resolve_runtime_attempt_stats(
                       WHEN COALESCE(score_maximum, 0) > 0
                        AND COALESCE(score_given, 0) >= COALESCE(score_maximum, 0)
                       THEN 1 ELSE 0 END
-                  ), 0)::INT AS correct_count
+                  ), 0)::INT AS correct_count,
+                  MAX(score_given) AS best_score,
+                  MAX(score_maximum) AS best_score_max
                 FROM feedback_record_result
                 WHERE question_id = :question_id
                   AND participant_id = :learner_id
@@ -1577,10 +1634,140 @@ def _resolve_runtime_attempt_stats(
         ).mappings().first()
     attempted = int(row["attempted_count"] or 0) if row else 0
     correct = int(row["correct_count"] or 0) if row else 0
+    best_score = _safe_float((row or {}).get("best_score"))
+    best_score_max = _safe_float((row or {}).get("best_score_max"))
+
+    question_score_maximum = None
+    if question_id.startswith("qn_"):
+        question_row = db.execute(
+            text(
+                """
+                SELECT qv.score_maximum, qv.question_type
+                FROM content_question q
+                JOIN content_question_version qv ON qv.question_version_id = q.current_version_id
+                WHERE q.question_id = :question_id
+                LIMIT 1
+                """
+            ),
+            {"question_id": question_id},
+        ).mappings().first()
+        if question_row:
+            question_score_maximum = _safe_float(question_row.get("score_maximum"))
+            if question_score_maximum is None:
+                qtype = str(question_row.get("question_type") or "").strip().lower()
+                if qtype == "single_choice":
+                    question_score_maximum = 1.0
+                elif qtype in {"free_text", "essay"}:
+                    question_score_maximum = 2.0
+
+    has_scoring = False
+    is_unlimited = True
+    max_attempts: int | None = None
+    attempt_time_limit_seconds: int | None = None
+    if composition_id:
+        comp_columns = {
+            str(c)
+            for c in db.execute(
+                text(
+                    """
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = current_schema()
+                      AND table_name = 'feedback_compositions'
+                    """
+                )
+            ).scalars().all()
+        }
+        score_flag_cols = [
+            "is_scoring",
+            "if_score",
+            "scoring_enabled",
+            "has_scoring",
+            "enable_scoring",
+            "score_enabled",
+        ]
+        unlimited_cols = ["is_unlimited", "unlimited_attempts"]
+        max_attempt_candidates = ["max_attempts", "attempt_limit", "attempts_limit"]
+        time_limit_candidates = [
+            "attempt_time_limit_seconds",
+            "attempt_time_limit_sec",
+            "attempt_time_limit",
+            "time_limit_seconds",
+            "time_limit_sec",
+        ]
+        selectable = [
+            c
+            for c in [*score_flag_cols, *unlimited_cols, *max_attempt_candidates, *time_limit_candidates]
+            if c in comp_columns
+        ]
+        if selectable:
+            comp_row = db.execute(
+                text(
+                    f"""
+                    SELECT {", ".join(selectable)}
+                    FROM feedback_compositions
+                    WHERE composition_id = :composition_id
+                    LIMIT 1
+                    """
+                ),
+                {"composition_id": composition_id},
+            ).mappings().first()
+        else:
+            comp_row = None
+
+        if comp_row:
+            for col in score_flag_cols:
+                if col in comp_row and comp_row.get(col) is not None:
+                    has_scoring = bool(comp_row.get(col))
+                    break
+            for col in unlimited_cols:
+                if col in comp_row and comp_row.get(col) is not None:
+                    is_unlimited = bool(comp_row.get(col))
+                    break
+            for col in max_attempt_candidates:
+                value = comp_row.get(col)
+                if value is None:
+                    continue
+                try:
+                    max_attempts = int(value)
+                except Exception:
+                    max_attempts = None
+                break
+            for col in time_limit_candidates:
+                value = comp_row.get(col)
+                if value is None:
+                    continue
+                try:
+                    attempt_time_limit_seconds = int(value)
+                except Exception:
+                    attempt_time_limit_seconds = None
+                break
+        if has_scoring and max_attempts is None:
+            max_attempts = 3
+        if not has_scoring:
+            is_unlimited = True
+
+    remaining_attempts = None
+    if max_attempts is not None:
+        remaining_attempts = max(max_attempts - attempted, 0)
+
+    resolved_max_score = question_score_maximum
     return {
         "attempted_count": attempted,
+        "attempt_count": attempted,
         "correct_count": correct,
         "wrong_count": max(attempted - correct, 0),
+        "best_score": best_score,
+        "best_score_max": best_score_max,
+        "max_score": resolved_max_score,
+        "maxScore": resolved_max_score,
+        "score_maximum": resolved_max_score,
+        "max_attempts": max_attempts,
+        "remaining_attempts": remaining_attempts,
+        "is_unlimited": is_unlimited,
+        "attempt_time_limit_seconds": attempt_time_limit_seconds,
+        "attempt_time_limit": attempt_time_limit_seconds,
+        "attemptTimeLimit": attempt_time_limit_seconds,
     }
 
 
@@ -3191,6 +3378,7 @@ def get_question_feedback(
                     if latest_feedback.get("structured_feedback_text") is not None
                     else None
                 )
+                latest_score = _extract_score_from_generated_feedback(latest_static or latest_structured)
                 if latest_static or latest_structured:
                     retrieved_pages: list[dict[str, Any]] = []
                     latest_feedback_link_id = (
@@ -3198,6 +3386,13 @@ def get_question_feedback(
                         if latest_feedback.get("feedback_link_id") is not None
                         else None
                     )
+                    if slide_mode == "most_relevant_slide_page" and not latest_feedback_link_id:
+                        latest_feedback_link_id = _runtime_feedback_link_id_for_agent(
+                            db,
+                            question_version_id=current_version_id,
+                            agent_id=resolved_agent_id,
+                            selected_option_id=selected_option_id,
+                        )
                     if slide_mode == "most_relevant_slide_page" and latest_feedback_link_id:
                         resolved_prompt = resolve_feedback_prompt_for_feedback_link(
                             latest_feedback_link_id,
@@ -3242,6 +3437,9 @@ def get_question_feedback(
                         "lti_launch_id": payload.lti_launch_id or payload.launch_id,
                         "feedback": latest_structured or latest_static,
                         "has_feedback": bool(latest_static or latest_structured),
+                        "score": latest_score.get("score"),
+                        "max_score": latest_score.get("max_score"),
+                        "maxScore": latest_score.get("max_score"),
                         "feedback_source": "latest_version_static",
                         "resolved_selected_option_id": selected_option_id,
                         "selected_option_index_payload": payload.selected_option_index,
@@ -3255,14 +3453,18 @@ def get_question_feedback(
                         "latest_feedback_revision_no": latest_revision_no,
                     }
                     if slide_mode == "most_relevant_slide_page":
+                        if not retrieved_pages:
+                            retrieved_pages = _fallback_retrieved_pages_from_question_scope(
+                                db=db,
+                                question_id=question_id,
+                            )
                         quick_result["most_relevant_slide_pages"] = retrieved_pages
                         reference = _compose_reference_from_retrieved_pages(
                             db=db,
                             question_id=question_id,
                             retrieved_pages=retrieved_pages,
                         )
-                        if reference is not None:
-                            quick_result["reference"] = reference
+                        quick_result["reference"] = reference if reference is not None else _empty_reference_payload()
                     return quick_result
 
             agent_payload = AttachedAgentFeedbackRequest.model_validate(
@@ -3298,6 +3500,9 @@ def get_question_feedback(
             )
             db.commit()
             feedback_text = _compose_feedback_text_for_client(result)
+            extracted_score = _extract_score_from_generated_feedback(
+                result.get("static_feedback_text") or feedback_text
+            )
             result.update(
                 {
                     "mode": "composition",
@@ -3319,6 +3524,9 @@ def get_question_feedback(
                     "lti_launch_id": payload.lti_launch_id or payload.launch_id,
                     "feedback": feedback_text,
                     "has_feedback": bool(feedback_text),
+                    "score": extracted_score.get("score"),
+                    "max_score": extracted_score.get("max_score"),
+                    "maxScore": extracted_score.get("max_score"),
                     "feedback_source": "runtime_generate",
                 }
             )
@@ -3329,14 +3537,18 @@ def get_question_feedback(
                     raw_pages = resolved_input_values.get("retrieved_slide_pages")
                     if isinstance(raw_pages, list):
                         retrieved_pages = [item for item in raw_pages if isinstance(item, dict)]
+                if not retrieved_pages:
+                    retrieved_pages = _fallback_retrieved_pages_from_question_scope(
+                        db=db,
+                        question_id=question_id,
+                    )
                 result["most_relevant_slide_pages"] = retrieved_pages
                 reference = _compose_reference_from_retrieved_pages(
                     db=db,
                     question_id=question_id,
                     retrieved_pages=retrieved_pages,
                 )
-                if reference is not None:
-                    result["reference"] = reference
+                result["reference"] = reference if reference is not None else _empty_reference_payload()
             result.pop("resolved_input_values", None)
             result.pop("resolved_system_prompt", None)
             result.pop("resolved_user_text", None)

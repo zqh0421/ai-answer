@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import datetime, timezone
 from urllib.parse import parse_qsl, urlsplit
 
@@ -25,6 +26,7 @@ _NON_LTI_LEARNER_SENTINELS = {
     "null",
     "undefined",
 }
+_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 
 
 def _resolve_mcq_score(db: Session, question_id: str, answer: str) -> tuple[float, float] | None:
@@ -100,6 +102,53 @@ def _resolve_mcq_selected_option_id(db: Session, question_id: str, answer: str) 
         if str(row.get("option_value") or "").strip() == normalized_answer:
             return str(row["interaction_option_id"])
     return None
+
+
+def _safe_float(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_score_pair_from_feedback_text(feedback: object) -> tuple[float | None, float | None]:
+    if feedback is None:
+        return None, None
+    raw = str(feedback).strip()
+    if not raw:
+        return None, None
+
+    candidate = raw
+    fenced = _JSON_FENCE_RE.search(raw)
+    if fenced:
+        candidate = fenced.group(1).strip()
+
+    obj = None
+    try:
+        parsed = json.loads(candidate)
+        if isinstance(parsed, dict):
+            obj = parsed
+    except Exception:
+        start = candidate.find("{")
+        end = candidate.rfind("}")
+        if start >= 0 and end > start:
+            try:
+                parsed = json.loads(candidate[start : end + 1])
+                if isinstance(parsed, dict):
+                    obj = parsed
+            except Exception:
+                obj = None
+
+    if not isinstance(obj, dict):
+        return None, None
+
+    score = _safe_float(obj.get("score"))
+    max_score = _safe_float(obj.get("max_score"))
+    if max_score is None:
+        max_score = _safe_float(obj.get("score_maximum"))
+    return score, max_score
 
 
 def _extract_lti_context_from_request(request: Request) -> dict[str, str]:
@@ -403,6 +452,90 @@ def _resolve_composition_scoring_config(
     return True, False
 
 
+def _resolve_composition_limits(db: Session, *, composition_id: str) -> dict[str, int | None]:
+    columns = _feedback_compositions_columns(db)
+    max_attempt_candidates = ["max_attempts", "attempt_limit", "attempts_limit"]
+    time_limit_candidates = [
+        "attempt_time_limit_seconds",
+        "attempt_time_limit_sec",
+        "attempt_time_limit",
+        "time_limit_seconds",
+        "time_limit_sec",
+    ]
+    selectable = [c for c in [*max_attempt_candidates, *time_limit_candidates] if c in columns]
+    if not selectable:
+        return {"max_attempts": None, "attempt_time_limit_seconds": None}
+
+    row = db.execute(
+        text(
+            f"""
+            SELECT {", ".join(selectable)}
+            FROM feedback_compositions
+            WHERE composition_id = :composition_id
+            LIMIT 1
+            """
+        ),
+        {"composition_id": composition_id},
+    ).mappings().first()
+    if not row:
+        return {"max_attempts": None, "attempt_time_limit_seconds": None}
+
+    max_attempts = None
+    for col in max_attempt_candidates:
+        value = row.get(col)
+        if value is None:
+            continue
+        try:
+            max_attempts = int(value)
+        except Exception:
+            max_attempts = None
+        break
+
+    attempt_time_limit_seconds = None
+    for col in time_limit_candidates:
+        value = row.get(col)
+        if value is None:
+            continue
+        try:
+            attempt_time_limit_seconds = int(value)
+        except Exception:
+            attempt_time_limit_seconds = None
+        break
+
+    return {"max_attempts": max_attempts, "attempt_time_limit_seconds": attempt_time_limit_seconds}
+
+
+def _resolve_question_score_maximum(db: Session, *, question_id: str) -> float | None:
+    if not question_id.startswith("qn_"):
+        return None
+    row = db.execute(
+        text(
+            """
+            SELECT qv.score_maximum, qv.question_type
+            FROM content_question q
+            JOIN content_question_version qv ON qv.question_version_id = q.current_version_id
+            WHERE q.question_id = :question_id
+            LIMIT 1
+            """
+        ),
+        {"question_id": question_id},
+    ).mappings().first()
+    if not row:
+        return None
+    raw = row.get("score_maximum")
+    if raw is None:
+        qtype = str(row.get("question_type") or "").strip().lower()
+        if qtype == "single_choice":
+            return 1.0
+        if qtype in {"free_text", "essay"}:
+            return 2.0
+        return None
+    try:
+        return float(raw)
+    except Exception:
+        return None
+
+
 def _feedback_record_result_timestamp_column(db: Session) -> str | None:
     cols = db.execute(
         text(
@@ -637,8 +770,17 @@ def record_result(
             raise HTTPException(status_code=400, detail="semantic question current_version_id not found")
 
         inferred_score = _resolve_mcq_score(db, result.question_id, result.answer)
-        score_given = result.score_given if result.score_given is not None else (inferred_score[0] if inferred_score else None)
-        score_maximum = result.score_maximum if result.score_maximum is not None else (inferred_score[1] if inferred_score else None)
+        parsed_feedback_score, parsed_feedback_max = _extract_score_pair_from_feedback_text(result.feedback)
+        score_given = (
+            result.score_given
+            if result.score_given is not None
+            else (inferred_score[0] if inferred_score else parsed_feedback_score)
+        )
+        score_maximum = (
+            result.score_maximum
+            if result.score_maximum is not None
+            else (inferred_score[1] if inferred_score else parsed_feedback_max)
+        )
         _ensure_feedback_record_result_composition_column(db)
         previous_attempts = db.execute(
             text(
@@ -837,24 +979,106 @@ def get_submission_stats(
                 "composition_id": normalized_composition_id,
             },
         ).mappings().first()
+        first_attempt_row = db.execute(
+            text(
+                """
+                SELECT
+                  MAX(score_given) AS score_given,
+                  MAX(score_maximum) AS score_maximum
+                FROM feedback_record_result
+                WHERE participant_id = :learner_id
+                  AND question_id = :question_id
+                  AND composition_id = :composition_id
+                  AND attempt_count = (
+                    SELECT MIN(fr2.attempt_count)
+                    FROM feedback_record_result fr2
+                    WHERE fr2.participant_id = :learner_id
+                      AND fr2.question_id = :question_id
+                      AND fr2.composition_id = :composition_id
+                      AND fr2.attempt_count IS NOT NULL
+                  )
+                """
+            ),
+            {
+                "learner_id": normalized_learner_id,
+                "question_id": normalized_question_id,
+                "composition_id": normalized_composition_id,
+            },
+        ).mappings().first()
+        latest_attempt_order_by = "attempt_count DESC, record_result_id DESC"
+        if timestamp_col:
+            latest_attempt_order_by = f"attempt_count DESC, {timestamp_col} DESC, record_result_id DESC"
+        latest_attempt_row = db.execute(
+            text(
+                f"""
+                SELECT score_given, score_maximum
+                FROM feedback_record_result
+                WHERE participant_id = :learner_id
+                  AND question_id = :question_id
+                  AND composition_id = :composition_id
+                ORDER BY {latest_attempt_order_by}
+                LIMIT 1
+                """
+            ),
+            {
+                "learner_id": normalized_learner_id,
+                "question_id": normalized_question_id,
+                "composition_id": normalized_composition_id,
+            },
+        ).mappings().first()
 
         attempt_count = int((stats_row or {}).get("attempt_count") or 0)
         best_score_raw = (stats_row or {}).get("best_score")
         best_score_max_raw = (stats_row or {}).get("best_score_max")
+        first_attempt_score_raw = (first_attempt_row or {}).get("score_given")
+        first_attempt_score_max_raw = (first_attempt_row or {}).get("score_maximum")
+        latest_attempt_score_raw = (latest_attempt_row or {}).get("score_given")
+        latest_attempt_score_max_raw = (latest_attempt_row or {}).get("score_maximum")
         updated_at_value = (stats_row or {}).get("latest_ts") or (stats_row or {}).get("now_ts")
-        best_score_max = float(best_score_max_raw) if best_score_max_raw is not None and has_scoring else None
+        best_score_max = float(best_score_max_raw) if best_score_max_raw is not None else None
+        first_attempt_score = float(first_attempt_score_raw) if first_attempt_score_raw is not None else None
+        first_attempt_score_max = (
+            float(first_attempt_score_max_raw) if first_attempt_score_max_raw is not None else None
+        )
+        latest_attempt_score = float(latest_attempt_score_raw) if latest_attempt_score_raw is not None else None
+        latest_attempt_score_max = (
+            float(latest_attempt_score_max_raw) if latest_attempt_score_max_raw is not None else None
+        )
+        composition_limits = _resolve_composition_limits(db, composition_id=normalized_composition_id)
+        configured_max_attempts = composition_limits.get("max_attempts")
+        max_attempts = configured_max_attempts if configured_max_attempts is not None else (3 if has_scoring else None)
+        attempt_time_limit_seconds = composition_limits.get("attempt_time_limit_seconds")
+        question_score_maximum = _resolve_question_score_maximum(db, question_id=normalized_question_id)
+        resolved_max_score = question_score_maximum
+        remaining_attempts = None
+        if max_attempts is not None:
+            remaining_attempts = max(int(max_attempts) - max(attempt_count, 0), 0)
 
         return {
             "learner_id": normalized_learner_id,
             "question_id": normalized_question_id,
             "composition_id": normalized_composition_id,
             "attempt_count": max(attempt_count, 0),
-            "max_attempts": (3 if has_scoring else None),
+            "attempted_count": max(attempt_count, 0),
+            "max_attempts": max_attempts,
+            "remaining_attempts": remaining_attempts,
             "is_unlimited": (not has_scoring),
-            "best_score": (float(best_score_raw) if best_score_raw is not None and has_scoring else None),
-            "best_score_max": best_score_max,
-            "max_score": best_score_max,
-            "score_maximum": best_score_max,
+            "best_score": (float(best_score_raw) if best_score_raw is not None else None),
+            "best_score_max": resolved_max_score,
+            "first_attempt_score": first_attempt_score,
+            "firstAttemptScore": first_attempt_score,
+            "first_attempt_score_max": (resolved_max_score if first_attempt_score is not None else first_attempt_score_max),
+            "latest_score": latest_attempt_score,
+            "latestScore": latest_attempt_score,
+            "final_score": latest_attempt_score,
+            "finalScore": latest_attempt_score,
+            "latest_score_max": (resolved_max_score if latest_attempt_score is not None else latest_attempt_score_max),
+            "max_score": resolved_max_score,
+            "maxScore": resolved_max_score,
+            "score_maximum": resolved_max_score,
+            "attempt_time_limit_seconds": attempt_time_limit_seconds,
+            "attempt_time_limit": attempt_time_limit_seconds,
+            "attemptTimeLimit": attempt_time_limit_seconds,
             "updated_at": _to_iso_utc(updated_at_value),
         }
     except HTTPException:
