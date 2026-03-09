@@ -4573,11 +4573,7 @@ const QuestionOverview = () => {
                                     ? `, existing-human-feedback: ${batchUpdateExistingHumanFeedback ? "on" : "off"}`
                                     : ""
                                 }]`
-                              : batchUploadMode === "update_existing"
-                                ? `update question version + rebind existing agents (existing-human-feedback: ${
-                                    batchUpdateExistingHumanFeedback ? "on" : "off"
-                                  })`
-                                : "create question only (feedback ignored)"}
+                              : "create question only (feedback ignored)"}
                           </div>
                           {draft.kind === "mcq" ? (
                             <div className="mt-2 space-y-1 rounded-md border border-slate-100 bg-slate-50 p-2 text-xs">
