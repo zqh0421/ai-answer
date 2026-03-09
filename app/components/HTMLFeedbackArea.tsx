@@ -258,6 +258,14 @@ const HTMLFeedbackArea: React.FC<HTMLFeedbackAreaProps> = ({
   };
 
   const iconStyle = getIconStyle();
+  const hasScore =
+    (typeof score === "number" && Number.isFinite(score)) ||
+    (typeof score === "string" && score.trim() !== "" && Number.isFinite(Number(score)));
+  const normalizedScore =
+    typeof score === "number" ? score : typeof score === "string" && score.trim() ? Number(score) : NaN;
+  const normalizedMaxScore =
+    typeof maxScore === "number" ? maxScore : typeof maxScore === "string" && maxScore.trim() ? Number(maxScore) : NaN;
+  const shouldRenderFeedbackCard = ((html && !isFeedbackLoading) || (isStreaming && html) || hasScore);
 
   return (
     <div className="">
@@ -273,7 +281,14 @@ const HTMLFeedbackArea: React.FC<HTMLFeedbackAreaProps> = ({
         </div>
       </div>
 
-      {(html && !isFeedbackLoading) || (isStreaming && html) ? (
+      {isFeedbackLoading && !isStreaming ? (
+        <div className="flex items-center justify-center py-8">
+          <div className="flex items-center gap-2 text-slate-600">
+            <Loader2 className="w-4 h-4 animate-spin" />
+            <span className="text-sm">{"Preparing feedback..."}</span>
+          </div>
+        </div>
+      ) : shouldRenderFeedbackCard ? (
         <div className="p-6 bg-gradient-to-br from-slate-50 to-blue-50 rounded-xl border border-slate-200 shadow-sm relative">
           <div className="flex items-start gap-3 mb-4">
             <div
@@ -289,8 +304,13 @@ const HTMLFeedbackArea: React.FC<HTMLFeedbackAreaProps> = ({
                     {html}
                     <span className="inline-block w-2 h-5 bg-blue-500 ml-1 animate-pulse"></span>
                   </span>
-                ) : (
+                ) : html ? (
                   renderHTMLFeedback(html)
+                ) : (
+                  <span className="text-slate-500">
+                    Score: {Number.isFinite(normalizedScore) ? normalizedScore : "-"} /{" "}
+                    {Number.isFinite(normalizedMaxScore) ? normalizedMaxScore : "-"}
+                  </span>
                 )}
               </div>
             </div>
@@ -338,7 +358,7 @@ const HTMLFeedbackArea: React.FC<HTMLFeedbackAreaProps> = ({
             </div>
           )}
         </div>
-      ) : isFeedbackLoading || isStreaming ? (
+      ) : isStreaming ? (
         <div className="flex items-center justify-center py-8">
           <div className="flex items-center gap-2 text-slate-600">
             <Loader2 className="w-4 h-4 animate-spin" />

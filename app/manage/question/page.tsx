@@ -1037,6 +1037,7 @@ type BatchUploadParsedDraft = {
   kind: "notebook" | "mcq";
   stem: string;
   lo?: string;
+  targetQuestionId?: string;
   slideIds: string[];
   questionFeedbackText?: string;
   choices?: string[];
@@ -1065,6 +1066,7 @@ type BatchUploadFieldMapping = {
   kindKey: string;
   kindNotebookValue: string;
   kindMcqValue: string;
+  questionIdKey: string;
   stemKey: string;
   loKey: string;
   slideIdsKey: string;
@@ -1074,11 +1076,13 @@ type BatchUploadFieldMapping = {
   optionFeedbackPrefix: string;
 };
 type BatchUploadWizardStep = 1 | 2 | 3 | 4;
+type BatchUploadMode = "create" | "update_existing";
 
 const DEFAULT_BATCH_UPLOAD_FIELD_MAPPING: BatchUploadFieldMapping = {
   kindKey: "customelement",
   kindNotebookValue: "notebook",
   kindMcqValue: "mcq",
+  questionIdKey: "question_id",
   stemKey: "stem",
   loKey: "lo",
   slideIdsKey: "slide_ids",
@@ -1107,7 +1111,8 @@ const parseImageRefsFromMarkdown = (markdown: string) => {
 
 const buildContentBlocksFromStem = (stem: string, imageMap: Record<string, string>): ContentBlockDraft[] => {
   const blocks: ContentBlockDraft[] = [];
-  const parts = stem
+  const normalizedStem = stem.replace(/<br\s*\/?>/gi, "\n\n");
+  const parts = normalizedStem
     .split(/\r?\n\r?\n+/)
     .map((item) => item.trim())
     .filter(Boolean);
@@ -1216,6 +1221,7 @@ const parseBatchMarkdownToDrafts = (
   const kindKey = norm(mapping.kindKey);
   const stemKey = norm(mapping.stemKey);
   const loKey = norm(mapping.loKey);
+  const questionIdKey = norm(mapping.questionIdKey);
   const slideIdsKey = norm(mapping.slideIdsKey);
   const questionFeedbackKey = norm(mapping.questionFeedbackKey);
   const correctKey = norm(mapping.correctKey);
@@ -1275,6 +1281,9 @@ const parseBatchMarkdownToDrafts = (
     const stem = String(table[stemKey] ?? "").trim();
     if (!stem) continue;
     const lo = String(table[loKey] ?? "").trim() || undefined;
+    const targetQuestionId = String(
+      table[questionIdKey] ?? table["question_id"] ?? table["questionid"] ?? table["id"] ?? ""
+    ).trim() || undefined;
     const slideIds = parseSlideIds(table);
     const contentBlocks = buildContentBlocksFromStem(stem, imageMap);
 
@@ -1284,6 +1293,7 @@ const parseBatchMarkdownToDrafts = (
         kind: "notebook",
         stem,
         lo,
+        targetQuestionId,
         slideIds,
         questionFeedbackText: feedback || undefined,
         contentBlocks,
@@ -1317,6 +1327,7 @@ const parseBatchMarkdownToDrafts = (
       kind: "mcq",
       stem,
       lo,
+      targetQuestionId,
       slideIds,
       choices,
       optionFeedbacks: feedbacks,
@@ -1357,6 +1368,16 @@ const readSlideTotalPages = (slide: Slide | null | undefined): number | null => 
   }
   return null;
 };
+
+const normalizeFuzzyText = (value: unknown): string =>
+  String(value ?? "")
+    .toLowerCase()
+    .replace(/<br\s*\/?>/gi, " ")
+    .replace(/[^a-z0-9\u4e00-\u9fff]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const tokenizeFuzzyText = (value: string): string[] => value.split(" ").map((x) => x.trim()).filter(Boolean);
 
 const QuestionOverview = () => {
   const [questions, setQuestions] = useState<Question[]>([]);
@@ -1407,6 +1428,8 @@ const QuestionOverview = () => {
   const [isAttachingAgent, setIsAttachingAgent] = useState(false);
   const [isBatchUploadModalOpen, setIsBatchUploadModalOpen] = useState(false);
   const [batchMarkdownContent, setBatchMarkdownContent] = useState("");
+  const [batchUploadMode, setBatchUploadMode] = useState<BatchUploadMode>("create");
+  const [batchUpdateExistingHumanFeedback, setBatchUpdateExistingHumanFeedback] = useState(false);
   const [batchAttachedAgents, setBatchAttachedAgents] = useState<BatchAttachedAgentConfig[]>([]);
   const [batchAttachAgentCandidateId, setBatchAttachAgentCandidateId] = useState("");
   const [batchUploadError, setBatchUploadError] = useState<string | null>(null);
@@ -1419,6 +1442,7 @@ const QuestionOverview = () => {
   const [batchUploadMapping, setBatchUploadMapping] = useState<BatchUploadFieldMapping>(
     DEFAULT_BATCH_UPLOAD_FIELD_MAPPING
   );
+  const [batchTargetQuestionSelections, setBatchTargetQuestionSelections] = useState<Record<number, string>>({});
   const [isBatchSlideMatchModalOpen, setIsBatchSlideMatchModalOpen] = useState(false);
   const [batchSlideMatchTargetIndices, setBatchSlideMatchTargetIndices] = useState<number[]>([]);
   const [batchSlideMatchCursor, setBatchSlideMatchCursor] = useState(0);
@@ -1946,6 +1970,10 @@ const QuestionOverview = () => {
     () => questions.filter((question) => selectedQuestionIds.has(question.question_id)),
     [questions, selectedQuestionIds]
   );
+  const questionById = useMemo(
+    () => new Map(questions.map((question) => [String(question.question_id), question])),
+    [questions]
+  );
   const selectedFilteredCount = filteredQuestionIds.filter((id) => selectedQuestionIds.has(id)).length;
   const allFilteredSelected = filteredQuestionIds.length > 0 && selectedFilteredCount === filteredQuestionIds.length;
   const selectedPageCount = pagedQuestionIds.filter((id) => selectedQuestionIds.has(id)).length;
@@ -2158,6 +2186,57 @@ const QuestionOverview = () => {
     () => parseBatchMarkdownToDrafts(batchMarkdownContent, batchUploadMapping),
     [batchMarkdownContent, batchUploadMapping]
   );
+  const fuzzyQuestionMatchesByDraftIndex = useMemo(() => {
+    return parsedBatchDrafts.map((draft) => {
+      const sourceText = normalizeFuzzyText(draft.stem);
+      const sourceTokens = new Set(tokenizeFuzzyText(sourceText));
+      if (!sourceText || sourceTokens.size === 0) {
+        return {
+          best: null as { questionId: string; score: number } | null,
+          topCandidates: [] as Array<{ questionId: string; score: number }>,
+        };
+      }
+
+      const scored = questions
+        .map((question) => {
+          const previewText = normalizeFuzzyText(getQuestionTextPreview(question));
+          if (!previewText) return null;
+          const questionTokens = new Set(tokenizeFuzzyText(previewText));
+          let overlap = 0;
+          sourceTokens.forEach((token) => {
+            if (questionTokens.has(token)) overlap += 1;
+          });
+          const sourceSize = Math.max(sourceTokens.size, 1);
+          const questionSize = Math.max(questionTokens.size, 1);
+          const overlapRatio = overlap / sourceSize;
+          const reverseOverlapRatio = overlap / questionSize;
+          const substringBonus =
+            previewText.includes(sourceText) || sourceText.includes(previewText) ? 0.25 : 0;
+          const score = overlapRatio * 0.75 + reverseOverlapRatio * 0.25 + substringBonus;
+          if (score <= 0) return null;
+          return { questionId: question.question_id, score };
+        })
+        .filter((item): item is { questionId: string; score: number } => Boolean(item))
+        .sort((a, b) => b.score - a.score);
+
+      return {
+        best: scored[0] ?? null,
+        topCandidates: scored.slice(0, 6),
+      };
+    });
+  }, [parsedBatchDrafts, questions]);
+  const resolveTargetQuestionIdForDraft = useCallback(
+    (draft: BatchUploadParsedDraft, idx: number): string => {
+      const fromSelection = String(batchTargetQuestionSelections[idx] ?? "").trim();
+      if (fromSelection && questionById.has(fromSelection)) return fromSelection;
+      const fromMarkdown = String(draft.targetQuestionId ?? "").trim();
+      if (fromMarkdown && questionById.has(fromMarkdown)) return fromMarkdown;
+      const fuzzy = fuzzyQuestionMatchesByDraftIndex[idx]?.best?.questionId ?? "";
+      if (fuzzy && questionById.has(fuzzy)) return fuzzy;
+      return "";
+    },
+    [batchTargetQuestionSelections, fuzzyQuestionMatchesByDraftIndex, questionById]
+  );
   const parsedBatchTableKeys = useMemo(() => {
     const tables = parseKeyValueTablesFromMarkdown(batchMarkdownContent);
     const keys = new Set<string>();
@@ -2262,6 +2341,17 @@ const QuestionOverview = () => {
         requireQuestionLevelFeedback: isBatchQuestionLevelFeedbackEnabled,
         requireOptionLevelFeedback: isBatchOptionLevelFeedbackEnabled,
       }).filter((issue) => issue !== "contains non-UUID slide_id");
+      if (batchUploadMode === "update_existing") {
+        const sourceId = String(draft.targetQuestionId ?? "").trim();
+        const selectedId = String(batchTargetQuestionSelections[idx] ?? "").trim();
+        const resolvedTargetId = resolveTargetQuestionIdForDraft(draft, idx);
+        if (!sourceId && !selectedId && !resolvedTargetId) {
+          baseIssues.push(`missing target question id (key: ${batchUploadMapping.questionIdKey || "question_id"})`);
+        } else if (!resolvedTargetId) {
+          const invalidId = selectedId || sourceId;
+          if (invalidId) baseIssues.push(`target question not found: ${invalidId}`);
+        }
+      }
       const binding = batchDraftSlideBinding[idx];
       const resolvedScope = resolvedBatchSlideScopeByIndex[idx] ?? [];
       if (!binding) return baseIssues;
@@ -2287,8 +2377,13 @@ const QuestionOverview = () => {
     },
     [
       batchDraftSlideBinding,
+      batchUploadMapping.questionIdKey,
+      batchUploadMode,
+      batchTargetQuestionSelections,
       isBatchOptionLevelFeedbackEnabled,
       isBatchQuestionLevelFeedbackEnabled,
+      questionById,
+      resolveTargetQuestionIdForDraft,
       resolvedBatchSlideScopeByIndex,
       slideTotalPagesById,
     ]
@@ -2325,6 +2420,25 @@ const QuestionOverview = () => {
       return next;
     });
   }, [parsedBatchDrafts.length]);
+  useEffect(() => {
+    setBatchTargetQuestionSelections((prev) => {
+      const next: Record<number, string> = {};
+      Object.entries(prev).forEach(([key, value]) => {
+        const idx = Number(key);
+        if (!Number.isFinite(idx) || idx < 0 || idx >= parsedBatchDrafts.length) return;
+        const normalized = String(value ?? "").trim();
+        if (normalized) next[idx] = normalized;
+      });
+      if (batchUploadMode === "update_existing") {
+        for (let idx = 0; idx < parsedBatchDrafts.length; idx += 1) {
+          if (next[idx]) continue;
+          const fuzzy = fuzzyQuestionMatchesByDraftIndex[idx]?.best?.questionId ?? "";
+          if (fuzzy) next[idx] = fuzzy;
+        }
+      }
+      return next;
+    });
+  }, [batchUploadMode, fuzzyQuestionMatchesByDraftIndex, parsedBatchDrafts.length]);
 
   const handleCloseBatchUploadModal = () => {
     if (batchUploadRunning) return;
@@ -2333,18 +2447,22 @@ const QuestionOverview = () => {
     setBatchUploadProgressText(null);
     setBatchUploadResultLines([]);
     setBatchMarkdownContent("");
+    setBatchUploadMode("create");
+    setBatchUpdateExistingHumanFeedback(false);
     setBatchAttachedAgents([]);
     setBatchAttachAgentCandidateId("");
     setShowBatchMarkdownContent(false);
     setBatchUploadStep(1);
     setBatchUploadMaxStep(1);
     setBatchUploadMapping(DEFAULT_BATCH_UPLOAD_FIELD_MAPPING);
+    setBatchTargetQuestionSelections({});
     setIsBatchSlideMatchModalOpen(false);
     setBatchSlideMatchTargetIndices([]);
     setBatchSlideMatchCursor(0);
     setBatchSlideCandidates([]);
     setBatchSlideCandidatesError(null);
     setBatchSlideMatchSelections({});
+    setBatchTargetQuestionSelections({});
   };
 
   const handleBatchMarkdownFile = async (file: File) => {
@@ -2502,6 +2620,133 @@ const QuestionOverview = () => {
     missingSlideMatchIndices.length > 0 &&
     missingSlideMatchIndices.every((idx) => Boolean(batchSlideMatchSelections[idx]?.slide_id?.trim()));
 
+  const getAttachedAgentsForQuestion = useCallback(
+    async (questionId: string): Promise<BatchAttachedAgentConfig[]> => {
+      const cached = attachedAgentsByQuestionId[questionId];
+      const toAgentConfig = (items: AttachedAgentSummary[]) =>
+        items.map((agent) => {
+          const role = String(agent.role ?? "").toLowerCase();
+          const shouldMapExistingHuman =
+            batchUploadMode === "update_existing" && batchUpdateExistingHumanFeedback && role === "human";
+          return {
+            agent_id: String(agent.agent_id),
+            title: agent.title,
+            role: agent.role,
+            mapFeedback: shouldMapExistingHuman,
+            questionFeedbackKey: shouldMapExistingHuman ? batchUploadMapping.questionFeedbackKey : "",
+            optionFeedbackPrefix: shouldMapExistingHuman ? batchUploadMapping.optionFeedbackPrefix : "",
+          };
+        });
+
+      if (Array.isArray(cached)) return toAgentConfig(cached);
+      const res = await axios.get(`/api/questions/${questionId}/attached-agents`);
+      const parsed = parseAttachedAgentsPayload(res.data);
+      setAttachedAgentsByQuestionId((prev) => ({ ...prev, [questionId]: parsed }));
+      return toAgentConfig(parsed);
+    },
+    [
+      attachedAgentsByQuestionId,
+      batchUpdateExistingHumanFeedback,
+      batchUploadMapping.optionFeedbackPrefix,
+      batchUploadMapping.questionFeedbackKey,
+      batchUploadMode,
+    ]
+  );
+
+  const attachAgentsAndMapHumanFeedback = useCallback(
+    async (params: {
+      questionId: string;
+      rowIndex: number;
+      draft: BatchUploadParsedDraft;
+      questionSnapshot: Question;
+      agentConfigs: BatchAttachedAgentConfig[];
+    }) => {
+      const { questionId, rowIndex, draft, questionSnapshot, agentConfigs } = params;
+      const uniqueAgentsById = new Map<string, BatchAttachedAgentConfig>();
+      agentConfigs.forEach((agent) => {
+        const agentId = String(agent.agent_id ?? "").trim();
+        if (!agentId) return;
+        const existing = uniqueAgentsById.get(agentId);
+        if (!existing || Boolean(agent.mapFeedback)) {
+          uniqueAgentsById.set(agentId, agent);
+        }
+      });
+
+      for (const agentConfig of uniqueAgentsById.values()) {
+        const agentId = agentConfig.agent_id;
+        try {
+          await axios.post(`/api/questions/${questionId}/attached-agents`, {
+            agent_id: agentId,
+            updated_by: manageUserId,
+          });
+        } catch (attachErr) {
+          if (axios.isAxiosError(attachErr)) {
+            const status = attachErr.response?.status;
+            const detail = (attachErr.response?.data as any)?.detail;
+            const detailText =
+              detail === undefined
+                ? ""
+                : typeof detail === "object" && detail !== null
+                  ? JSON.stringify(detail)
+                  : String(detail);
+            const alreadyAttached =
+              status === 409 ||
+              (status === 422 && /already/i.test(detailText)) ||
+              /already/i.test(detailText);
+            if (!alreadyAttached) throw attachErr;
+          } else {
+            throw attachErr;
+          }
+        }
+
+        const isHumanAgent = (agentConfig.role ?? "").toLowerCase() === "human";
+        const shouldMapFeedback = isHumanAgent && agentConfig.mapFeedback;
+        if (!shouldMapFeedback) continue;
+
+        if (draft.kind === "notebook") {
+          if (agentConfig.questionFeedbackKey.trim()) {
+            const questionFeedbackText = getBatchDraftQuestionFeedbackByKey(draft, agentConfig.questionFeedbackKey);
+            if (!questionFeedbackText) {
+              throw new Error(`Row ${rowIndex + 1} question-level feedback is empty (agent ${agentId}).`);
+            }
+            await axios.patch(`/api/questions/${questionId}/attached-agents/${agentId}/static-feedback`, {
+              updated_by: manageUserId,
+              question_feedback_text: questionFeedbackText,
+            });
+          }
+          continue;
+        }
+
+        if (!agentConfig.optionFeedbackPrefix.trim()) continue;
+        const optionRows = questionSnapshot.options ?? [];
+        const optionFeedbacks = getBatchDraftOptionFeedbacksByPrefix(
+          draft,
+          agentConfig.optionFeedbackPrefix,
+          optionRows.length
+        );
+        if (!optionRows.length || optionRows.some((row) => !row.interaction_option_id)) {
+          throw new Error(`Row ${rowIndex + 1} could not resolve interaction_option_id.`);
+        }
+        if (optionRows.length !== optionFeedbacks.length) {
+          throw new Error(`Row ${rowIndex + 1} option count mismatch after update.`);
+        }
+        const option_feedback = optionRows.map((option, idx) => ({
+          interaction_option_id: String(option.interaction_option_id),
+          feedback_text: String(optionFeedbacks[idx] ?? "").trim(),
+        }));
+        if (option_feedback.some((row) => !row.feedback_text)) {
+          throw new Error(`Row ${rowIndex + 1} contains empty option feedback (agent ${agentId}).`);
+        }
+        await axios.patch(`/api/questions/${questionId}/attached-agents/${agentId}/static-feedback`, {
+          updated_by: manageUserId,
+          expected_option_count: option_feedback.length,
+          option_feedback,
+        });
+      }
+    },
+    [getBatchDraftOptionFeedbacksByPrefix, getBatchDraftQuestionFeedbackByKey, manageUserId]
+  );
+
   const executeBatchUpload = async () => {
     if (!manageUserId) {
       setBatchUploadError("Missing user ID. Please refresh and try again.");
@@ -2515,7 +2760,7 @@ const QuestionOverview = () => {
       if (missingSlideMatchIndices.length > 0 && !isBatchSlideMatchComplete) {
         setBatchUploadError("Please match missing linked slides first.");
       } else {
-        setBatchUploadError("Please resolve preview issues before importing.");
+        setBatchUploadError("Please resolve preview issues before processing.");
       }
       return;
     }
@@ -2529,7 +2774,9 @@ const QuestionOverview = () => {
     try {
       for (let i = 0; i < parsedBatchDrafts.length; i += 1) {
         const draft = parsedBatchDrafts[i];
-        setBatchUploadProgressText(`Importing ${i + 1}/${parsedBatchDrafts.length}...`);
+        setBatchUploadProgressText(
+          `${batchUploadMode === "update_existing" ? "Updating" : "Importing"} ${i + 1}/${parsedBatchDrafts.length}...`
+        );
         try {
           const questionType: CreateQuestionType = draft.kind === "mcq" ? "single_choice" : "free_text";
           const loSuffix = draft.lo ? ` (${draft.lo})` : "";
@@ -2569,125 +2816,114 @@ const QuestionOverview = () => {
             }
           }
 
+          const normalizedContentBlocks = draft.contentBlocks.map((block, idx) => ({
+            block_type: block.block_type,
+            text_content: block.text_content?.trim() || null,
+            media_url: block.media_url?.trim() || null,
+            alt_text: block.alt_text?.trim() || null,
+            block_order: idx + 1,
+          }));
+          const normalizedInteractions = [
+            {
+              interaction_type: questionType,
+              interaction_order: 1,
+              prompt_text: promptText,
+              is_required: true,
+              max_score: 1,
+              ...(questionType === "single_choice" ? { options: optionsPayload } : {}),
+            },
+          ];
+          const normalizedSlideScope = normalizedSlideIds.map((slideId) => {
+            const matched = resolvedSlideScope.find((scope) => scope.slide_id === slideId) ?? null;
+            return {
+              slide_id: slideId,
+              page_start: matched?.page_start ?? null,
+              page_end: matched?.page_end ?? null,
+            };
+          });
+          const scoringPolicy = {
+            score_maximum: 1,
+            score_input_format: "fraction",
+            score_normalize_to_maximum: true,
+            score_rounding_mode: "none",
+            score_rounding_step: 1,
+          };
+
           const createPayload = {
             question_type: questionType,
             title: null,
             access_scope: "private" as const,
             created_by: manageUserId,
-            content_blocks: draft.contentBlocks.map((block, idx) => ({
-              block_type: block.block_type,
-              text_content: block.text_content?.trim() || null,
-              media_url: block.media_url?.trim() || null,
-              alt_text: block.alt_text?.trim() || null,
-              block_order: idx + 1,
-            })),
-            interactions: [
-              {
-                interaction_type: questionType,
-                interaction_order: 1,
-                prompt_text: promptText,
-                is_required: true,
-                max_score: 1,
-                ...(questionType === "single_choice" ? { options: optionsPayload } : {}),
-              },
-            ],
+            content_blocks: normalizedContentBlocks,
+            interactions: normalizedInteractions,
             slide_ids: normalizedSlideIds,
-            slide_scope: normalizedSlideIds.map((slideId) => {
-              const matched =
-                resolvedSlideScope.find((scope) => scope.slide_id === slideId) ?? null;
-              return {
-                slide_id: slideId,
-                page_start: matched?.page_start ?? null,
-                page_end: matched?.page_end ?? null,
-              };
-            }),
-            scoring_policy: {
-              score_maximum: 1,
-              score_input_format: "fraction",
-              score_normalize_to_maximum: true,
-              score_rounding_mode: "none",
-              score_rounding_step: 1,
-            },
+            slide_scope: normalizedSlideScope,
+            scoring_policy: scoringPolicy,
           };
 
-          const createRes = await axios.post("/api/questions", createPayload);
-          let created = parseSemanticQuestion(createRes.data);
-          let createdQuestionId = created.question_id || String(createRes.data?.question_id ?? "");
-          if (!createdQuestionId) throw new Error(`Row ${i + 1} create succeeded but missing question_id.`);
+          let targetQuestionId = "";
+          let baseAttachAgents: BatchAttachedAgentConfig[] = [];
+          let responseQuestion: Question;
 
-          if (isBatchFeedbackAttachEnabled) {
-            for (const agentConfig of batchAttachedAgents) {
-              const agentId = agentConfig.agent_id;
-              await axios.post(`/api/questions/${createdQuestionId}/attached-agents`, {
-                agent_id: agentId,
-                updated_by: manageUserId,
-              });
-
-              const isHumanAgent = (agentConfig.role ?? "").toLowerCase() === "human";
-              const shouldMapFeedback = isHumanAgent && agentConfig.mapFeedback;
-              if (!shouldMapFeedback) continue;
-
-              if (draft.kind === "notebook") {
-                if (agentConfig.questionFeedbackKey.trim()) {
-                  const questionFeedbackText = getBatchDraftQuestionFeedbackByKey(
-                    draft,
-                    agentConfig.questionFeedbackKey
-                  );
-                  if (!questionFeedbackText) {
-                    throw new Error(`Row ${i + 1} question-level feedback is empty (agent ${agentId}).`);
-                  }
-                  await axios.patch(
-                    `/api/questions/${createdQuestionId}/attached-agents/${agentId}/static-feedback`,
-                    {
-                      updated_by: manageUserId,
-                      question_feedback_text: questionFeedbackText,
-                    }
-                  );
-                }
-              } else {
-                if (agentConfig.optionFeedbackPrefix.trim()) {
-                  if (!created.options?.length || created.options.some((opt) => !opt.interaction_option_id)) {
-                    const detailRes = await axios.get(`/api/questions/${createdQuestionId}`, {
-                      params: {
-                        include: "current_version,content_blocks,interactions,options,interaction_options,slide_scope,feedback_links",
-                      },
-                    });
-                    created = parseSemanticQuestion(detailRes.data);
-                  }
-                  const optionRows = created.options ?? [];
-                  const optionFeedbacks = getBatchDraftOptionFeedbacksByPrefix(
-                    draft,
-                    agentConfig.optionFeedbackPrefix,
-                    optionRows.length
-                  );
-                  if (!optionRows.length || optionRows.some((row) => !row.interaction_option_id)) {
-                    throw new Error(`Row ${i + 1} could not resolve interaction_option_id.`);
-                  }
-                  if (optionRows.length !== optionFeedbacks.length) {
-                    throw new Error(`Row ${i + 1} option count mismatch after create.`);
-                  }
-                  const option_feedback = optionRows.map((option, idx) => ({
-                    interaction_option_id: String(option.interaction_option_id),
-                    feedback_text: String(optionFeedbacks[idx] ?? "").trim(),
-                  }));
-                  if (option_feedback.some((row) => !row.feedback_text)) {
-                    throw new Error(`Row ${i + 1} contains empty option feedback (agent ${agentId}).`);
-                  }
-                  await axios.patch(
-                    `/api/questions/${createdQuestionId}/attached-agents/${agentId}/static-feedback`,
-                    {
-                      updated_by: manageUserId,
-                      expected_option_count: option_feedback.length,
-                      option_feedback,
-                    }
-                  );
-                }
-              }
+          if (batchUploadMode === "update_existing") {
+            targetQuestionId = resolveTargetQuestionIdForDraft(draft, i);
+            if (!targetQuestionId) {
+              throw new Error(`Row ${i + 1} missing target question id (no valid fuzzy match).`);
             }
+            const existingQuestion = questionById.get(targetQuestionId);
+            if (!existingQuestion) {
+              throw new Error(`Row ${i + 1} target question not found: ${targetQuestionId}`);
+            }
+            baseAttachAgents = await getAttachedAgentsForQuestion(targetQuestionId);
+
+            const updatePayload = {
+              question_type: questionType,
+              title: null,
+              access_scope: (existingQuestion.access_scope ?? "private") as QuestionAccessScope | string,
+              updated_by: manageUserId,
+              content_blocks: normalizedContentBlocks,
+              interactions: normalizedInteractions,
+              slide_ids: normalizedSlideIds,
+              slide_scope: normalizedSlideScope,
+              scoring_policy: scoringPolicy,
+            };
+            await axios.patch(`/api/questions/${targetQuestionId}`, updatePayload);
+            const refreshed = await axios.get(`/api/questions/${targetQuestionId}`, {
+              params: {
+                include: "current_version,content_blocks,interactions,options,interaction_options,slide_scope,feedback_links",
+              },
+            });
+            responseQuestion = parseSemanticQuestion(refreshed.data);
+          } else {
+            const createRes = await axios.post("/api/questions", createPayload);
+            targetQuestionId = String(
+              parseSemanticQuestion(createRes.data).question_id || createRes.data?.question_id || ""
+            ).trim();
+            if (!targetQuestionId) throw new Error(`Row ${i + 1} create succeeded but missing question_id.`);
+            const refreshed = await axios.get(`/api/questions/${targetQuestionId}`, {
+              params: {
+                include: "current_version,content_blocks,interactions,options,interaction_options,slide_scope,feedback_links",
+              },
+            });
+            responseQuestion = parseSemanticQuestion(refreshed.data);
+          }
+
+          if (isBatchFeedbackAttachEnabled || baseAttachAgents.length > 0) {
+            await attachAgentsAndMapHumanFeedback({
+              questionId: targetQuestionId,
+              rowIndex: i,
+              draft,
+              questionSnapshot: responseQuestion,
+              agentConfigs: [...baseAttachAgents, ...batchAttachedAgents],
+            });
           }
 
           successCount += 1;
-          resultLines.push(`✅ Row ${i + 1}: imported as ${createdQuestionId}`);
+          resultLines.push(
+            batchUploadMode === "update_existing"
+              ? `✅ Row ${i + 1}: updated ${targetQuestionId} (version refreshed, agents rebound)`
+              : `✅ Row ${i + 1}: imported as ${targetQuestionId}`
+          );
         } catch (err) {
           const text = (() => {
             if (axios.isAxiosError(err)) {
@@ -2713,7 +2949,11 @@ const QuestionOverview = () => {
 
       setBatchUploadResultLines(resultLines);
       if (successCount > 0) {
-        showTopToast(`Batch upload completed: ${successCount}/${parsedBatchDrafts.length} imported.`);
+        showTopToast(
+          batchUploadMode === "update_existing"
+            ? `Batch update completed: ${successCount}/${parsedBatchDrafts.length} updated.`
+            : `Batch upload completed: ${successCount}/${parsedBatchDrafts.length} imported.`
+        );
       }
       if (successCount === parsedBatchDrafts.length && parsedBatchDrafts.length > 0) {
         shouldCloseModalAfterSuccess = true;
@@ -3594,7 +3834,7 @@ const QuestionOverview = () => {
           open={isBatchUploadModalOpen}
           onClose={handleCloseBatchUploadModal}
           title="Batch Upload Questions"
-          description="Upload markdown containing Question tables, then import all rows."
+          description="Upload markdown containing Question tables, then create new questions or update existing ones in batch."
           maxWidthClassName="max-w-4xl"
           disableClose={batchUploadRunning}
         >
@@ -3632,6 +3872,50 @@ const QuestionOverview = () => {
 
             {batchUploadStep === 1 ? (
               <div className="space-y-4">
+                <div className="rounded-xl border border-slate-200 bg-white px-3 py-3">
+                  <div className="text-sm font-semibold text-slate-800">Batch Mode</div>
+                  <div className="mt-2 flex flex-wrap items-center gap-4 text-xs text-slate-700">
+                    <label className="inline-flex items-center gap-2">
+                      <input
+                        type="radio"
+                        name="batch-upload-mode"
+                        checked={batchUploadMode === "create"}
+                        onChange={() => setBatchUploadMode("create")}
+                        disabled={batchUploadRunning}
+                        className="h-4 w-4 rounded border-slate-300"
+                      />
+                      Create New Questions
+                    </label>
+                    <label className="inline-flex items-center gap-2">
+                      <input
+                        type="radio"
+                        name="batch-upload-mode"
+                        checked={batchUploadMode === "update_existing"}
+                        onChange={() => setBatchUploadMode("update_existing")}
+                        disabled={batchUploadRunning}
+                        className="h-4 w-4 rounded border-slate-300"
+                      />
+                      Update Existing Questions (new version + rebind agents)
+                    </label>
+                  </div>
+                  <div className="mt-2 text-xs text-slate-500">
+                    {batchUploadMode === "update_existing"
+                      ? `System will fuzzy-match existing questions. You can override each row target in Final Preview. Marker "${batchUploadMapping.questionIdKey || "question_id"}" is optional but recommended.`
+                      : "Rows will create new questions."}
+                  </div>
+                  {batchUploadMode === "update_existing" ? (
+                    <label className="mt-3 inline-flex items-center gap-2 text-xs text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={batchUpdateExistingHumanFeedback}
+                        onChange={(e) => setBatchUpdateExistingHumanFeedback(e.target.checked)}
+                        disabled={batchUploadRunning}
+                        className="h-4 w-4 rounded border-slate-300"
+                      />
+                      Also update static feedback for existing attached human agents (using current mapping keys)
+                    </label>
+                  ) : null}
+                </div>
                 <div>
                   <label htmlFor="batchMarkdownFile" className="mb-1 block text-sm font-medium text-slate-700">
                     Markdown File (.md)
@@ -3687,7 +3971,7 @@ const QuestionOverview = () => {
             {batchUploadStep === 2 ? (
               <div className="rounded-2xl border border-slate-200 bg-white p-4">
                 <div className="mb-3 flex items-center justify-between gap-2">
-                  <div className="text-sm font-semibold text-slate-900">Question Creation Mapping</div>
+                  <div className="text-sm font-semibold text-slate-900">Question Field Mapping</div>
                   <ActionButton
                     type="button"
                     variant="ghost"
@@ -3808,6 +4092,34 @@ const QuestionOverview = () => {
                           <div className="mt-0.5 text-[11px] text-rose-700">Required</div>
                         </td>
                         <td className="px-3 py-2 text-slate-600">Main question text imported into content blocks.</td>
+                      </tr>
+                      <tr>
+                        <td className="px-3 py-2">
+                          <select
+                            value={batchUploadMapping.questionIdKey}
+                            onChange={(e) => updateBatchUploadMapping("questionIdKey", e.target.value)}
+                            className="w-full rounded-md border border-slate-200 px-2 py-1 text-xs"
+                          >
+                            <option value="">none</option>
+                            <option value={batchUploadMapping.questionIdKey}>
+                              {batchUploadMapping.questionIdKey || "(custom)"}
+                            </option>
+                            {parsedBatchTableKeys
+                              .filter((key) => key !== batchUploadMapping.questionIdKey)
+                              .map((key) => (
+                                <option key={`map-question-id-${key}`} value={key}>
+                                  {key}
+                                </option>
+                              ))}
+                          </select>
+                        </td>
+                        <td className="px-3 py-2">
+                          <div className="font-medium text-slate-700">Target Question ID</div>
+                          <div className="mt-0.5 text-[11px] text-slate-500">Optional (recommended for Update Mode)</div>
+                        </td>
+                        <td className="px-3 py-2 text-slate-600">
+                          Existing `question_id` column used only when mode is Update Existing.
+                        </td>
                       </tr>
                       <tr>
                         <td className="px-3 py-2">
@@ -4207,6 +4519,41 @@ const QuestionOverview = () => {
                             </span>
                           </div>
                           <div className="mt-2 whitespace-pre-wrap text-xs text-slate-700">{draft.stem}</div>
+                          {batchUploadMode === "update_existing" ? (
+                            <div className="mt-2 rounded-md border border-slate-100 bg-slate-50 p-2 text-xs text-slate-700">
+                              <div className="mb-1 font-medium text-slate-600">Target Question:</div>
+                              <input
+                                list={`batch-target-question-${idx}`}
+                                value={batchTargetQuestionSelections[idx] ?? resolveTargetQuestionIdForDraft(draft, idx)}
+                                onChange={(e) =>
+                                  setBatchTargetQuestionSelections((prev) => ({ ...prev, [idx]: e.target.value }))
+                                }
+                                placeholder={draft.targetQuestionId || "Enter or select existing question_id"}
+                                className="w-full rounded border border-slate-300 bg-white px-2 py-1 font-mono text-xs text-slate-800"
+                              />
+                              <datalist id={`batch-target-question-${idx}`}>
+                                {questions.map((question) => (
+                                  <option key={`batch-target-option-${idx}-${question.question_id}`} value={question.question_id}>
+                                    {`${question.question_id} | ${getQuestionTextPreview(question).slice(0, 80)}`}
+                                  </option>
+                                ))}
+                              </datalist>
+                              <div className="mt-1 text-[11px] text-slate-500">
+                                Markdown value: <span className="font-mono">{draft.targetQuestionId || "(none)"}</span>
+                                {fuzzyQuestionMatchesByDraftIndex[idx]?.best ? (
+                                  <>
+                                    {" · "}Fuzzy:{" "}
+                                    <span className="font-mono">
+                                      {fuzzyQuestionMatchesByDraftIndex[idx].best?.questionId}
+                                    </span>
+                                    {" ("}
+                                    {fuzzyQuestionMatchesByDraftIndex[idx].best?.score.toFixed(2)}
+                                    {")"}
+                                  </>
+                                ) : null}
+                              </div>
+                            </div>
+                          ) : null}
                           <div className="mt-2 rounded-md border border-slate-100 bg-slate-50 p-2 text-xs text-slate-700">
                             <span className="font-medium text-slate-600">Interaction Prompt:</span> {interactionPromptPreview}
                           </div>
@@ -4216,11 +4563,21 @@ const QuestionOverview = () => {
                           </div>
                           <div className="mt-2 rounded-md border border-slate-100 bg-slate-50 p-2 text-xs text-slate-700">
                             <span className="font-medium text-slate-600">Execution:</span>{" "}
-                            {isBatchFeedbackAttachEnabled
-                              ? `create question + attach ${batchAttachedAgents.length} agent(s) [question-level: ${
+                            {isBatchFeedbackAttachEnabled || batchUploadMode === "update_existing"
+                              ? `${batchUploadMode === "update_existing" ? "update question version + rebind existing agents" : "create question"} + attach ${
+                                  batchAttachedAgents.length
+                                } configured agent(s) [question-level: ${
                                   isBatchQuestionLevelFeedbackEnabled ? "on" : "none"
-                                }, option-level: ${isBatchOptionLevelFeedbackEnabled ? "on" : "none"}]`
-                              : "create question only (feedback ignored)"}
+                                }, option-level: ${isBatchOptionLevelFeedbackEnabled ? "on" : "none"}${
+                                  batchUploadMode === "update_existing"
+                                    ? `, existing-human-feedback: ${batchUpdateExistingHumanFeedback ? "on" : "off"}`
+                                    : ""
+                                }]`
+                              : batchUploadMode === "update_existing"
+                                ? `update question version + rebind existing agents (existing-human-feedback: ${
+                                    batchUpdateExistingHumanFeedback ? "on" : "off"
+                                  })`
+                                : "create question only (feedback ignored)"}
                           </div>
                           {draft.kind === "mcq" ? (
                             <div className="mt-2 space-y-1 rounded-md border border-slate-100 bg-slate-50 p-2 text-xs">
@@ -4412,10 +4769,12 @@ const QuestionOverview = () => {
                     disabled={batchUploadRunning || parsedBatchDrafts.length === 0 || hasBatchDraftIssues}
                   >
                     {batchUploadRunning
-                      ? "Importing..."
+                      ? "Processing..."
                       : isBatchFeedbackAttachEnabled
-                        ? `Import + Attach Feedback (${batchAttachedAgents.length} agent${batchAttachedAgents.length === 1 ? "" : "s"})`
-                        : "Import Questions"}
+                        ? `${batchUploadMode === "update_existing" ? "Update + Rebind Agents" : "Import + Attach Feedback"} (${batchAttachedAgents.length} agent${batchAttachedAgents.length === 1 ? "" : "s"})`
+                        : batchUploadMode === "update_existing"
+                          ? "Update Questions"
+                          : "Import Questions"}
                   </ActionButton>
                 </>
               ) : null}

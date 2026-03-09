@@ -12,6 +12,8 @@ interface LeftFeedbackPanelProps {
     | {
         feedback?: string;
         is_structured?: boolean;
+        hide_structured_feedback_in_ui?: boolean;
+        scoring_only?: boolean;
         score?: string | number;
         max_score?: string | number;
         structured_feedback?: string;
@@ -69,6 +71,11 @@ export default function LeftFeedbackPanel({
   const feedbackHtml = (() => {
     if (isStreaming) return streamingContent;
     if (typeof result === "string") return result;
+    const hideStructuredFeedbackInUI = Boolean((result as any).hide_structured_feedback_in_ui);
+    if (hideStructuredFeedbackInUI) {
+      // In scoring-only flows, keep score/max_score but hide structured feedback copy.
+      return result.text_feedback || "";
+    }
 
     if ("is_structured" in result && typeof result.is_structured === "boolean") {
       return result.is_structured
@@ -130,6 +137,17 @@ export default function LeftFeedbackPanel({
           debugData={debugData}
         />
       )}
+
+      {debugEnabled ? (
+        <div className="rounded-xl border border-amber-300 bg-amber-50 p-3">
+          <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-amber-800">
+            Debug Backend Payload
+          </div>
+          <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all rounded border border-amber-200 bg-white p-2 text-[11px] text-slate-700">
+            {JSON.stringify(debugData ?? null, null, 2)}
+          </pre>
+        </div>
+      ) : null}
     </motion.div>
   );
 }

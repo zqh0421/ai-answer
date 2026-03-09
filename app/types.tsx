@@ -64,8 +64,11 @@ export type RecordResultInput = {
   learner_id: string,
   study_id: string,
   session_id: string,
+  compositionId?: string,
+  composition_id?: string,
   lti_launch_id?: string,
   lti_user_id?: string,
+  score_given_raw?: string | number,
   score_given?: number,
   score_maximum?: number,
   ip_address?: string,
@@ -86,6 +89,8 @@ export type RecordResultInput = {
 
 export interface StructuredFeedback {
   is_structured?: boolean;
+  hide_structured_feedback_in_ui?: boolean;
+  scoring_only?: boolean;
   score?: string | number;
   max_score?: string | number;
   feedback?: string;
@@ -100,6 +105,8 @@ export type FeedbackResult =
   | {
       feedback?: string;
       is_structured?: boolean;
+      hide_structured_feedback_in_ui?: boolean;
+      scoring_only?: boolean;
       score?: string | number;
       max_score?: string | number;
       structured_feedback?: string;

@@ -45,6 +45,8 @@ type FeedbackResultPayload =
   | {
       feedback?: string;
       is_structured?: boolean;
+      hide_structured_feedback_in_ui?: boolean;
+      scoring_only?: boolean;
       score?: string | number;
       max_score?: string | number;
       structured_feedback?: string;
@@ -206,6 +208,8 @@ const escapeHtml = (value: string): string =>
 
 const normalizeFeedbackResult = (raw: any): FeedbackResultPayload => {
   const extracted = extractFeedbackFromUnknown(raw);
+  const hideStructuredFeedbackInUI = Boolean(raw?.hide_structured_feedback_in_ui);
+  const scoringOnly = Boolean(raw?.scoring_only);
   const feedback = readFirstString(
     extracted.feedbackText,
     raw?.feedback,
@@ -223,20 +227,27 @@ const normalizeFeedbackResult = (raw: any): FeedbackResultPayload => {
   const aiMaxScore = toFiniteNumber(raw?.ai_score_result?.max_score);
   const effectiveScore = scoreCandidate ?? (aiHasScore ? aiScore : undefined);
   const effectiveMaxScore = maxScoreCandidate ?? (aiHasScore ? aiMaxScore : undefined);
+  const uiStructuredFeedback = structuredFeedback;
+  const uiTextFeedback = textFeedback;
+  const uiFeedback = hideStructuredFeedbackInUI
+    ? readFirstString(uiTextFeedback)
+    : readFirstString(feedback, uiTextFeedback, uiStructuredFeedback);
 
-  if (!feedback && !structuredFeedback && !textFeedback && effectiveScore === undefined) {
+  if (!uiFeedback && !uiStructuredFeedback && !uiTextFeedback && effectiveScore === undefined) {
     return stringifyIfObject(raw) || "No feedback is available.";
   }
 
   return {
-    feedback: feedback || textFeedback || structuredFeedback,
+    ...(uiFeedback ? { feedback: uiFeedback } : {}),
     ...(typeof raw?.is_structured === "boolean"
       ? { is_structured: raw.is_structured }
       : typeof extracted.isStructured === "boolean"
       ? { is_structured: extracted.isStructured }
       : {}),
-    ...(structuredFeedback ? { structured_feedback: structuredFeedback } : {}),
-    ...(textFeedback ? { text_feedback: textFeedback } : {}),
+    ...(hideStructuredFeedbackInUI ? { hide_structured_feedback_in_ui: true } : {}),
+    ...(scoringOnly ? { scoring_only: true } : {}),
+    ...(uiStructuredFeedback ? { structured_feedback: uiStructuredFeedback } : {}),
+    ...(uiTextFeedback ? { text_feedback: uiTextFeedback } : {}),
     ...(effectiveScore !== undefined ? { score: effectiveScore } : {}),
     ...(effectiveMaxScore !== undefined ? { max_score: effectiveMaxScore } : {}),
   };
@@ -402,6 +413,35 @@ const normalizeQuestion = (raw: QuestionPayload, fallbackQuestionId: string): No
 
 const createFallbackLearnerId = () => `test_learner_${Math.random().toString(36).slice(2, 10)}`;
 
+type ScoringAttemptStats = {
+  attemptCount: number | null;
+  maxAttempts: number | null;
+  isUnlimited: boolean | null;
+  bestScore: number | null;
+  bestScoreMax: number | null;
+};
+
+const parseSubmissionStats = (raw: unknown): ScoringAttemptStats => {
+  const record = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const attemptCount = toFiniteNumber(record.attempt_count);
+  const maxAttempts = toFiniteNumber(record.max_attempts);
+  const bestScore = toFiniteNumber(record.best_score);
+  const isUnlimited = typeof record.is_unlimited === "boolean" ? record.is_unlimited : null;
+  return {
+    attemptCount: Number.isFinite(attemptCount as number) ? Math.max(0, Math.floor(attemptCount as number)) : null,
+    maxAttempts: Number.isFinite(maxAttempts as number) ? Math.max(0, Math.floor(maxAttempts as number)) : null,
+    isUnlimited,
+    bestScore: Number.isFinite(bestScore as number) ? (bestScore as number) : null,
+    bestScoreMax: (() => {
+      const maxScore =
+        toFiniteNumber(record.best_score_max) ??
+        toFiniteNumber(record.max_score) ??
+        toFiniteNumber(record.score_maximum);
+      return Number.isFinite(maxScore as number) ? (maxScore as number) : null;
+    })(),
+  };
+};
+
 function QuestionWorkspace({
   qid,
   searchParams,
@@ -456,6 +496,14 @@ function QuestionWorkspace({
   const [currentRecordId, setCurrentRecordId] = useState<number | null>(null);
   const [hasSubmitted, setHasSubmitted] = useState(false);
   const [debugLastFeedbackPayload, setDebugLastFeedbackPayload] = useState<unknown>(null);
+  const [scoringStats, setScoringStats] = useState<ScoringAttemptStats>({
+    attemptCount: null,
+    maxAttempts: null,
+    isUnlimited: null,
+    bestScore: null,
+    bestScoreMax: null,
+  });
+  const [isScoringStatsLoading, setIsScoringStatsLoading] = useState(false);
 
   const [course, setCourse] = useState<string>();
   const [courses, setCourses] = useState<Course[]>([]);
@@ -828,11 +876,85 @@ function QuestionWorkspace({
 
   const isMCQ = question.questionType === "single_choice";
   const hasAnswer = Boolean(answerText.trim());
-  const submitDisabled = questionLoading || isFeedbackLoading || !hasAnswer;
+  const normalizedCompositionId = (compositionId || "").trim();
+  const isScoringComposition = /scoring/i.test(normalizedCompositionId);
+  const hasAttemptCount = typeof scoringStats.attemptCount === "number" && Number.isFinite(scoringStats.attemptCount);
+  const attemptCountValue = hasAttemptCount ? Number(scoringStats.attemptCount) : null;
+  const hasFiniteMaxAttempts = typeof scoringStats.maxAttempts === "number" && Number.isFinite(scoringStats.maxAttempts);
+  const isUnlimitedByStats = scoringStats.isUnlimited === true;
+  const scoringMaxAttemptsDisplay = hasFiniteMaxAttempts ? Number(scoringStats.maxAttempts) : 3;
+  const canSubmitByStats = isUnlimitedByStats
+    ? true
+    : hasAttemptCount && hasFiniteMaxAttempts
+    ? Number(attemptCountValue) < Number(scoringStats.maxAttempts)
+    : true;
+  const attemptsExhausted =
+    isScoringComposition &&
+    !canSubmitByStats;
+  const submitDisabled = questionLoading || isFeedbackLoading || !hasAnswer || attemptsExhausted;
+  const shouldHideReferencePanel = /scoring/i.test(normalizedCompositionId);
   const isValidInput = (input: string): boolean => {
     const alphanumericRegex = /[a-zA-Z0-9]/;
     return input.trim() !== "" && alphanumericRegex.test(input);
   };
+
+  const fetchSubmissionStats = useCallback(async () => {
+    if (!normalizedCompositionId) return;
+    const targetQuestionId = question.questionId || qid;
+    if (!targetQuestionId || !effectiveLearnerId || !normalizedCompositionId) return;
+
+    setIsScoringStatsLoading(true);
+    try {
+      const qs = new URLSearchParams({
+        learner_id: effectiveLearnerId,
+        question_id: targetQuestionId,
+        composition_id: normalizedCompositionId,
+      });
+      const statsRes = await fetch(`/api/submission-stats?${qs.toString()}`, {
+        method: "GET",
+        credentials: "include",
+      });
+      if (!statsRes.ok) {
+        throw new Error(`Failed to fetch submission stats: HTTP ${statsRes.status}`);
+      }
+      const parsedStats = parseSubmissionStats(await statsRes.json());
+
+      if (!isScoringComposition) {
+        setScoringStats({
+          attemptCount: parsedStats.attemptCount,
+          maxAttempts: null,
+          isUnlimited: true,
+          bestScore: null,
+          bestScoreMax: null,
+        });
+        return;
+      }
+
+      setScoringStats({
+        attemptCount: parsedStats.attemptCount,
+        maxAttempts: Number.isFinite(parsedStats.maxAttempts as number) ? parsedStats.maxAttempts : 3,
+        isUnlimited: parsedStats.isUnlimited === true ? true : false,
+        bestScore: parsedStats.bestScore,
+        bestScoreMax: parsedStats.bestScoreMax,
+      });
+    } catch (error) {
+      console.error("Failed to fetch submission stats:", error);
+      setScoringStats({
+        attemptCount: null,
+        maxAttempts: isScoringComposition ? 3 : null,
+        isUnlimited: isScoringComposition ? false : true,
+        bestScore: null,
+        bestScoreMax: null,
+      });
+    } finally {
+      setIsScoringStatsLoading(false);
+    }
+  }, [effectiveLearnerId, isScoringComposition, normalizedCompositionId, qid, question.questionId]);
+
+  useEffect(() => {
+    if (!normalizedCompositionId) return;
+    void fetchSubmissionStats();
+  }, [fetchSubmissionStats, normalizedCompositionId, effectiveLearnerId, question.questionId, qid]);
 
   const handleSubmit = async () => {
     if (submitDisabled) return;
@@ -841,7 +963,6 @@ function QuestionWorkspace({
     const targetQuestionId = question.questionId || qid;
     if (!targetQuestionId) return;
 
-    const normalizedCompositionId = (compositionId || "").trim();
     if (!normalizedCompositionId) {
       setResult({
         is_structured: false,
@@ -864,6 +985,7 @@ function QuestionWorkspace({
       mode: "composition",
       compositionId: normalizedCompositionId,
       dryRun: false,
+      dry_run: false,
       learnerId: effectiveLearnerId,
       answerText: normalizedAnswerText,
       ...(selectedOptionIndex !== undefined ? { inputValues: { selectedOptionIndex } } : {}),
@@ -883,8 +1005,15 @@ function QuestionWorkspace({
       const feedbackText = readFirstString(feedbackData?.feedback);
       const hasFeedback = typeof feedbackData?.has_feedback === "boolean" ? feedbackData.has_feedback : true;
       const feedbackSource = readFirstString(feedbackData?.feedback_source);
+      const hasAnyScoreSignal =
+        toFiniteNumber(feedbackData?.score) !== undefined ||
+        toFiniteNumber(feedbackData?.max_score) !== undefined ||
+        Boolean(feedbackData?.ai_score_result?.has_score) ||
+        toFiniteNumber(feedbackData?.ai_score_result?.score) !== undefined;
+      const hasScoringOnlySignal = Boolean(feedbackData?.scoring_only) || Boolean(feedbackData?.hide_structured_feedback_in_ui);
+      const shouldBypassNoFeedbackGate = hasAnyScoreSignal || hasScoringOnlySignal;
 
-      if (!hasFeedback) {
+      if (!hasFeedback && !shouldBypassNoFeedbackGate) {
         const noFeedbackMessage = `No feedback available${feedbackSource ? ` (source: ${feedbackSource})` : ""}.`;
         setResult({
           is_structured: false,
@@ -951,24 +1080,40 @@ function QuestionWorkspace({
 
       const endTime = Date.now();
       const selected = isMCQ ? question.options[selectedOptionIndex ?? 0] : null;
+      const normalizedResultRecord =
+        typeof normalizedResult === "object" && normalizedResult !== null
+          ? (normalizedResult as Record<string, unknown>)
+          : null;
+      const aiScoreCandidate = toFiniteNumber((feedbackData as any)?.ai_score_result?.score);
+      const aiMaxScoreCandidate =
+        toFiniteNumber((feedbackData as any)?.ai_score_result?.max_score) ??
+        toFiniteNumber((feedbackData as any)?.ai_score_result?.score_maximum);
       const finalScore =
+        toFiniteNumber(normalizedResultRecord?.score) ??
         toFiniteNumber((feedbackData as any)?.score) ??
-        (Boolean((feedbackData as any)?.ai_score_result?.has_score)
-          ? toFiniteNumber((feedbackData as any)?.ai_score_result?.score)
-          : undefined) ??
+        aiScoreCandidate ??
         (selected ? (selected.isCorrect ? 1 : 0) : undefined);
       const finalMaxScore =
+        toFiniteNumber(normalizedResultRecord?.max_score) ??
         toFiniteNumber((feedbackData as any)?.max_score) ??
-        (Boolean((feedbackData as any)?.ai_score_result?.has_score)
-          ? toFiniteNumber((feedbackData as any)?.ai_score_result?.max_score)
-          : undefined) ??
+        toFiniteNumber((feedbackData as any)?.score_maximum) ??
+        aiMaxScoreCandidate ??
         (finalScore !== undefined ? 1 : undefined);
+      const scoreGivenRaw =
+        readFirstString(
+          (feedbackData as any)?.score_given_raw,
+          (feedbackData as any)?.ai_score_result?.score_raw,
+          (feedbackData as any)?.ai_score_result?.raw_score
+        ) || (finalScore !== undefined ? String(finalScore) : "");
 
       const recordPayload: RecordResultInput = {
         learner_id: effectiveLearnerId,
         study_id: studyId,
         session_id: sessionId,
-        ...(finalScore !== undefined ? { score_given: finalScore, score_maximum: finalMaxScore ?? 1 } : {}),
+        ...(normalizedCompositionId ? { compositionId: normalizedCompositionId, composition_id: normalizedCompositionId } : {}),
+        ...(finalScore !== undefined
+          ? { score_given_raw: scoreGivenRaw, score_given: finalScore, score_maximum: finalMaxScore ?? 1 }
+          : {}),
         question_id: targetQuestionId,
         answer: normalizedAnswerText,
         feedback: readFirstString((feedbackData as any)?.feedback, (feedbackData as any)?.text_feedback, stringifyIfObject(feedbackData)),
@@ -983,6 +1128,9 @@ function QuestionWorkspace({
         system_total_response_time: endTime - startTime,
       };
       await recordResultToDatabase(recordPayload);
+      if (normalizedCompositionId) {
+        await fetchSubmissionStats();
+      }
     } catch (error: any) {
       console.error("Failed to fetch feedback:", error);
       const detail = error?.response?.data?.detail ?? error?.detail ?? null;
@@ -1067,7 +1215,7 @@ function QuestionWorkspace({
           onImageClick={() => {}}
           studentAnswer={answerText}
           showFeedback={true}
-          showReference={true}
+          showReference={!shouldHideReferencePanel}
           isFeedbackLoading={isFeedbackLoading}
           promptVersion={promptVersion}
           question={questionTextForPanel}
@@ -1195,9 +1343,38 @@ function QuestionWorkspace({
                 <div className="absolute inset-0 origin-left -skew-x-6 scale-x-0 bg-white opacity-0 transition-all duration-500 group-hover:scale-x-100 group-hover:opacity-10" />
               ) : null}
               <div className="relative z-10 flex items-center justify-center">
-                {isFeedbackLoading ? "Evaluating..." : "Submit Answer"}
+                {isFeedbackLoading ? "Evaluating..." : attemptsExhausted ? "Submission Limit Reached" : "Submit Answer"}
               </div>
             </button>
+            {normalizedCompositionId ? (
+              <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
+                <div>
+                  Attempts:{" "}
+                  <span className="font-semibold">
+                    {isScoringStatsLoading
+                      ? "..."
+                      : `${hasAttemptCount ? attemptCountValue : "-"} / ${
+                          isUnlimitedByStats || !isScoringComposition ? "Unlimited" : scoringMaxAttemptsDisplay
+                        }`}
+                  </span>
+                </div>
+                {isScoringComposition ? (
+                  <div className="mt-1">
+                    Best Score:{" "}
+                    <span className="font-semibold">
+                      {isScoringStatsLoading
+                        ? "..."
+                        : `${Number.isFinite(scoringStats.bestScore as number) ? scoringStats.bestScore : "-"} / ${
+                            Number.isFinite(scoringStats.bestScoreMax as number) ? scoringStats.bestScoreMax : "-"
+                          }`}
+                    </span>
+                  </div>
+                ) : null}
+                {attemptsExhausted ? (
+                  <div className="mt-1 text-red-600">Maximum submissions reached. Further submissions are disabled.</div>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         </section>
       </div>
