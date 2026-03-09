@@ -372,13 +372,46 @@ const parseAttachedAgents = (data: unknown): AttachedAgentLite[] => {
 
 const parseHumanStaticVersions = (data: unknown): HumanStaticVersion[] => {
   const normalizeOptionFeedback = (raw: unknown): Record<string, string> => {
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      const mapped: Record<string, string> = {};
+      for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+        const optionId = String(key ?? '').trim();
+        const feedbackText =
+          typeof value === 'string'
+            ? value.trim()
+            : value && typeof value === 'object'
+            ? readFirstString(
+                (value as Record<string, unknown>).feedback_text,
+                (value as Record<string, unknown>).static_feedback_text,
+                (value as Record<string, unknown>).text
+              )
+            : '';
+        if (!optionId || !feedbackText) continue;
+        mapped[optionId] = feedbackText;
+      }
+      return mapped;
+    }
     if (!Array.isArray(raw)) return {};
     const map: Record<string, string> = {};
     for (const item of raw) {
       if (!item || typeof item !== 'object') continue;
       const row = item as Record<string, unknown>;
-      const optionId = readFirstString(row.interaction_option_id, row.option_id, row.target_entity_id, row.target_id);
-      const feedbackText = readFirstString(row.feedback_text, row.static_feedback_text, row.text);
+      const optionId = readFirstString(
+        row.interaction_option_id,
+        row.option_id,
+        row.target_entity_id,
+        row.target_id,
+        row.interaction_optionId,
+        row.optionId
+      );
+      const feedbackText = readFirstString(
+        row.feedback_text,
+        row.static_feedback_text,
+        row.text,
+        row.text_feedback,
+        row.feedback,
+        row.content
+      );
       if (!optionId) continue;
       map[optionId] = feedbackText;
     }
@@ -393,9 +426,20 @@ const parseHumanStaticVersions = (data: unknown): HumanStaticVersion[] => {
       revision_no: Number.isFinite(revisionCandidate) ? revisionCandidate : undefined,
       saved_at: readFirstString(row.created_at, row.updated_at, row.saved_at, row.timestamp) || new Date().toISOString(),
       draft: {
-        question_feedback_text: readFirstString(row.question_feedback_text, row.static_feedback_text),
+        question_feedback_text: readFirstString(
+          row.question_feedback_text,
+          row.static_feedback_text,
+          row.feedback_text,
+          row.text_feedback,
+          row.feedback,
+          row.content
+        ),
         option_feedback_text_by_option_id: normalizeOptionFeedback(
-          row.option_feedback ?? row.option_feedbacks ?? row.interaction_option_feedback
+          row.option_feedback ??
+            row.option_feedbacks ??
+            row.interaction_option_feedback ??
+            row.option_feedback_text_by_option_id ??
+            row.option_feedback_map
         ),
       },
     };

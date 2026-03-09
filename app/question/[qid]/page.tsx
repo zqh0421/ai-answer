@@ -4,6 +4,8 @@ import { Suspense, use, useCallback, useEffect, useMemo, useState } from "react"
 import axios from "axios";
 import { debounce } from "lodash";
 import { useDispatch, useSelector } from "react-redux";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 import LeftFeedbackPanel from "@/app/components/LeftFeedbackPanel";
 import DynamicImage from "@/app/components/DynamicImage";
@@ -412,6 +414,13 @@ const normalizeQuestion = (raw: QuestionPayload, fallbackQuestionId: string): No
 };
 
 const createFallbackLearnerId = () => `test_learner_${Math.random().toString(36).slice(2, 10)}`;
+
+const normalizeQuestionMarkdown = (value: string): string =>
+  value
+    // Convert HTML line breaks from stored content to markdown line breaks.
+    .replace(/<br\s*\/?>/gi, "\n")
+    // Keep single line breaks visible in markdown output.
+    .replace(/\r?\n/g, "  \n");
 
 type ScoringAttemptStats = {
   attemptCount: number | null;
@@ -1186,7 +1195,12 @@ function QuestionWorkspace({
                     className="max-h-64 w-auto rounded-md object-contain"
                   />
                 ) : (
-                  <p className="whitespace-pre-wrap break-words text-slate-700">{item.content}</p>
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    className="prose prose-slate max-w-none break-words text-slate-700 [&_p]:my-2 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5"
+                  >
+                    {normalizeQuestionMarkdown(item.content)}
+                  </ReactMarkdown>
                 )}
               </div>
             ))
