@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from threading import Lock
 from typing import Any, Optional
 
 from openai import OpenAI
@@ -25,6 +26,9 @@ DEFAULT_GENERATION_BLOCK = (
 DEFAULT_ADDITIONAL_FORMATTING_INSTRUCTIONS = (
     "No additional formatting instructions."
 )
+_STATIC_FEEDBACK_SCHEMA_GUARD = Lock()
+_STATIC_FEEDBACK_SCHEMA_READY = False
+_STATIC_FEEDBACK_SCHEMA_LOCK_KEY = 7712401
 
 
 def _load_feedback_link_generation_context(db, feedback_link_id: str) -> dict[str, Any] | None:
@@ -35,6 +39,8 @@ def _load_feedback_link_generation_context(db, feedback_link_id: str) -> dict[st
               fl.feedback_link_id,
               fl.question_version_id,
               fl.agent_id,
+              fl.target_entity_type,
+              fl.target_entity_id,
               fl.created_by AS link_created_by,
               fl.is_visible AS link_is_visible,
               fa.title AS agent_title,
@@ -53,6 +59,30 @@ def _load_feedback_link_generation_context(db, feedback_link_id: str) -> dict[st
         {"feedback_link_id": feedback_link_id},
     ).mappings().first()
     return dict(row) if row else None
+
+
+def _resolve_answer_text_from_feedback_link_target(db, ctx: dict[str, Any]) -> str | None:
+    target_type = str(ctx.get("target_entity_type") or "").strip().lower()
+    if target_type != "interaction_option":
+        return None
+    target_id = str(ctx.get("target_entity_id") or "").strip()
+    if not target_id:
+        return None
+    row = db.execute(
+        text(
+            """
+            SELECT option_label, option_value
+            FROM content_question_interaction_option
+            WHERE interaction_option_id = :interaction_option_id
+            LIMIT 1
+            """
+        ),
+        {"interaction_option_id": target_id},
+    ).mappings().first()
+    if not row:
+        return None
+    text_value = str(row.get("option_label") or row.get("option_value") or "").strip()
+    return text_value or None
 
 
 def _load_question_version_text(db, question_version_id: str) -> dict[str, Any]:
@@ -706,6 +736,10 @@ def _generate_feedback_text_from_context(
     model = (ctx.get("model") or "").strip() or "gpt-5"
     llm_params = _parse_llm_params(ctx.get("llm_params_text"))
     effective_input_values = dict(input_values or {})
+    if not str(effective_input_values.get("answer_text") or "").strip():
+        resolved_answer_text = _resolve_answer_text_from_feedback_link_target(db, ctx)
+        if resolved_answer_text:
+            effective_input_values["answer_text"] = resolved_answer_text
     fallback_question_payload = _load_question_version_text(db, str(ctx["question_version_id"]))
     default_question_blocks = _default_question_content_blocks_text(fallback_question_payload)
     if default_question_blocks:
@@ -824,6 +858,10 @@ def resolve_feedback_prompt_for_feedback_link(
 
         llm_params = _parse_llm_params(ctx.get("llm_params_text"))
         effective_input_values = dict(input_values or {})
+        if not str(effective_input_values.get("answer_text") or "").strip():
+            resolved_answer_text = _resolve_answer_text_from_feedback_link_target(db, ctx)
+            if resolved_answer_text:
+                effective_input_values["answer_text"] = resolved_answer_text
         fallback_question_payload = _load_question_version_text(db, str(ctx["question_version_id"]))
         default_question_blocks = _default_question_content_blocks_text(fallback_question_payload)
         if default_question_blocks:
@@ -889,73 +927,82 @@ def _generate_unique_id(db, table: str, col: str, prefix: str) -> str:
 
 
 def _ensure_static_feedback_version_schema(db) -> None:
-    db.execute(
-        text(
-            """
-            CREATE TABLE IF NOT EXISTS feedback_static_feedback_version (
-                version_id VARCHAR(16) PRIMARY KEY,
-                question_id VARCHAR(16) NOT NULL,
-                question_version_id VARCHAR(16) NOT NULL,
-                agent_id VARCHAR(16) NOT NULL,
-                revision_no INT NOT NULL,
-                question_feedback_text TEXT NULL,
-                parent_version_id VARCHAR(16) NULL,
-                restored_from_version_id VARCHAR(16) NULL,
-                created_by VARCHAR(16) NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            );
-            """
+    global _STATIC_FEEDBACK_SCHEMA_READY
+    if _STATIC_FEEDBACK_SCHEMA_READY:
+        return
+    with _STATIC_FEEDBACK_SCHEMA_GUARD:
+        if _STATIC_FEEDBACK_SCHEMA_READY:
+            return
+        db.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _STATIC_FEEDBACK_SCHEMA_LOCK_KEY})
+        db.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS feedback_static_feedback_version (
+                    version_id VARCHAR(16) PRIMARY KEY,
+                    question_id VARCHAR(16) NOT NULL,
+                    question_version_id VARCHAR(16) NOT NULL,
+                    agent_id VARCHAR(16) NOT NULL,
+                    revision_no INT NOT NULL,
+                    question_feedback_text TEXT NULL,
+                    parent_version_id VARCHAR(16) NULL,
+                    restored_from_version_id VARCHAR(16) NULL,
+                    created_by VARCHAR(16) NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
         )
-    )
-    db.execute(
-        text(
-            """
-            CREATE INDEX IF NOT EXISTS ix_feedback_static_feedback_version_question_agent_created_at
-            ON feedback_static_feedback_version (question_id, agent_id, created_at DESC);
-            """
+        db.execute(
+            text(
+                """
+                CREATE INDEX IF NOT EXISTS ix_feedback_static_feedback_version_question_agent_created_at
+                ON feedback_static_feedback_version (question_id, agent_id, created_at DESC);
+                """
+            )
         )
-    )
-    db.execute(
-        text(
-            """
-            CREATE TABLE IF NOT EXISTS feedback_static_feedback_version_option (
-                version_option_id VARCHAR(16) PRIMARY KEY,
-                version_id VARCHAR(16) NOT NULL REFERENCES feedback_static_feedback_version(version_id) ON DELETE CASCADE,
-                interaction_option_id VARCHAR(16) NOT NULL,
-                feedback_text TEXT NOT NULL,
-                created_by VARCHAR(16) NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                CONSTRAINT uq_feedback_static_feedback_version_option UNIQUE (version_id, interaction_option_id)
-            );
-            """
+        db.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS feedback_static_feedback_version_option (
+                    version_option_id VARCHAR(16) PRIMARY KEY,
+                    version_id VARCHAR(16) NOT NULL REFERENCES feedback_static_feedback_version(version_id) ON DELETE CASCADE,
+                    interaction_option_id VARCHAR(16) NOT NULL,
+                    feedback_text TEXT NOT NULL,
+                    created_by VARCHAR(16) NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CONSTRAINT uq_feedback_static_feedback_version_option UNIQUE (version_id, interaction_option_id)
+                );
+                """
+            )
         )
-    )
-    db.execute(
-        text(
-            """
-            ALTER TABLE feedback_static_feedback_version
-            ALTER COLUMN created_at TYPE TIMESTAMPTZ
-            USING created_at AT TIME ZONE 'UTC';
-            """
+        db.execute(
+            text(
+                """
+                ALTER TABLE feedback_static_feedback_version
+                ALTER COLUMN created_at TYPE TIMESTAMPTZ
+                USING created_at AT TIME ZONE 'UTC';
+                """
+            )
         )
-    )
-    db.execute(
-        text(
-            """
-            ALTER TABLE feedback_static_feedback_version_option
-            ALTER COLUMN created_at TYPE TIMESTAMPTZ
-            USING created_at AT TIME ZONE 'UTC';
-            """
+        db.execute(
+            text(
+                """
+                ALTER TABLE feedback_static_feedback_version_option
+                ALTER COLUMN created_at TYPE TIMESTAMPTZ
+                USING created_at AT TIME ZONE 'UTC';
+                """
+            )
         )
-    )
-    db.execute(
-        text(
-            """
-            CREATE INDEX IF NOT EXISTS ix_feedback_static_feedback_version_option_version_id
-            ON feedback_static_feedback_version_option (version_id);
-            """
+        db.execute(
+            text(
+                """
+                CREATE INDEX IF NOT EXISTS ix_feedback_static_feedback_version_option_version_id
+                ON feedback_static_feedback_version_option (version_id);
+                """
+            )
         )
-    )
+        db.commit()
+        _STATIC_FEEDBACK_SCHEMA_READY = True
 
 
 def _load_feedback_snapshot_state(
@@ -1167,12 +1214,14 @@ def generate_static_feedback_with_version_snapshot_for_feedback_link(
     feedback_link_id: str,
     *,
     created_by: str | None = None,
+    input_values: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     with SessionLocal() as db:
         result = generate_static_feedback_for_feedback_link(
             feedback_link_id,
             persist=True,
             enforce_ai_role=True,
+            input_values=input_values or None,
         )
         if not result.get("ok") or result.get("skipped"):
             return result

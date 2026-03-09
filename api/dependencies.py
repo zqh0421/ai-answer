@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import HTTPException
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
 from .database import SessionLocal, get_tunnel, reset_database_connection
+
+logger = logging.getLogger(__name__)
 
 
 def _connect_with_single_retry():
@@ -29,6 +33,12 @@ def get_db():
     except OperationalError as exc:
         if db is not None:
             db.close()
+        # Recreate engine/tunnel so the next request can recover quickly.
+        try:
+            reset_database_connection()
+        except Exception:
+            logger.exception("database_reset_failed_after_operational_error")
+        logger.exception("database_operational_error_during_request")
         raise HTTPException(status_code=503, detail="Database temporarily unavailable; please retry.") from exc
     finally:
         if db is not None:

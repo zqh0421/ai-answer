@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 import re
+from threading import Lock
 from typing import Any, Literal
 
 from fastapi import HTTPException
@@ -20,6 +21,10 @@ from .ids import generate_short_id
 from .slide_batch_jobs import slide_batch_job_manager
 
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
+_OPTION_MATCH_NORMALIZE_RE = re.compile(r"[^a-z0-9]+")
+_STATIC_FEEDBACK_SCHEMA_GUARD = Lock()
+_STATIC_FEEDBACK_SCHEMA_READY = False
+_STATIC_FEEDBACK_SCHEMA_LOCK_KEY = 7712401
 
 
 def _user_role(db: Session, user_id: str) -> str | None:
@@ -146,13 +151,9 @@ def _runtime_selected_option_id_from_inputs(
 ) -> str | None:
     if runtime_inputs.get("selected_option_id"):
         return str(runtime_inputs.get("selected_option_id"))
-
-    if isinstance(runtime_inputs.get("selected_option_index"), int):
-        option_ids = _runtime_option_ids_for_version(db, question_version_id)
-        idx = int(runtime_inputs["selected_option_index"])
-        if 0 <= idx < len(option_ids):
-            return option_ids[idx]
-        return None
+    if runtime_inputs.get("selectedOptionId"):
+        return str(runtime_inputs.get("selectedOptionId"))
+    # Index-based matching is intentionally disabled to avoid 0/1-based mismatch bugs.
 
     answer_text_raw = runtime_inputs.get("answer_text")
     answer_text = str(answer_text_raw or "").strip()
@@ -188,12 +189,29 @@ def _runtime_selected_option_id_from_inputs(
             return str(rows[idx - 1]["interaction_option_id"])
 
     normalized = answer_text.casefold()
+    normalized_compact = _OPTION_MATCH_NORMALIZE_RE.sub("", normalized)
     for row in rows:
         label = str(row.get("option_label") or "").strip()
         value = str(row.get("option_value") or "").strip()
         if label and label.casefold() == normalized:
             return str(row["interaction_option_id"])
         if value and value.casefold() == normalized:
+            return str(row["interaction_option_id"])
+        label_norm = label.casefold()
+        value_norm = value.casefold()
+        if label_norm and (label_norm in normalized or normalized in label_norm):
+            return str(row["interaction_option_id"])
+        if value_norm and (value_norm in normalized or normalized in value_norm):
+            return str(row["interaction_option_id"])
+        label_compact = _OPTION_MATCH_NORMALIZE_RE.sub("", label_norm)
+        value_compact = _OPTION_MATCH_NORMALIZE_RE.sub("", value_norm)
+        if label_compact and normalized_compact and (
+            label_compact in normalized_compact or normalized_compact in label_compact
+        ):
+            return str(row["interaction_option_id"])
+        if value_compact and normalized_compact and (
+            value_compact in normalized_compact or normalized_compact in value_compact
+        ):
             return str(row["interaction_option_id"])
     return None
 
@@ -533,73 +551,82 @@ def _resolve_human_agent_ai_score_result(
 
 
 def _ensure_static_feedback_version_schema(db: Session) -> None:
-    db.execute(
-        text(
-            """
-            CREATE TABLE IF NOT EXISTS feedback_static_feedback_version (
-                version_id VARCHAR(16) PRIMARY KEY,
-                question_id VARCHAR(16) NOT NULL,
-                question_version_id VARCHAR(16) NOT NULL,
-                agent_id VARCHAR(16) NOT NULL,
-                revision_no INT NOT NULL,
-                question_feedback_text TEXT NULL,
-                parent_version_id VARCHAR(16) NULL,
-                restored_from_version_id VARCHAR(16) NULL,
-                created_by VARCHAR(16) NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            );
-            """
+    global _STATIC_FEEDBACK_SCHEMA_READY
+    if _STATIC_FEEDBACK_SCHEMA_READY:
+        return
+    with _STATIC_FEEDBACK_SCHEMA_GUARD:
+        if _STATIC_FEEDBACK_SCHEMA_READY:
+            return
+        db.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _STATIC_FEEDBACK_SCHEMA_LOCK_KEY})
+        db.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS feedback_static_feedback_version (
+                    version_id VARCHAR(16) PRIMARY KEY,
+                    question_id VARCHAR(16) NOT NULL,
+                    question_version_id VARCHAR(16) NOT NULL,
+                    agent_id VARCHAR(16) NOT NULL,
+                    revision_no INT NOT NULL,
+                    question_feedback_text TEXT NULL,
+                    parent_version_id VARCHAR(16) NULL,
+                    restored_from_version_id VARCHAR(16) NULL,
+                    created_by VARCHAR(16) NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
         )
-    )
-    db.execute(
-        text(
-            """
-            CREATE INDEX IF NOT EXISTS ix_feedback_static_feedback_version_question_agent_created_at
-            ON feedback_static_feedback_version (question_id, agent_id, created_at DESC);
-            """
+        db.execute(
+            text(
+                """
+                CREATE INDEX IF NOT EXISTS ix_feedback_static_feedback_version_question_agent_created_at
+                ON feedback_static_feedback_version (question_id, agent_id, created_at DESC);
+                """
+            )
         )
-    )
-    db.execute(
-        text(
-            """
-            CREATE TABLE IF NOT EXISTS feedback_static_feedback_version_option (
-                version_option_id VARCHAR(16) PRIMARY KEY,
-                version_id VARCHAR(16) NOT NULL REFERENCES feedback_static_feedback_version(version_id) ON DELETE CASCADE,
-                interaction_option_id VARCHAR(16) NOT NULL,
-                feedback_text TEXT NOT NULL,
-                created_by VARCHAR(16) NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                CONSTRAINT uq_feedback_static_feedback_version_option UNIQUE (version_id, interaction_option_id)
-            );
-            """
+        db.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS feedback_static_feedback_version_option (
+                    version_option_id VARCHAR(16) PRIMARY KEY,
+                    version_id VARCHAR(16) NOT NULL REFERENCES feedback_static_feedback_version(version_id) ON DELETE CASCADE,
+                    interaction_option_id VARCHAR(16) NOT NULL,
+                    feedback_text TEXT NOT NULL,
+                    created_by VARCHAR(16) NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CONSTRAINT uq_feedback_static_feedback_version_option UNIQUE (version_id, interaction_option_id)
+                );
+                """
+            )
         )
-    )
-    db.execute(
-        text(
-            """
-            ALTER TABLE feedback_static_feedback_version
-            ALTER COLUMN created_at TYPE TIMESTAMPTZ
-            USING created_at AT TIME ZONE 'UTC';
-            """
+        db.execute(
+            text(
+                """
+                ALTER TABLE feedback_static_feedback_version
+                ALTER COLUMN created_at TYPE TIMESTAMPTZ
+                USING created_at AT TIME ZONE 'UTC';
+                """
+            )
         )
-    )
-    db.execute(
-        text(
-            """
-            ALTER TABLE feedback_static_feedback_version_option
-            ALTER COLUMN created_at TYPE TIMESTAMPTZ
-            USING created_at AT TIME ZONE 'UTC';
-            """
+        db.execute(
+            text(
+                """
+                ALTER TABLE feedback_static_feedback_version_option
+                ALTER COLUMN created_at TYPE TIMESTAMPTZ
+                USING created_at AT TIME ZONE 'UTC';
+                """
+            )
         )
-    )
-    db.execute(
-        text(
-            """
-            CREATE INDEX IF NOT EXISTS ix_feedback_static_feedback_version_option_version_id
-            ON feedback_static_feedback_version_option (version_id);
-            """
+        db.execute(
+            text(
+                """
+                CREATE INDEX IF NOT EXISTS ix_feedback_static_feedback_version_option_version_id
+                ON feedback_static_feedback_version_option (version_id);
+                """
+            )
         )
-    )
+        db.commit()
+        _STATIC_FEEDBACK_SCHEMA_READY = True
 
 
 def _get_latest_static_feedback_version(db: Session, *, question_id: str, agent_id: str) -> dict[str, Any] | None:
@@ -811,6 +838,8 @@ def run_feedback_generation_flow(
         raise HTTPException(status_code=404, detail="agent is not attached to this question")
 
     runtime_inputs = dict(input_values or {})
+    runtime_inputs.pop("selected_option_index", None)
+    runtime_inputs.pop("selectedOptionIndex", None)
     default_q_blocks = _default_question_content_blocks_text(db, current_version_id)
     if default_q_blocks:
         # Keep this backend-generated value authoritative so question content
@@ -822,6 +851,15 @@ def run_feedback_generation_flow(
         question_version_id=current_version_id,
         runtime_inputs=runtime_inputs,
     )
+    if agent_role == "ai":
+        runtime_feedback_link_id = _runtime_feedback_link_id_for_agent(
+            db,
+            question_version_id=current_version_id,
+            agent_id=agent_id,
+            selected_option_id=selected_option_id,
+        )
+        if runtime_feedback_link_id:
+            feedback_link_id = runtime_feedback_link_id
 
     if execution_mode == "async":
         if dry_run:

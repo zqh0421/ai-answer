@@ -5,6 +5,7 @@ import json
 import math
 import re
 import secrets
+from threading import Lock
 from typing import Any, Literal, Optional
 from uuid import UUID
 
@@ -19,20 +20,27 @@ from ..dependencies import get_db
 from .feedback_links import _get_agent as _get_feedback_agent, _insert_feedback_link
 from ..services.feedback_link_generation_jobs import (
     generate_static_feedback_for_feedback_link,
+    generate_static_feedback_with_version_snapshot_for_feedback_link,
     resolve_feedback_prompt_for_feedback_link,
 )
 from ..services.feedback_generation_flow import run_feedback_generation_flow
 from ..services.feedback_link_job_status import (
     get_feedback_link_generation_status,
     get_rq_job_status,
+    set_feedback_link_generation_job_id,
 )
 from ..services.feedback_composition_expr import CompositionExprError, compile_condition_expression
 from ..services.ids import generate_short_id
 from ..services.readers import _get_presentation_slide_object_ids, get_semantic_question_version_detail
+from ..services.slide_batch_jobs import slide_batch_job_manager
 from ..tags import Tags
 
 router = APIRouter(prefix="/api", tags=[Tags.CONTENT_QUESTIONS])
 _JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
+_OPTION_MATCH_NORMALIZE_RE = re.compile(r"[^a-z0-9]+")
+_STATIC_FEEDBACK_SCHEMA_GUARD = Lock()
+_STATIC_FEEDBACK_SCHEMA_READY = False
+_STATIC_FEEDBACK_SCHEMA_LOCK_KEY = 7712401
 
 
 QuestionType = Literal["single_choice", "multi_choice", "dropdown", "true_false", "free_text", "essay"]
@@ -647,11 +655,66 @@ def _runtime_selected_option_id_from_payload(
     explicit_id = values.get("selected_option_id") or values.get("selectedOptionId")
     if explicit_id:
         return str(explicit_id)
-    if selected_option_index is None:
+    # Index-based matching is intentionally disabled to avoid 0/1-based mismatch bugs.
+    _ = selected_option_index
+
+    answer_text_raw = values.get("answer_text") or values.get("answerText")
+    answer_text = str(answer_text_raw or "").strip()
+    if not answer_text:
         return None
-    option_ids = _runtime_option_ids_for_version(db, question_version_id)
-    if 0 <= int(selected_option_index) < len(option_ids):
-        return str(option_ids[int(selected_option_index)])
+
+    rows = db.execute(
+        text(
+            """
+            SELECT
+              o.interaction_option_id,
+              o.option_order,
+              o.option_label,
+              o.option_value
+            FROM content_question_interaction i
+            JOIN content_question_interaction_option o ON o.interaction_id = i.interaction_id
+            WHERE i.question_version_id = :question_version_id
+            ORDER BY i.interaction_order ASC, o.option_order ASC
+            """
+        ),
+        {"question_version_id": question_version_id},
+    ).mappings().all()
+    if not rows:
+        return None
+
+    if answer_text.isdigit():
+        idx = int(answer_text)
+        if 0 <= idx < len(rows):
+            return str(rows[idx]["interaction_option_id"])
+        if 1 <= idx <= len(rows):
+            return str(rows[idx - 1]["interaction_option_id"])
+
+    normalized = answer_text.casefold()
+    normalized_compact = _OPTION_MATCH_NORMALIZE_RE.sub("", normalized)
+    for row in rows:
+        label = str(row.get("option_label") or "").strip()
+        value = str(row.get("option_value") or "").strip()
+        if label and label.casefold() == normalized:
+            return str(row["interaction_option_id"])
+        if value and value.casefold() == normalized:
+            return str(row["interaction_option_id"])
+        label_norm = label.casefold()
+        value_norm = value.casefold()
+        if label_norm and (label_norm in normalized or normalized in label_norm):
+            return str(row["interaction_option_id"])
+        if value_norm and (value_norm in normalized or normalized in value_norm):
+            return str(row["interaction_option_id"])
+        label_compact = _OPTION_MATCH_NORMALIZE_RE.sub("", label_norm)
+        value_compact = _OPTION_MATCH_NORMALIZE_RE.sub("", value_norm)
+        if label_compact and normalized_compact and (
+            label_compact in normalized_compact or normalized_compact in label_compact
+        ):
+            return str(row["interaction_option_id"])
+        if value_compact and normalized_compact and (
+            value_compact in normalized_compact or normalized_compact in value_compact
+        ):
+            return str(row["interaction_option_id"])
+
     return None
 
 
@@ -720,6 +783,60 @@ def _read_latest_static_feedback_for_agent(
         {"question_version_id": question_version_id, "agent_id": agent_id},
     ).mappings().first()
     return dict(row) if row else {}
+
+
+def _read_latest_versioned_feedback_for_agent(
+    db: Session,
+    *,
+    question_id: str,
+    question_version_id: str,
+    agent_id: str,
+    selected_option_id: str | None,
+) -> dict[str, Any]:
+    latest = _get_latest_static_feedback_version(db, question_id=question_id, agent_id=agent_id)
+    if not latest:
+        return {}
+    version_id = str(latest["version_id"])
+    revision_no = int(latest["revision_no"])
+    version_question_text = (
+        str(latest.get("question_feedback_text"))
+        if latest.get("question_feedback_text") is not None
+        else None
+    )
+    if selected_option_id:
+        opt_row = db.execute(
+            text(
+                """
+                SELECT feedback_text
+                FROM feedback_static_feedback_version_option
+                WHERE version_id = :version_id
+                  AND interaction_option_id = :interaction_option_id
+                LIMIT 1
+                """
+            ),
+            {"version_id": version_id, "interaction_option_id": selected_option_id},
+        ).mappings().first()
+        if opt_row and opt_row.get("feedback_text") is not None:
+            return {
+                "feedback_link_id": None,
+                "static_feedback_text": str(opt_row.get("feedback_text")),
+                "structured_feedback_text": None,
+                "version_id": version_id,
+                "revision_no": revision_no,
+                "question_version_id": str(latest.get("question_version_id") or question_version_id),
+                "source": "feedback_static_feedback_version_option",
+            }
+    if version_question_text:
+        return {
+            "feedback_link_id": None,
+            "static_feedback_text": version_question_text,
+            "structured_feedback_text": None,
+            "version_id": version_id,
+            "revision_no": revision_no,
+            "question_version_id": str(latest.get("question_version_id") or question_version_id),
+            "source": "feedback_static_feedback_version",
+        }
+    return {}
 
 
 def _ensure_feedback_runtime_prompt_cache_schema(db: Session) -> None:
@@ -948,75 +1065,190 @@ def _interaction_options_for_question_version(db: Session, question_version_id: 
     return {str(r["interaction_option_id"]): dict(r) for r in rows}
 
 
+def _question_version_type(db: Session, question_version_id: str) -> str | None:
+    value = db.execute(
+        text(
+            """
+            SELECT question_type::text
+            FROM content_question_version
+            WHERE question_version_id = :question_version_id
+            LIMIT 1
+            """
+        ),
+        {"question_version_id": question_version_id},
+    ).scalar()
+    return str(value) if value is not None else None
+
+
+def _single_choice_options_for_question_version(db: Session, question_version_id: str) -> list[dict[str, Any]]:
+    rows = db.execute(
+        text(
+            """
+            SELECT
+              o.interaction_option_id,
+              o.option_order,
+              o.option_label,
+              o.option_value
+            FROM content_question_interaction i
+            JOIN content_question_interaction_option o ON o.interaction_id = i.interaction_id
+            WHERE i.question_version_id = :question_version_id
+              AND i.interaction_order = 1
+            ORDER BY o.option_order ASC
+            """
+        ),
+        {"question_version_id": question_version_id},
+    ).mappings().all()
+    return [
+        {
+            "interaction_option_id": str(row["interaction_option_id"]),
+            "option_order": int(row["option_order"]),
+            "answer_text": str(row.get("option_label") or row.get("option_value") or "").strip(),
+        }
+        for row in rows
+        if row.get("interaction_option_id")
+    ]
+
+
+def _canonical_generation_status(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in {"finished", "completed", "success"}:
+        return "completed"
+    if raw in {"failed", "stopped", "cancelled", "canceled"}:
+        return "failed"
+    if raw in {"started", "processing", "busy"}:
+        return "processing"
+    if raw in {"queued", "scheduled", "deferred"}:
+        return "queued"
+    return raw or "unknown"
+
+
+def _aggregate_generation_payload(payloads: list[dict[str, Any]]) -> dict[str, Any] | None:
+    valid = [p for p in payloads if isinstance(p, dict)]
+    if not valid:
+        return None
+    status_priority = {"processing": 0, "queued": 1, "failed": 2, "completed": 3, "unknown": 4}
+
+    def _rank(p: dict[str, Any]) -> int:
+        return status_priority.get(_canonical_generation_status(p.get("status")), 9)
+
+    selected = sorted(valid, key=_rank)[0]
+    merged = dict(selected)
+    merged["status"] = _canonical_generation_status(selected.get("status"))
+    return merged
+
+
+def _enqueue_feedback_generation_job_for_link(
+    *,
+    feedback_link_id: str,
+    created_by: str,
+    enqueue_reason: str | None,
+) -> dict[str, Any]:
+    try:
+        rq_job_id = slide_batch_job_manager.enqueue_callable(
+            generate_static_feedback_with_version_snapshot_for_feedback_link,
+            str(feedback_link_id),
+            created_by=created_by,
+        )
+        set_feedback_link_generation_job_id(str(feedback_link_id), str(rq_job_id))
+        return {
+            "ok": True,
+            "queued": True,
+            "job_id": str(rq_job_id),
+            "feedback_link_id": str(feedback_link_id),
+            "generation_mode": "async",
+            "generation_enqueue_reason": enqueue_reason,
+            "enqueue_error": None,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "queued": False,
+            "job_id": None,
+            "feedback_link_id": str(feedback_link_id),
+            "generation_mode": "inline_fallback",
+            "generation_enqueue_reason": enqueue_reason,
+            "enqueue_error": str(exc),
+        }
+
+
 def _ensure_static_feedback_version_schema(db: Session) -> None:
-    db.execute(
-        text(
-            """
-            CREATE TABLE IF NOT EXISTS feedback_static_feedback_version (
-                version_id VARCHAR(16) PRIMARY KEY,
-                question_id VARCHAR(16) NOT NULL,
-                question_version_id VARCHAR(16) NOT NULL,
-                agent_id VARCHAR(16) NOT NULL,
-                revision_no INT NOT NULL,
-                question_feedback_text TEXT NULL,
-                parent_version_id VARCHAR(16) NULL,
-                restored_from_version_id VARCHAR(16) NULL,
-                created_by VARCHAR(16) NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            );
-            """
+    global _STATIC_FEEDBACK_SCHEMA_READY
+    if _STATIC_FEEDBACK_SCHEMA_READY:
+        return
+    with _STATIC_FEEDBACK_SCHEMA_GUARD:
+        if _STATIC_FEEDBACK_SCHEMA_READY:
+            return
+        db.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": _STATIC_FEEDBACK_SCHEMA_LOCK_KEY})
+        db.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS feedback_static_feedback_version (
+                    version_id VARCHAR(16) PRIMARY KEY,
+                    question_id VARCHAR(16) NOT NULL,
+                    question_version_id VARCHAR(16) NOT NULL,
+                    agent_id VARCHAR(16) NOT NULL,
+                    revision_no INT NOT NULL,
+                    question_feedback_text TEXT NULL,
+                    parent_version_id VARCHAR(16) NULL,
+                    restored_from_version_id VARCHAR(16) NULL,
+                    created_by VARCHAR(16) NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
         )
-    )
-    db.execute(
-        text(
-            """
-            CREATE INDEX IF NOT EXISTS ix_feedback_static_feedback_version_question_agent_created_at
-            ON feedback_static_feedback_version (question_id, agent_id, created_at DESC);
-            """
+        db.execute(
+            text(
+                """
+                CREATE INDEX IF NOT EXISTS ix_feedback_static_feedback_version_question_agent_created_at
+                ON feedback_static_feedback_version (question_id, agent_id, created_at DESC);
+                """
+            )
         )
-    )
-    db.execute(
-        text(
-            """
-            CREATE TABLE IF NOT EXISTS feedback_static_feedback_version_option (
-                version_option_id VARCHAR(16) PRIMARY KEY,
-                version_id VARCHAR(16) NOT NULL REFERENCES feedback_static_feedback_version(version_id) ON DELETE CASCADE,
-                interaction_option_id VARCHAR(16) NOT NULL,
-                feedback_text TEXT NOT NULL,
-                created_by VARCHAR(16) NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                CONSTRAINT uq_feedback_static_feedback_version_option UNIQUE (version_id, interaction_option_id)
-            );
-            """
+        db.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS feedback_static_feedback_version_option (
+                    version_option_id VARCHAR(16) PRIMARY KEY,
+                    version_id VARCHAR(16) NOT NULL REFERENCES feedback_static_feedback_version(version_id) ON DELETE CASCADE,
+                    interaction_option_id VARCHAR(16) NOT NULL,
+                    feedback_text TEXT NOT NULL,
+                    created_by VARCHAR(16) NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CONSTRAINT uq_feedback_static_feedback_version_option UNIQUE (version_id, interaction_option_id)
+                );
+                """
+            )
         )
-    )
-    # Backward-compat migration for existing deployments created before TZ support.
-    db.execute(
-        text(
-            """
-            ALTER TABLE feedback_static_feedback_version
-            ALTER COLUMN created_at TYPE TIMESTAMPTZ
-            USING created_at AT TIME ZONE 'UTC';
-            """
+        # Backward-compat migration for existing deployments created before TZ support.
+        db.execute(
+            text(
+                """
+                ALTER TABLE feedback_static_feedback_version
+                ALTER COLUMN created_at TYPE TIMESTAMPTZ
+                USING created_at AT TIME ZONE 'UTC';
+                """
+            )
         )
-    )
-    db.execute(
-        text(
-            """
-            ALTER TABLE feedback_static_feedback_version_option
-            ALTER COLUMN created_at TYPE TIMESTAMPTZ
-            USING created_at AT TIME ZONE 'UTC';
-            """
+        db.execute(
+            text(
+                """
+                ALTER TABLE feedback_static_feedback_version_option
+                ALTER COLUMN created_at TYPE TIMESTAMPTZ
+                USING created_at AT TIME ZONE 'UTC';
+                """
+            )
         )
-    )
-    db.execute(
-        text(
-            """
-            CREATE INDEX IF NOT EXISTS ix_feedback_static_feedback_version_option_version_id
-            ON feedback_static_feedback_version_option (version_id);
-            """
+        db.execute(
+            text(
+                """
+                CREATE INDEX IF NOT EXISTS ix_feedback_static_feedback_version_option_version_id
+                ON feedback_static_feedback_version_option (version_id);
+                """
+            )
         )
-    )
+        db.commit()
+        _STATIC_FEEDBACK_SCHEMA_READY = True
 
 
 def _get_latest_static_feedback_version(db: Session, *, question_id: str, agent_id: str) -> dict[str, Any] | None:
@@ -1970,7 +2202,7 @@ def _insert_question_version_bundle(
             },
         )
 
-        for idx, opt in enumerate(interaction.options, start=1):
+        for opt in sorted(interaction.options, key=lambda x: x.option_order):
             db.execute(
                 text(
                     """
@@ -1984,7 +2216,7 @@ def _insert_question_version_bundle(
                 {
                     "interaction_option_id": _generate_unique_id(db, "content_question_interaction_option", "interaction_option_id", "qo"),
                     "interaction_id": interaction_id,
-                    "option_order": idx,
+                    "option_order": int(opt.option_order),
                     "option_value": opt.option_value,
                     "option_label": opt.option_label,
                     "is_correct": opt.is_correct,
@@ -2378,6 +2610,7 @@ def batch_attach_feedback_agent_to_questions(payload: BatchAttachFeedbackAgentRe
     success_ids: list[str] = []
     failed: list[dict[str, str]] = []
     queued_feedback_generation: list[dict[str, Any]] = []
+    queued_feedback_generation_job_ids: list[str] = []
     enqueue_failed: list[dict[str, str]] = []
 
     agent = _get_feedback_agent(db, payload.agent_id)
@@ -2445,41 +2678,106 @@ def batch_attach_feedback_agent_to_questions(payload: BatchAttachFeedbackAgentRe
             db.commit()
             success_ids.append(question_id)
             if agent_role == "ai":
-                flow = run_feedback_generation_flow(
-                    db,
-                    question_id=question_id,
-                    agent_id=payload.agent_id,
-                    dry_run=False,
-                    updated_by=payload.updated_by,
-                    input_values=None,
-                    require_updated_by_for_persist=False,
-                    include_debug=False,
-                    snapshot_on_persist=True,
-                    execution_mode="async",
-                    enqueue_reason=("attach_existing_refresh" if was_existing_link else "attach_new"),
-                )
-                if flow.get("ok"):
-                    queued_feedback_generation.append(
-                        {
-                            "question_id": question_id,
-                            "feedback_link_id": str(attached_link_id),
-                            "job_id": flow.get("job_id"),
-                            "generation_mode": flow.get("generation_mode"),
-                            "version_id": flow.get("version_id"),
-                            "revision_no": flow.get("revision_no"),
-                            "skipped": bool(flow.get("skipped")),
-                            "generation_enqueue_reason": flow.get("generation_enqueue_reason"),
-                            "enqueue_error": flow.get("enqueue_error"),
-                        }
+                question_type = (_question_version_type(db, current_version_id) or "").strip().lower()
+                if question_type == "single_choice":
+                    option_items = _single_choice_options_for_question_version(db, current_version_id)
+                    option_link_ids: dict[str, str] = {}
+                    for opt in option_items:
+                        option_link_id = _find_visible_feedback_link_by_target(
+                            db,
+                            question_version_id=current_version_id,
+                            agent_id=payload.agent_id,
+                            target_entity_type="interaction_option",
+                            target_entity_id=str(opt["interaction_option_id"]),
+                        )
+                        if option_link_id:
+                            option_link_ids[str(opt["interaction_option_id"])] = str(option_link_id)
+                            continue
+                        created_link_id = _insert_feedback_link(
+                            db,
+                            question_version_id=current_version_id,
+                            agent_id=payload.agent_id,
+                            target_entity_type="interaction_option",
+                            target_entity_id=str(opt["interaction_option_id"]),
+                            priority=payload.priority,
+                            static_feedback_text=None,
+                            structured_feedback_text=None,
+                            created_by=payload.updated_by,
+                        )
+                        option_link_ids[str(opt["interaction_option_id"])] = str(created_link_id)
+                    db.commit()
+                    for opt in option_items:
+                        answer_text = (str(opt.get("answer_text") or "").strip() or str(opt.get("option_order") or ""))
+                        option_id = str(opt["interaction_option_id"])
+                        feedback_link_id = option_link_ids.get(option_id)
+                        if not feedback_link_id:
+                            continue
+                        flow = _enqueue_feedback_generation_job_for_link(
+                            feedback_link_id=str(feedback_link_id),
+                            created_by=payload.updated_by,
+                            enqueue_reason=(
+                                "attach_existing_refresh_single_choice_option"
+                                if was_existing_link
+                                else "attach_new_single_choice_option"
+                            ),
+                        )
+                        if flow.get("ok"):
+                            if flow.get("job_id"):
+                                queued_feedback_generation_job_ids.append(str(flow.get("job_id")))
+                            queued_feedback_generation.append(
+                                {
+                                    "question_id": question_id,
+                                    "feedback_link_id": str(feedback_link_id),
+                                    "job_id": flow.get("job_id"),
+                                    "generation_mode": flow.get("generation_mode"),
+                                    "version_id": flow.get("version_id"),
+                                    "revision_no": flow.get("revision_no"),
+                                    "skipped": bool(flow.get("skipped")),
+                                    "generation_enqueue_reason": flow.get("generation_enqueue_reason"),
+                                    "enqueue_error": flow.get("enqueue_error"),
+                                    "target_entity_type": "interaction_option",
+                                    "target_entity_id": option_id,
+                                    "answer_text": answer_text,
+                                }
+                            )
+                        elif flow.get("enqueue_error"):
+                            enqueue_failed.append(
+                                {
+                                    "question_id": question_id,
+                                    "code": "JOB_ENQUEUE_FAILED",
+                                    "message": str(flow.get("enqueue_error")),
+                                }
+                            )
+                else:
+                    flow = _enqueue_feedback_generation_job_for_link(
+                        feedback_link_id=str(attached_link_id),
+                        created_by=payload.updated_by,
+                        enqueue_reason=("attach_existing_refresh" if was_existing_link else "attach_new"),
                     )
-                elif flow.get("enqueue_error"):
-                    enqueue_failed.append(
-                        {
-                            "question_id": question_id,
-                            "code": "JOB_ENQUEUE_FAILED",
-                            "message": str(flow.get("enqueue_error")),
-                        }
-                    )
+                    if flow.get("ok"):
+                        if flow.get("job_id"):
+                            queued_feedback_generation_job_ids.append(str(flow.get("job_id")))
+                        queued_feedback_generation.append(
+                            {
+                                "question_id": question_id,
+                                "feedback_link_id": str(attached_link_id),
+                                "job_id": flow.get("job_id"),
+                                "generation_mode": flow.get("generation_mode"),
+                                "version_id": flow.get("version_id"),
+                                "revision_no": flow.get("revision_no"),
+                                "skipped": bool(flow.get("skipped")),
+                                "generation_enqueue_reason": flow.get("generation_enqueue_reason"),
+                                "enqueue_error": flow.get("enqueue_error"),
+                            }
+                        )
+                    elif flow.get("enqueue_error"):
+                        enqueue_failed.append(
+                            {
+                                "question_id": question_id,
+                                "code": "JOB_ENQUEUE_FAILED",
+                                "message": str(flow.get("enqueue_error")),
+                            }
+                        )
         except Exception as e:
             db.rollback()
             failed.append({"question_id": question_id, "code": "CONFLICT", "message": str(e)})
@@ -2487,6 +2785,8 @@ def batch_attach_feedback_agent_to_questions(payload: BatchAttachFeedbackAgentRe
     result = _batch_result(requested_ids, success_ids, failed)
     if queued_feedback_generation:
         result["queued_feedback_generation"] = queued_feedback_generation
+    if queued_feedback_generation_job_ids:
+        result["queued_feedback_generation_job_ids"] = list(dict.fromkeys(queued_feedback_generation_job_ids))
     if enqueue_failed:
         result["enqueue_failed"] = enqueue_failed
     return result
@@ -2538,6 +2838,7 @@ def list_attached_agents_for_question(question_id: str, db: Session = Depends(ge
                 "is_structured": row["is_structured"],
                 "question_feedback_link_id": None,
                 "question_feedback_text": None,
+                "option_feedback_link_ids": [],
                 "option_feedback_count": 0,
                 "link_count": 0,
             }
@@ -2548,16 +2849,31 @@ def list_attached_agents_for_question(question_id: str, db: Session = Depends(ge
             item["question_feedback_text"] = row["static_feedback_text"]
         elif row["target_entity_type"] == "interaction_option":
             item["option_feedback_count"] += 1
+            item["option_feedback_link_ids"].append(str(row["feedback_link_id"]))
 
     items = list(grouped.values())
     for item in items:
-        if item.get("role") == "ai" and item.get("question_feedback_link_id"):
-            generation = get_feedback_link_generation_status(str(item["question_feedback_link_id"]))
+        if item.get("role") != "ai":
+            item.pop("option_feedback_link_ids", None)
+            continue
+        generation_candidates: list[dict[str, Any]] = []
+        option_link_ids = [str(x) for x in (item.get("option_feedback_link_ids") or []) if x]
+        for option_link_id in option_link_ids:
+            generation = get_feedback_link_generation_status(option_link_id)
             if generation:
-                item["generation"] = generation
-                item["generation_status"] = generation.get("status")
-                if generation.get("error"):
-                    item["generation_error"] = generation.get("error")
+                generation_candidates.append(generation)
+        question_feedback_link_id = item.get("question_feedback_link_id")
+        if question_feedback_link_id:
+            q_generation = get_feedback_link_generation_status(str(question_feedback_link_id))
+            if q_generation and not generation_candidates:
+                generation_candidates.append(q_generation)
+        merged_generation = _aggregate_generation_payload(generation_candidates)
+        if merged_generation:
+            item["generation"] = merged_generation
+            item["generation_status"] = merged_generation.get("status")
+            if merged_generation.get("error"):
+                item["generation_error"] = merged_generation.get("error")
+        item.pop("option_feedback_link_ids", None)
 
     return {
         "ok": True,
@@ -2602,20 +2918,84 @@ def attach_agent_to_single_question(question_id: str, payload: SingleAttachAgent
         db.commit()
 
     queued_job = None
+    queued_option_jobs: list[dict[str, Any]] = []
     if str(agent.get("role") or "").strip().lower() == "ai":
-        queued_job = run_feedback_generation_flow(
-            db,
-            question_id=question_id,
-            agent_id=payload.agent_id,
-            dry_run=False,
-            updated_by=payload.updated_by,
-            input_values=None,
-            require_updated_by_for_persist=False,
-            include_debug=False,
-            snapshot_on_persist=True,
-            execution_mode="async",
-            enqueue_reason=("attach_existing_refresh" if was_existing_link else "attach_new"),
-        )
+        question_type = (_question_version_type(db, current_version_id) or "").strip().lower()
+        if question_type == "single_choice":
+            option_items = _single_choice_options_for_question_version(db, current_version_id)
+            for opt in option_items:
+                option_link_id = _find_visible_feedback_link_by_target(
+                    db,
+                    question_version_id=current_version_id,
+                    agent_id=payload.agent_id,
+                    target_entity_type="interaction_option",
+                    target_entity_id=str(opt["interaction_option_id"]),
+                )
+                if option_link_id:
+                    continue
+                _insert_feedback_link(
+                    db,
+                    question_version_id=current_version_id,
+                    agent_id=payload.agent_id,
+                    target_entity_type="interaction_option",
+                    target_entity_id=str(opt["interaction_option_id"]),
+                    priority=100,
+                    static_feedback_text=None,
+                    structured_feedback_text=None,
+                    created_by=payload.updated_by,
+                )
+            db.commit()
+            for opt in option_items:
+                answer_text = (str(opt.get("answer_text") or "").strip() or str(opt.get("option_order") or ""))
+                flow = run_feedback_generation_flow(
+                    db,
+                    question_id=question_id,
+                    agent_id=payload.agent_id,
+                    dry_run=False,
+                    updated_by=payload.updated_by,
+                    input_values={
+                        "selected_option_id": str(opt["interaction_option_id"]),
+                        "answer_text": answer_text,
+                    },
+                    require_updated_by_for_persist=False,
+                    include_debug=False,
+                    snapshot_on_persist=True,
+                    execution_mode="async",
+                    enqueue_reason=(
+                        "attach_existing_refresh_single_choice_option"
+                        if was_existing_link
+                        else "attach_new_single_choice_option"
+                    ),
+                )
+                queued_option_jobs.append(
+                    {
+                        "feedback_link_id": str(flow.get("feedback_link_id") or ""),
+                        "job_id": flow.get("job_id"),
+                        "generation_mode": flow.get("generation_mode"),
+                        "version_id": flow.get("version_id"),
+                        "revision_no": flow.get("revision_no"),
+                        "skipped": bool(flow.get("skipped")),
+                        "generation_enqueue_reason": flow.get("generation_enqueue_reason"),
+                        "enqueue_error": flow.get("enqueue_error"),
+                        "target_entity_type": "interaction_option",
+                        "target_entity_id": str(opt["interaction_option_id"]),
+                        "answer_text": answer_text,
+                    }
+                )
+        else:
+            queued_job = run_feedback_generation_flow(
+                db,
+                question_id=question_id,
+                agent_id=payload.agent_id,
+                dry_run=False,
+                updated_by=payload.updated_by,
+                input_values=None,
+                require_updated_by_for_persist=False,
+                include_debug=False,
+                snapshot_on_persist=True,
+                execution_mode="async",
+                enqueue_reason=("attach_existing_refresh" if was_existing_link else "attach_new"),
+            )
 
     return {
         "ok": True,
@@ -2625,6 +3005,7 @@ def attach_agent_to_single_question(question_id: str, payload: SingleAttachAgent
         "feedback_link_id": str(attached_link_id),
         "already_attached": bool(existing_link_id),
         "queued_feedback_generation": queued_job,
+        "queued_option_feedback_generation": queued_option_jobs,
     }
 
 
@@ -2762,10 +3143,10 @@ def get_question_feedback(
             composed_input_values = dict(payload.input_values or {})
             composed_input_values["learner_id"] = learner_id
             composed_input_values["question_id"] = question_id
+            composed_input_values.pop("selected_option_index", None)
+            composed_input_values.pop("selectedOptionIndex", None)
             if payload.answer_text is not None:
                 composed_input_values["answer_text"] = payload.answer_text
-            if payload.selected_option_index is not None:
-                composed_input_values["selected_option_index"] = payload.selected_option_index
 
             if feedback_mode == "use_latest_version":
                 current_version_id = str(question.get("current_version_id") or "")
@@ -2775,11 +3156,30 @@ def get_question_feedback(
                     selected_option_index=payload.selected_option_index,
                     input_values=composed_input_values,
                 )
-                latest_feedback = _read_latest_static_feedback_for_agent(
+                latest_feedback = _read_latest_versioned_feedback_for_agent(
                     db,
+                    question_id=question_id,
                     question_version_id=current_version_id,
                     agent_id=resolved_agent_id,
                     selected_option_id=selected_option_id,
+                )
+                if not latest_feedback:
+                    latest_feedback = _read_latest_static_feedback_for_agent(
+                        db,
+                        question_version_id=current_version_id,
+                        agent_id=resolved_agent_id,
+                        selected_option_id=selected_option_id,
+                    )
+                latest_source = str(latest_feedback.get("source") or "").strip()
+                latest_version_id = (
+                    str(latest_feedback.get("version_id"))
+                    if latest_feedback.get("version_id") is not None
+                    else None
+                )
+                latest_revision_no = (
+                    int(latest_feedback.get("revision_no"))
+                    if latest_feedback.get("revision_no") is not None
+                    else None
                 )
                 latest_static = (
                     str(latest_feedback.get("static_feedback_text"))
@@ -2843,6 +3243,16 @@ def get_question_feedback(
                         "feedback": latest_structured or latest_static,
                         "has_feedback": bool(latest_static or latest_structured),
                         "feedback_source": "latest_version_static",
+                        "resolved_selected_option_id": selected_option_id,
+                        "selected_option_index_payload": payload.selected_option_index,
+                        "selected_option_index_input_values": (
+                            composed_input_values.get("selected_option_index")
+                            if composed_input_values.get("selected_option_index") is not None
+                            else composed_input_values.get("selectedOptionIndex")
+                        ),
+                        "latest_feedback_source_table": (latest_source or "feedback_link"),
+                        "latest_feedback_version_id": latest_version_id,
+                        "latest_feedback_revision_no": latest_revision_no,
                     }
                     if slide_mode == "most_relevant_slide_page":
                         quick_result["most_relevant_slide_pages"] = retrieved_pages
