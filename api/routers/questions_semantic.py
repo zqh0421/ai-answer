@@ -1660,92 +1660,10 @@ def _resolve_runtime_attempt_stats(
                 elif qtype in {"free_text", "essay"}:
                     question_score_maximum = 2.0
 
-    has_scoring = False
-    is_unlimited = True
-    max_attempts: int | None = None
+    has_scoring = bool(composition_id) and ("scoring" in str(composition_id).lower())
+    is_unlimited = not has_scoring
+    max_attempts: int | None = 3 if has_scoring else None
     attempt_time_limit_seconds: int | None = None
-    if composition_id:
-        comp_columns = {
-            str(c)
-            for c in db.execute(
-                text(
-                    """
-                    SELECT column_name
-                    FROM information_schema.columns
-                    WHERE table_schema = current_schema()
-                      AND table_name = 'feedback_compositions'
-                    """
-                )
-            ).scalars().all()
-        }
-        score_flag_cols = [
-            "is_scoring",
-            "if_score",
-            "scoring_enabled",
-            "has_scoring",
-            "enable_scoring",
-            "score_enabled",
-        ]
-        unlimited_cols = ["is_unlimited", "unlimited_attempts"]
-        max_attempt_candidates = ["max_attempts", "attempt_limit", "attempts_limit"]
-        time_limit_candidates = [
-            "attempt_time_limit_seconds",
-            "attempt_time_limit_sec",
-            "attempt_time_limit",
-            "time_limit_seconds",
-            "time_limit_sec",
-        ]
-        selectable = [
-            c
-            for c in [*score_flag_cols, *unlimited_cols, *max_attempt_candidates, *time_limit_candidates]
-            if c in comp_columns
-        ]
-        if selectable:
-            comp_row = db.execute(
-                text(
-                    f"""
-                    SELECT {", ".join(selectable)}
-                    FROM feedback_compositions
-                    WHERE composition_id = :composition_id
-                    LIMIT 1
-                    """
-                ),
-                {"composition_id": composition_id},
-            ).mappings().first()
-        else:
-            comp_row = None
-
-        if comp_row:
-            for col in score_flag_cols:
-                if col in comp_row and comp_row.get(col) is not None:
-                    has_scoring = bool(comp_row.get(col))
-                    break
-            for col in unlimited_cols:
-                if col in comp_row and comp_row.get(col) is not None:
-                    is_unlimited = bool(comp_row.get(col))
-                    break
-            for col in max_attempt_candidates:
-                value = comp_row.get(col)
-                if value is None:
-                    continue
-                try:
-                    max_attempts = int(value)
-                except Exception:
-                    max_attempts = None
-                break
-            for col in time_limit_candidates:
-                value = comp_row.get(col)
-                if value is None:
-                    continue
-                try:
-                    attempt_time_limit_seconds = int(value)
-                except Exception:
-                    attempt_time_limit_seconds = None
-                break
-        if has_scoring and max_attempts is None:
-            max_attempts = 3
-        if not has_scoring:
-            is_unlimited = True
 
     remaining_attempts = None
     if max_attempts is not None:

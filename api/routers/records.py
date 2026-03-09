@@ -347,63 +347,15 @@ def _ensure_feedback_record_result_composition_column(db: Session) -> None:
     )
 
 
-def _feedback_compositions_columns(db: Session) -> set[str]:
-    rows = db.execute(
-        text(
-            """
-            SELECT column_name
-            FROM information_schema.columns
-            WHERE table_name = 'feedback_compositions'
-              AND table_schema = current_schema()
-            """
-        )
-    ).scalars().all()
-    return {str(col) for col in rows}
-
-
-def _feedback_agent_has_if_score_column(db: Session) -> bool:
-    return bool(
-        db.execute(
-            text(
-                """
-                SELECT 1
-                FROM information_schema.columns
-                WHERE table_schema = current_schema()
-                  AND table_name = 'feedback_agent'
-                  AND column_name = 'if_score'
-                LIMIT 1
-                """
-            )
-        ).scalar()
-    )
-
-
 def _resolve_composition_scoring_config(
     db: Session,
     *,
     composition_id: str,
 ) -> tuple[bool, bool]:
-    columns = _feedback_compositions_columns(db)
-    selectable_cols: list[str] = []
-    score_flag_cols = [
-        "is_scoring",
-        "if_score",
-        "scoring_enabled",
-        "has_scoring",
-        "enable_scoring",
-        "score_enabled",
-    ]
-    unlimited_cols = ["is_unlimited", "unlimited_attempts"]
-
-    for col in [*score_flag_cols, *unlimited_cols]:
-        if col in columns:
-            selectable_cols.append(col)
-
-    sql_cols = ", " + ", ".join(selectable_cols) if selectable_cols else ""
     row = db.execute(
         text(
-            f"""
-            SELECT composition_id, is_visible{sql_cols}
+            """
+            SELECT composition_id, is_visible
             FROM feedback_compositions
             WHERE composition_id = :composition_id
             LIMIT 1
@@ -414,95 +366,8 @@ def _resolve_composition_scoring_config(
     if not row or not bool(row.get("is_visible", True)):
         return False, False
 
-    has_scoring = False
-    has_unlimited = False
-    for col in unlimited_cols:
-        if col in row and row.get(col) is not None:
-            has_unlimited = bool(row.get(col))
-            if has_unlimited:
-                break
-
-    for col in score_flag_cols:
-        if col in row and row.get(col) is not None:
-            has_scoring = bool(row.get(col))
-            break
-
-    if not has_scoring and _feedback_agent_has_if_score_column(db):
-        has_scoring = bool(
-            db.execute(
-                text(
-                    """
-                    SELECT 1
-                    FROM feedback_composition_rules r
-                    JOIN feedback_agent a ON a.agent_id = r.feedback_agent_id
-                    WHERE r.composition_id = :composition_id
-                      AND r.is_enabled = TRUE
-                      AND COALESCE(a.if_score, FALSE) = TRUE
-                    LIMIT 1
-                    """
-                ),
-                {"composition_id": composition_id},
-            ).scalar()
-        )
-
-    if has_unlimited:
-        return True, False
-    if has_scoring:
-        return True, True
-    return True, False
-
-
-def _resolve_composition_limits(db: Session, *, composition_id: str) -> dict[str, int | None]:
-    columns = _feedback_compositions_columns(db)
-    max_attempt_candidates = ["max_attempts", "attempt_limit", "attempts_limit"]
-    time_limit_candidates = [
-        "attempt_time_limit_seconds",
-        "attempt_time_limit_sec",
-        "attempt_time_limit",
-        "time_limit_seconds",
-        "time_limit_sec",
-    ]
-    selectable = [c for c in [*max_attempt_candidates, *time_limit_candidates] if c in columns]
-    if not selectable:
-        return {"max_attempts": None, "attempt_time_limit_seconds": None}
-
-    row = db.execute(
-        text(
-            f"""
-            SELECT {", ".join(selectable)}
-            FROM feedback_compositions
-            WHERE composition_id = :composition_id
-            LIMIT 1
-            """
-        ),
-        {"composition_id": composition_id},
-    ).mappings().first()
-    if not row:
-        return {"max_attempts": None, "attempt_time_limit_seconds": None}
-
-    max_attempts = None
-    for col in max_attempt_candidates:
-        value = row.get(col)
-        if value is None:
-            continue
-        try:
-            max_attempts = int(value)
-        except Exception:
-            max_attempts = None
-        break
-
-    attempt_time_limit_seconds = None
-    for col in time_limit_candidates:
-        value = row.get(col)
-        if value is None:
-            continue
-        try:
-            attempt_time_limit_seconds = int(value)
-        except Exception:
-            attempt_time_limit_seconds = None
-        break
-
-    return {"max_attempts": max_attempts, "attempt_time_limit_seconds": attempt_time_limit_seconds}
+    has_scoring = "scoring" in str(composition_id).lower()
+    return True, has_scoring
 
 
 def _resolve_question_score_maximum(db: Session, *, question_id: str) -> float | None:
@@ -1044,10 +909,8 @@ def get_submission_stats(
         latest_attempt_score_max = (
             float(latest_attempt_score_max_raw) if latest_attempt_score_max_raw is not None else None
         )
-        composition_limits = _resolve_composition_limits(db, composition_id=normalized_composition_id)
-        configured_max_attempts = composition_limits.get("max_attempts")
-        max_attempts = configured_max_attempts if configured_max_attempts is not None else (3 if has_scoring else None)
-        attempt_time_limit_seconds = composition_limits.get("attempt_time_limit_seconds")
+        max_attempts = 3 if has_scoring else None
+        attempt_time_limit_seconds = None
         question_score_maximum = _resolve_question_score_maximum(db, question_id=normalized_question_id)
         resolved_max_score = question_score_maximum
         remaining_attempts = None
