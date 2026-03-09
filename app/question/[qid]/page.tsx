@@ -599,6 +599,10 @@ function QuestionWorkspace({
 
   const handleAnswerChange = (value: string) => {
     setAnswerText(value);
+    // Clear previously displayed feedback once the learner edits the answer.
+    setHasSubmitted(false);
+    setResult("");
+    setPromptVersion(null);
     setSaveStatus("Saving...");
     debouncedSaveAnswer(value);
   };
@@ -982,13 +986,18 @@ function QuestionWorkspace({
     }
 
     const selectedOptionIndex = isMCQ
-      ? Math.max(
-          0,
-          question.options.findIndex((item) => item.text === answerText)
-        )
+      ? (() => {
+          const idx = question.options.findIndex((item) => item.text === answerText);
+          return idx >= 0 ? idx : undefined;
+        })()
       : undefined;
-    const normalizedAnswerText =
-      isMCQ || isValidInput(answerText) ? answerText : "The student haven't provided any answer yet.";
+    const normalizedAnswerText = isMCQ
+      ? selectedOptionIndex !== undefined
+        ? answerText
+        : ""
+      : isValidInput(answerText)
+      ? answerText
+      : "The student haven't provided any answer yet.";
 
     const payload: Record<string, unknown> = {
       mode: "composition",
@@ -997,20 +1006,33 @@ function QuestionWorkspace({
       dry_run: false,
       learnerId: effectiveLearnerId,
       answerText: normalizedAnswerText,
-      ...(selectedOptionIndex !== undefined ? { inputValues: { selectedOptionIndex } } : {}),
+      ...(selectedOptionIndex !== undefined
+        ? { inputValues: { selectedOptionIndex, selected_option_index: selectedOptionIndex } }
+        : {}),
       ...(launchId ? { launchId } : {}),
       ...(ltiLaunchId ? { ltiLaunchId } : {}),
     };
 
     setHasSubmitted(true);
     setIsFeedbackLoading(true);
+    setResult("");
     setIsReferenceLoading(true);
     const startTime = Date.now();
+    if (debugModeEnabled) {
+      setDebugLastFeedbackPayload({
+        request: payload,
+      });
+    }
 
     try {
       const response = await axios.post(`/api/questions/${encodeURIComponent(targetQuestionId)}/feedback`, payload);
       const feedbackData = response.data || {};
-      if (debugModeEnabled) setDebugLastFeedbackPayload(feedbackData);
+      if (debugModeEnabled) {
+        setDebugLastFeedbackPayload({
+          request: payload,
+          response: feedbackData,
+        });
+      }
       const feedbackText = readFirstString(feedbackData?.feedback);
       const hasFeedback = typeof feedbackData?.has_feedback === "boolean" ? feedbackData.has_feedback : true;
       const feedbackSource = readFirstString(feedbackData?.feedback_source);
@@ -1145,7 +1167,12 @@ function QuestionWorkspace({
       const detail = error?.response?.data?.detail ?? error?.detail ?? null;
       console.error("Feedback error detail:", detail);
       const errorData = error?.response?.data || {};
-      if (debugModeEnabled) setDebugLastFeedbackPayload(errorData);
+      if (debugModeEnabled) {
+        setDebugLastFeedbackPayload({
+          request: payload,
+          error: errorData,
+        });
+      }
       const code = readFirstString(errorData?.code, errorData?.detail?.code);
       const message =
         readFirstString(errorData?.message, errorData?.detail?.message) ||
