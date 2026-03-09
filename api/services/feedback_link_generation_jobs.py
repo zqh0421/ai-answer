@@ -768,6 +768,42 @@ def _generate_feedback_text_from_context(
     return generated, debug_payload
 
 
+def generate_feedback_text_for_agent_without_link(
+    db,
+    *,
+    question_version_id: str,
+    agent_id: str,
+    input_values: dict[str, Any] | None = None,
+) -> tuple[str, dict[str, Any]]:
+    row = db.execute(
+        text(
+            """
+            SELECT
+              fa.agent_id,
+              fa.title AS agent_title,
+              fa.role,
+              fa.is_structured,
+              fa.provider,
+              fa.model,
+              fa.prompt_text,
+              fa.llm_params_text
+            FROM feedback_agent fa
+            WHERE fa.agent_id = :agent_id
+              AND fa.is_visible = TRUE
+            LIMIT 1
+            """
+        ),
+        {"agent_id": agent_id},
+    ).mappings().first()
+    if not row:
+        raise ValueError(f"visible_ai_agent_not_found: {agent_id}")
+    ctx = dict(row)
+    ctx["question_version_id"] = question_version_id
+    if str(ctx.get("role") or "") != "ai":
+        raise ValueError(f"agent_not_ai: {agent_id}")
+    return _generate_feedback_text_from_context(db, ctx, input_values=input_values)
+
+
 def resolve_feedback_prompt_for_feedback_link(
     feedback_link_id: str,
     *,

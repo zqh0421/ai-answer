@@ -19,6 +19,7 @@ from ..dependencies import get_db
 from .feedback_links import _get_agent as _get_feedback_agent, _insert_feedback_link
 from ..services.feedback_link_generation_jobs import (
     generate_static_feedback_for_feedback_link,
+    resolve_feedback_prompt_for_feedback_link,
 )
 from ..services.feedback_generation_flow import run_feedback_generation_flow
 from ..services.feedback_link_job_status import (
@@ -158,6 +159,13 @@ class QuestionVersionCreateRequest(BaseModel):
         if self.interactions[0].interaction_type != self.question_type:
             raise ValueError("question_type must match the first interaction_type")
         return self
+
+
+class QuestionContentPatchRequest(QuestionVersionCreateRequest):
+    # Batch update should preserve agent bindings by default, but avoid stale static cache.
+    copy_feedback_links_from_previous: bool = True
+    copy_ai_static_feedback: bool = False
+    copy_human_static_feedback: bool = False
 
 
 class ScopePatchRequest(BaseModel):
@@ -626,6 +634,92 @@ def _runtime_feedback_link_id_for_agent(
     ) or _find_any_visible_question_link(
         db, question_version_id=question_version_id, agent_id=agent_id
     )
+
+
+def _runtime_selected_option_id_from_payload(
+    db: Session,
+    *,
+    question_version_id: str,
+    selected_option_index: int | None,
+    input_values: dict[str, Any] | None,
+) -> str | None:
+    values = input_values or {}
+    explicit_id = values.get("selected_option_id") or values.get("selectedOptionId")
+    if explicit_id:
+        return str(explicit_id)
+    if selected_option_index is None:
+        return None
+    option_ids = _runtime_option_ids_for_version(db, question_version_id)
+    if 0 <= int(selected_option_index) < len(option_ids):
+        return str(option_ids[int(selected_option_index)])
+    return None
+
+
+def _read_latest_static_feedback_for_agent(
+    db: Session,
+    *,
+    question_version_id: str,
+    agent_id: str,
+    selected_option_id: str | None,
+) -> dict[str, Any]:
+    if selected_option_id:
+        row = db.execute(
+            text(
+                """
+                SELECT feedback_link_id, static_feedback_text, structured_feedback_text
+                FROM feedback_link
+                WHERE question_version_id = :question_version_id
+                  AND agent_id = :agent_id
+                  AND target_entity_type = 'interaction_option'
+                  AND target_entity_id = :selected_option_id
+                  AND is_visible = TRUE
+                ORDER BY created_at DESC
+                LIMIT 1
+                """
+            ),
+            {
+                "question_version_id": question_version_id,
+                "agent_id": agent_id,
+                "selected_option_id": selected_option_id,
+            },
+        ).mappings().first()
+        if row:
+            return dict(row)
+
+    row = db.execute(
+        text(
+            """
+            SELECT feedback_link_id, static_feedback_text, structured_feedback_text
+            FROM feedback_link
+            WHERE question_version_id = :question_version_id
+              AND agent_id = :agent_id
+              AND target_entity_type = 'question_version'
+              AND target_entity_id = :question_version_id
+              AND is_visible = TRUE
+            ORDER BY created_at DESC
+            LIMIT 1
+            """
+        ),
+        {"question_version_id": question_version_id, "agent_id": agent_id},
+    ).mappings().first()
+    if row:
+        return dict(row)
+
+    row = db.execute(
+        text(
+            """
+            SELECT feedback_link_id, static_feedback_text, structured_feedback_text
+            FROM feedback_link
+            WHERE question_version_id = :question_version_id
+              AND agent_id = :agent_id
+              AND is_visible = TRUE
+            ORDER BY created_at DESC
+            LIMIT 1
+            """
+        ),
+        {"question_version_id": question_version_id, "agent_id": agent_id},
+    ).mappings().first()
+    return dict(row) if row else {}
 
 
 def _ensure_feedback_runtime_prompt_cache_schema(db: Session) -> None:
@@ -1200,25 +1294,55 @@ def _coerce_runtime_learner_id(value: str | None) -> str:
     return f"test_learner_{secrets.token_hex(4)}"
 
 
-def _resolve_runtime_attempt_stats(db: Session, *, learner_id: str, question_id: str) -> dict[str, int]:
-    row = db.execute(
-        text(
-            """
-            SELECT
-              COUNT(*)::INT AS attempted_count,
-              COALESCE(SUM(
-                CASE
-                  WHEN COALESCE(score_maximum, 0) > 0
-                   AND COALESCE(score_given, 0) >= COALESCE(score_maximum, 0)
-                  THEN 1 ELSE 0 END
-              ), 0)::INT AS correct_count
-            FROM feedback_record_result
-            WHERE question_id = :question_id
-              AND participant_id = :learner_id
-            """
-        ),
-        {"question_id": question_id, "learner_id": learner_id},
-    ).mappings().first()
+def _resolve_runtime_attempt_stats(
+    db: Session,
+    *,
+    learner_id: str,
+    question_id: str,
+    composition_id: str | None = None,
+) -> dict[str, int]:
+    try:
+        row = db.execute(
+            text(
+                """
+                SELECT
+                  COUNT(*)::INT AS attempted_count,
+                  COALESCE(SUM(
+                    CASE
+                      WHEN COALESCE(score_maximum, 0) > 0
+                       AND COALESCE(score_given, 0) >= COALESCE(score_maximum, 0)
+                      THEN 1 ELSE 0 END
+                  ), 0)::INT AS correct_count
+                FROM feedback_record_result
+                WHERE question_id = :question_id
+                  AND participant_id = :learner_id
+                  AND composition_id IS NOT DISTINCT FROM :composition_id
+                """
+            ),
+            {"question_id": question_id, "learner_id": learner_id, "composition_id": composition_id},
+        ).mappings().first()
+    except Exception as exc:
+        if "composition_id" not in str(exc):
+            raise
+        db.rollback()
+        row = db.execute(
+            text(
+                """
+                SELECT
+                  COUNT(*)::INT AS attempted_count,
+                  COALESCE(SUM(
+                    CASE
+                      WHEN COALESCE(score_maximum, 0) > 0
+                       AND COALESCE(score_given, 0) >= COALESCE(score_maximum, 0)
+                      THEN 1 ELSE 0 END
+                  ), 0)::INT AS correct_count
+                FROM feedback_record_result
+                WHERE question_id = :question_id
+                  AND participant_id = :learner_id
+                """
+            ),
+            {"question_id": question_id, "learner_id": learner_id},
+        ).mappings().first()
     attempted = int(row["attempted_count"] or 0) if row else 0
     correct = int(row["correct_count"] or 0) if row else 0
     return {
@@ -1252,7 +1376,12 @@ def _resolve_composition_match(
     if bound_qid and str(bound_qid) != question_id:
         return None, None
 
-    context = _resolve_runtime_attempt_stats(db, learner_id=learner_id, question_id=question_id)
+    context = _resolve_runtime_attempt_stats(
+        db,
+        learner_id=learner_id,
+        question_id=question_id,
+        composition_id=composition_id,
+    )
     rows = db.execute(
         text(
             """
@@ -1894,20 +2023,44 @@ def _insert_question_version_bundle(
     return {"question_version_id": qv_id, "interaction_id": interaction_id_map.get(1)}
 
 
-def _copy_feedback_links_from_previous(db: Session, *, source_qv_id: str, target_qv_id: str, created_by: str) -> int:
+def _copy_feedback_links_from_previous(
+    db: Session,
+    *,
+    source_qv_id: str,
+    target_qv_id: str,
+    created_by: str,
+    copy_ai_static_feedback: bool = True,
+    copy_human_static_feedback: bool = True,
+) -> int:
     # Copying target references safely across versions requires entity remapping. For now only clone question_version-level links.
     rows = db.execute(
         text(
             """
-            SELECT agent_id, target_entity_type, target_entity_id, priority, static_feedback_text, structured_feedback_text, is_visible
-            FROM feedback_link
-            WHERE question_version_id = :source_qv_id AND is_visible = TRUE AND target_entity_type = 'question_version'
+            SELECT
+              fl.agent_id,
+              fl.target_entity_type,
+              fl.target_entity_id,
+              fl.priority,
+              fl.static_feedback_text,
+              fl.structured_feedback_text,
+              fl.is_visible,
+              COALESCE(fa.role::text, '') AS agent_role
+            FROM feedback_link fl
+            LEFT JOIN feedback_agent fa ON fa.agent_id = fl.agent_id
+            WHERE fl.question_version_id = :source_qv_id
+              AND fl.is_visible = TRUE
+              AND fl.target_entity_type = 'question_version'
             """
         ),
         {"source_qv_id": source_qv_id},
     ).mappings().all()
     count = 0
     for row in rows:
+        role = str(row.get("agent_role") or "").strip().lower()
+        include_static = (
+            (role == "ai" and copy_ai_static_feedback)
+            or (role == "human" and copy_human_static_feedback)
+        )
         _insert_feedback_link(
             db,
             question_version_id=target_qv_id,
@@ -1915,8 +2068,8 @@ def _copy_feedback_links_from_previous(db: Session, *, source_qv_id: str, target
             target_entity_type="question_version",
             target_entity_id=target_qv_id,
             priority=row["priority"],
-            static_feedback_text=row["static_feedback_text"],
-            structured_feedback_text=row["structured_feedback_text"],
+            static_feedback_text=(row["static_feedback_text"] if include_static else None),
+            structured_feedback_text=(row["structured_feedback_text"] if include_static else None),
             created_by=created_by,
         )
         count += 1
@@ -2614,6 +2767,94 @@ def get_question_feedback(
             if payload.selected_option_index is not None:
                 composed_input_values["selected_option_index"] = payload.selected_option_index
 
+            if feedback_mode == "use_latest_version":
+                current_version_id = str(question.get("current_version_id") or "")
+                selected_option_id = _runtime_selected_option_id_from_payload(
+                    db,
+                    question_version_id=current_version_id,
+                    selected_option_index=payload.selected_option_index,
+                    input_values=composed_input_values,
+                )
+                latest_feedback = _read_latest_static_feedback_for_agent(
+                    db,
+                    question_version_id=current_version_id,
+                    agent_id=resolved_agent_id,
+                    selected_option_id=selected_option_id,
+                )
+                latest_static = (
+                    str(latest_feedback.get("static_feedback_text"))
+                    if latest_feedback.get("static_feedback_text") is not None
+                    else None
+                )
+                latest_structured = (
+                    str(latest_feedback.get("structured_feedback_text"))
+                    if latest_feedback.get("structured_feedback_text") is not None
+                    else None
+                )
+                if latest_static or latest_structured:
+                    retrieved_pages: list[dict[str, Any]] = []
+                    latest_feedback_link_id = (
+                        str(latest_feedback.get("feedback_link_id"))
+                        if latest_feedback.get("feedback_link_id") is not None
+                        else None
+                    )
+                    if slide_mode == "most_relevant_slide_page" and latest_feedback_link_id:
+                        resolved_prompt = resolve_feedback_prompt_for_feedback_link(
+                            latest_feedback_link_id,
+                            input_values=composed_input_values,
+                        )
+                        if resolved_prompt.get("ok"):
+                            resolved_input_values = resolved_prompt.get("resolved_input_values")
+                            if isinstance(resolved_input_values, dict):
+                                raw_pages = resolved_input_values.get("retrieved_slide_pages")
+                                if isinstance(raw_pages, list):
+                                    retrieved_pages = [item for item in raw_pages if isinstance(item, dict)]
+                    quick_result = {
+                        "ok": True,
+                        "feedback_link_id": latest_feedback_link_id,
+                        "question_id": question_id,
+                        "question_version_id": current_version_id,
+                        "agent_id": resolved_agent_id,
+                        "agent_name": agent_name,
+                        "dry_run": payload.dry_run,
+                        "queued": False,
+                        "generation_enqueue_reason": None,
+                        "persisted": False,
+                        "static_feedback_text": latest_static or latest_structured,
+                        "structured_feedback_text": latest_structured,
+                        "ai_score_result": None,
+                        "mode": "composition",
+                        "composition_id": str(payload.composition_id),
+                        "matched_rule_id": matched_rule_id,
+                        "feedback_mode": feedback_mode,
+                        "slide_mode": slide_mode,
+                        "feedback_agent_id": resolved_agent_id,
+                        "feedback_agent_name": agent_name,
+                        "variables": variables
+                        or _resolve_runtime_attempt_stats(
+                            db,
+                            learner_id=learner_id,
+                            question_id=question_id,
+                            composition_id=str(payload.composition_id),
+                        ),
+                        "learner_id": learner_id,
+                        "launch_id": payload.launch_id or payload.lti_launch_id,
+                        "lti_launch_id": payload.lti_launch_id or payload.launch_id,
+                        "feedback": latest_structured or latest_static,
+                        "has_feedback": bool(latest_static or latest_structured),
+                        "feedback_source": "latest_version_static",
+                    }
+                    if slide_mode == "most_relevant_slide_page":
+                        quick_result["most_relevant_slide_pages"] = retrieved_pages
+                        reference = _compose_reference_from_retrieved_pages(
+                            db=db,
+                            question_id=question_id,
+                            retrieved_pages=retrieved_pages,
+                        )
+                        if reference is not None:
+                            quick_result["reference"] = reference
+                    return quick_result
+
             agent_payload = AttachedAgentFeedbackRequest.model_validate(
                 {
                     "updatedBy": payload.updated_by,
@@ -2656,7 +2897,13 @@ def get_question_feedback(
                     "slide_mode": slide_mode,
                     "feedback_agent_id": resolved_agent_id,
                     "feedback_agent_name": agent_name,
-                    "variables": variables or _resolve_runtime_attempt_stats(db, learner_id=learner_id, question_id=question_id),
+                    "variables": variables
+                    or _resolve_runtime_attempt_stats(
+                        db,
+                        learner_id=learner_id,
+                        question_id=question_id,
+                        composition_id=str(payload.composition_id),
+                    ),
                     "learner_id": learner_id,
                     "launch_id": payload.launch_id or payload.lti_launch_id,
                     "lti_launch_id": payload.lti_launch_id or payload.launch_id,
@@ -3275,6 +3522,70 @@ def patch_semantic_question_scope(question_id: str, payload: ScopePatchRequest, 
         raise HTTPException(status_code=404, detail="question not found")
     db.commit()
     return {"ok": True, "question": _question_row(db, question_id)}
+
+
+@router.patch("/questions/{question_id}")
+def patch_semantic_question_content(
+    question_id: str,
+    payload: QuestionContentPatchRequest,
+    db: Session = Depends(get_db),
+):
+    if not _user_exists(db, payload.created_by):
+        raise HTTPException(status_code=400, detail="created_by user_id not found")
+    question = _question_row(db, question_id)
+    if not question:
+        raise HTTPException(status_code=404, detail="question not found")
+
+    source_qv_id = str(question.get("current_version_id") or "")
+    if not source_qv_id:
+        raise HTTPException(status_code=409, detail="question has no current version")
+
+    try:
+        max_version = db.execute(
+            text("SELECT COALESCE(MAX(version_no), 0) FROM content_question_version WHERE question_id = :qid"),
+            {"qid": question_id},
+        ).scalar() or 0
+        bundle = _insert_question_version_bundle(
+            db,
+            question_id=question_id,
+            version_no=int(max_version) + 1,
+            payload=payload,
+            change_note=(payload.change_note or "Patch content update"),
+            set_as_current=True,
+        )
+        copied_feedback_links = 0
+        if payload.copy_feedback_links_from_previous:
+            copied_feedback_links = _copy_feedback_links_from_previous(
+                db,
+                source_qv_id=source_qv_id,
+                target_qv_id=bundle["question_version_id"],
+                created_by=payload.created_by,
+                copy_ai_static_feedback=bool(payload.copy_ai_static_feedback),
+                copy_human_static_feedback=bool(payload.copy_human_static_feedback),
+            )
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+    detail = get_semantic_question_version_detail(db, bundle["question_version_id"])
+    if detail is not None:
+        detail["interactions"] = _apply_option_order_policy(
+            detail.get("interactions") or [],
+            randomize_option_order=bool(detail["question_version"].get("randomize_option_order", True)),
+        )
+    return {
+        "ok": True,
+        "question_id": question_id,
+        "question_version_id": bundle["question_version_id"],
+        "copied_feedback_links": copied_feedback_links,
+        "copied_ai_static_feedback": bool(payload.copy_ai_static_feedback),
+        "copied_human_static_feedback": bool(payload.copy_human_static_feedback),
+        "item": detail,
+    }
 
 
 @router.patch("/questions/{question_id}/visibility")

@@ -123,25 +123,55 @@ def _serialize_rules(db: Session, composition_id: str) -> list[dict[str, Any]]:
     ]
 
 
-def _get_attempt_stats(db: Session, *, learner_id: str, question_id: str) -> dict[str, int]:
+def _get_attempt_stats(
+    db: Session,
+    *,
+    learner_id: str,
+    question_id: str,
+    composition_id: str | None = None,
+) -> dict[str, int]:
     if question_id.startswith("qn_"):
-        row = db.execute(
-            text(
-                """
-                SELECT
-                  COUNT(*)::INT AS attempted_count,
-                  COALESCE(SUM(
-                    CASE
-                      WHEN COALESCE(score_maximum, 0) > 0
-                       AND COALESCE(score_given, 0) >= COALESCE(score_maximum, 0)
-                      THEN 1 ELSE 0 END
-                  ), 0)::INT AS correct_count
-                FROM feedback_record_result
-                WHERE question_id = :question_id AND participant_id = :learner_id
-                """
-            ),
-            {"question_id": question_id, "learner_id": learner_id},
-        ).mappings().first()
+        try:
+            row = db.execute(
+                text(
+                    """
+                    SELECT
+                      COUNT(*)::INT AS attempted_count,
+                      COALESCE(SUM(
+                        CASE
+                          WHEN COALESCE(score_maximum, 0) > 0
+                           AND COALESCE(score_given, 0) >= COALESCE(score_maximum, 0)
+                          THEN 1 ELSE 0 END
+                    ), 0)::INT AS correct_count
+                    FROM feedback_record_result
+                    WHERE question_id = :question_id
+                      AND participant_id = :learner_id
+                      AND composition_id IS NOT DISTINCT FROM :composition_id
+                    """
+                ),
+                {"question_id": question_id, "learner_id": learner_id, "composition_id": composition_id},
+            ).mappings().first()
+        except Exception as exc:
+            if "composition_id" not in str(exc):
+                raise
+            db.rollback()
+            row = db.execute(
+                text(
+                    """
+                    SELECT
+                      COUNT(*)::INT AS attempted_count,
+                      COALESCE(SUM(
+                        CASE
+                          WHEN COALESCE(score_maximum, 0) > 0
+                           AND COALESCE(score_given, 0) >= COALESCE(score_maximum, 0)
+                          THEN 1 ELSE 0 END
+                      ), 0)::INT AS correct_count
+                    FROM feedback_record_result
+                    WHERE question_id = :question_id AND participant_id = :learner_id
+                    """
+                ),
+                {"question_id": question_id, "learner_id": learner_id},
+            ).mappings().first()
         attempted = int(row["attempted_count"] or 0) if row else 0
         correct = int(row["correct_count"] or 0) if row else 0
         wrong = max(attempted - correct, 0)
@@ -435,7 +465,12 @@ def resolve_feedback_composition(
     if bound_question_type and query.question_type and str(bound_question_type) != query.question_type:
         raise HTTPException(status_code=400, detail="composition question_type mismatch")
 
-    context = _get_attempt_stats(db, learner_id=final_learner_id, question_id=query.question_id)
+    context = _get_attempt_stats(
+        db,
+        learner_id=final_learner_id,
+        question_id=query.question_id,
+        composition_id=composition_id,
+    )
     rules = _serialize_rules(db, composition_id)
     matched_rule: dict[str, Any] | None = None
     for rule in rules:

@@ -14,6 +14,10 @@ class RecordResultModel(BaseModel):
     study_id: str
     # ip_address: Optional[str] = None
     question_id: str
+    composition_id: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("composition_id", "compositionId"),
+    )
     answer: str
     preferred_info_type: str
     prompt_engineering_method: str

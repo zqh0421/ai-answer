@@ -13,6 +13,7 @@ from ..routers.feedback_links import _get_agent as _get_feedback_agent
 from .feedback_link_generation_jobs import (
     generate_static_feedback_for_feedback_link,
     generate_static_feedback_with_version_snapshot_for_feedback_link,
+    generate_feedback_text_for_agent_without_link,
 )
 from .feedback_link_job_status import set_feedback_link_generation_job_id
 from .ids import generate_short_id
@@ -450,7 +451,9 @@ def _resolve_human_agent_ai_score_result(
         return {
             "enabled": True,
             "has_score": False,
+            "code": "AI_SCORE_AGENT_NOT_CONFIGURED",
             "reason": "missing_score_ai_agent_id",
+            "message": "Human scoring agent is enabled, but score_ai_agent_id is not configured.",
         }
 
     ai_feedback_link_id = _runtime_feedback_link_id_for_agent(
@@ -459,38 +462,69 @@ def _resolve_human_agent_ai_score_result(
         agent_id=ai_agent_id,
         selected_option_id=selected_option_id,
     )
-    if not ai_feedback_link_id:
-        return {
-            "enabled": True,
-            "has_score": False,
-            "ai_agent_id": ai_agent_id,
-            "reason": "ai_feedback_link_not_found",
-        }
-
-    generated = generate_static_feedback_for_feedback_link(
-        str(ai_feedback_link_id),
-        persist=False,
-        enforce_ai_role=True,
-        input_values=runtime_inputs,
-        include_debug=True,
-    )
+    if ai_feedback_link_id:
+        generated = generate_static_feedback_for_feedback_link(
+            str(ai_feedback_link_id),
+            persist=False,
+            enforce_ai_role=True,
+            input_values=runtime_inputs,
+            include_debug=True,
+        )
+    else:
+        try:
+            generated_text, debug_payload = generate_feedback_text_for_agent_without_link(
+                db,
+                question_version_id=question_version_id,
+                agent_id=ai_agent_id,
+                input_values=runtime_inputs,
+            )
+            generated = {
+                "ok": True,
+                "static_feedback_text": generated_text,
+                "resolved_system_prompt": debug_payload.get("resolved_system_prompt"),
+                "resolved_user_text": debug_payload.get("resolved_user_text"),
+                "resolved_input_values": debug_payload.get("resolved_input_values"),
+                "without_feedback_link": True,
+            }
+        except Exception as exc:
+            return {
+                "enabled": True,
+                "has_score": False,
+                "code": "AI_SCORE_LINK_MISSING",
+                "ai_agent_id": ai_agent_id,
+                "reason": "ai_feedback_link_not_found",
+                "message": (
+                    "No visible feedback_link found for score_ai_agent on the current question version, "
+                    "and linkless generation fallback failed."
+                ),
+                "question_version_id": question_version_id,
+                "selected_option_id": selected_option_id,
+                "fallback_error": str(exc),
+            }
     if not generated.get("ok"):
         return {
             "enabled": True,
             "has_score": False,
+            "code": "AI_SCORE_GENERATION_FAILED",
             "ai_agent_id": ai_agent_id,
             "feedback_link_id": ai_feedback_link_id,
             "reason": str(generated.get("reason") or "ai_generation_failed"),
+            "message": "Score AI generation failed.",
         }
 
     extracted = _extract_score_from_generated_feedback(generated.get("static_feedback_text"))
+    structured_feedback = _extract_structured_feedback_from_generated_feedback(generated.get("static_feedback_text"))
     return {
         "enabled": True,
         "has_score": extracted.get("score") is not None,
         "ai_agent_id": ai_agent_id,
         "feedback_link_id": ai_feedback_link_id,
+        "without_feedback_link": bool(generated.get("without_feedback_link")),
         "score": extracted.get("score"),
         "max_score": extracted.get("max_score"),
+        "structured_feedback": structured_feedback,
+        "scoring_only": True,
+        "hide_structured_feedback_in_ui": True,
         "rendered_prompt": {
             "system_prompt": generated.get("resolved_system_prompt"),
             "user_text": generated.get("resolved_user_text"),

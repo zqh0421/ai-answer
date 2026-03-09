@@ -1,7 +1,8 @@
 import json
+from datetime import datetime, timezone
 from urllib.parse import parse_qsl, urlsplit
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -278,6 +279,159 @@ def _ensure_feedback_record_result_prompt_columns(db: Session) -> None:
     )
 
 
+def _ensure_feedback_record_result_composition_column(db: Session) -> None:
+    db.execute(
+        text(
+            """
+            ALTER TABLE feedback_record_result
+            ADD COLUMN IF NOT EXISTS composition_id VARCHAR(64) NULL
+            """
+        )
+    )
+    db.execute(
+        text(
+            """
+            CREATE INDEX IF NOT EXISTS ix_feedback_record_result_participant_question_composition
+            ON feedback_record_result (participant_id, question_id, composition_id)
+            """
+        )
+    )
+
+
+def _feedback_compositions_columns(db: Session) -> set[str]:
+    rows = db.execute(
+        text(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = 'feedback_compositions'
+              AND table_schema = current_schema()
+            """
+        )
+    ).scalars().all()
+    return {str(col) for col in rows}
+
+
+def _feedback_agent_has_if_score_column(db: Session) -> bool:
+    return bool(
+        db.execute(
+            text(
+                """
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND table_name = 'feedback_agent'
+                  AND column_name = 'if_score'
+                LIMIT 1
+                """
+            )
+        ).scalar()
+    )
+
+
+def _resolve_composition_scoring_config(
+    db: Session,
+    *,
+    composition_id: str,
+) -> tuple[bool, bool]:
+    columns = _feedback_compositions_columns(db)
+    selectable_cols: list[str] = []
+    score_flag_cols = [
+        "is_scoring",
+        "if_score",
+        "scoring_enabled",
+        "has_scoring",
+        "enable_scoring",
+        "score_enabled",
+    ]
+    unlimited_cols = ["is_unlimited", "unlimited_attempts"]
+
+    for col in [*score_flag_cols, *unlimited_cols]:
+        if col in columns:
+            selectable_cols.append(col)
+
+    sql_cols = ", " + ", ".join(selectable_cols) if selectable_cols else ""
+    row = db.execute(
+        text(
+            f"""
+            SELECT composition_id, is_visible{sql_cols}
+            FROM feedback_compositions
+            WHERE composition_id = :composition_id
+            LIMIT 1
+            """
+        ),
+        {"composition_id": composition_id},
+    ).mappings().first()
+    if not row or not bool(row.get("is_visible", True)):
+        return False, False
+
+    has_scoring = False
+    has_unlimited = False
+    for col in unlimited_cols:
+        if col in row and row.get(col) is not None:
+            has_unlimited = bool(row.get(col))
+            if has_unlimited:
+                break
+
+    for col in score_flag_cols:
+        if col in row and row.get(col) is not None:
+            has_scoring = bool(row.get(col))
+            break
+
+    if not has_scoring and _feedback_agent_has_if_score_column(db):
+        has_scoring = bool(
+            db.execute(
+                text(
+                    """
+                    SELECT 1
+                    FROM feedback_composition_rules r
+                    JOIN feedback_agent a ON a.agent_id = r.feedback_agent_id
+                    WHERE r.composition_id = :composition_id
+                      AND r.is_enabled = TRUE
+                      AND COALESCE(a.if_score, FALSE) = TRUE
+                    LIMIT 1
+                    """
+                ),
+                {"composition_id": composition_id},
+            ).scalar()
+        )
+
+    if has_unlimited:
+        return True, False
+    if has_scoring:
+        return True, True
+    return True, False
+
+
+def _feedback_record_result_timestamp_column(db: Session) -> str | None:
+    cols = db.execute(
+        text(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = 'feedback_record_result'
+              AND table_schema = current_schema()
+              AND column_name = ANY(CAST(:candidates AS text[]))
+            """
+        ),
+        {"candidates": ["updated_at", "created_at", "submission_time"]},
+    ).scalars().all()
+    available = {str(c) for c in cols}
+    for col in ("updated_at", "created_at", "submission_time"):
+        if col in available:
+            return col
+    return None
+
+
+def _to_iso_utc(value: datetime | None) -> str:
+    dt = value or datetime.now(timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return dt.isoformat().replace("+00:00", "Z")
+
+
 def _ensure_feedback_runtime_prompt_cache_schema(db: Session) -> None:
     db.execute(
         text(
@@ -485,6 +639,7 @@ def record_result(
         inferred_score = _resolve_mcq_score(db, result.question_id, result.answer)
         score_given = result.score_given if result.score_given is not None else (inferred_score[0] if inferred_score else None)
         score_maximum = result.score_maximum if result.score_maximum is not None else (inferred_score[1] if inferred_score else None)
+        _ensure_feedback_record_result_composition_column(db)
         previous_attempts = db.execute(
             text(
                 """
@@ -492,9 +647,14 @@ def record_result(
                 FROM feedback_record_result
                 WHERE question_id = :question_id
                   AND participant_id = :participant_id
+                  AND composition_id IS NOT DISTINCT FROM :composition_id
                 """
             ),
-            {"question_id": result.question_id, "participant_id": result.learner_id},
+            {
+                "question_id": result.question_id,
+                "participant_id": result.learner_id,
+                "composition_id": result.composition_id,
+            },
         ).scalar()
         attempt_count = int(previous_attempts or 0) + 1
         semantic_record_id = _next_feedback_record_result_id(db)
@@ -529,6 +689,7 @@ def record_result(
                     record_result_id,
                     participant_id,
                     question_id,
+                    composition_id,
                     question_version_id,
                     answer_text,
                     attempt_count,
@@ -548,6 +709,7 @@ def record_result(
                     :record_result_id,
                     :participant_id,
                     :question_id,
+                    :composition_id,
                     :question_version_id,
                     :answer_text,
                     :attempt_count,
@@ -569,6 +731,7 @@ def record_result(
                 "record_result_id": semantic_record_id,
                 "participant_id": result.learner_id,
                 "question_id": result.question_id,
+                "composition_id": result.composition_id,
                 "question_version_id": question_version_id,
                 "answer_text": result.answer,
                 "attempt_count": attempt_count,
@@ -618,6 +781,89 @@ def record_result(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=f"Error recording result: {str(e)}")
+
+
+@router.get("/submission-stats")
+def get_submission_stats(
+    learner_id: str | None = Query(default=None),
+    question_id: str | None = Query(default=None),
+    composition_id: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    if not learner_id or not str(learner_id).strip():
+        raise HTTPException(status_code=400, detail={"code": "INVALID_PARAMS", "message": "learner_id is required"})
+    if not question_id or not str(question_id).strip():
+        raise HTTPException(status_code=400, detail={"code": "INVALID_PARAMS", "message": "question_id is required"})
+    if not composition_id or not str(composition_id).strip():
+        raise HTTPException(status_code=400, detail={"code": "INVALID_PARAMS", "message": "composition_id is required"})
+
+    normalized_learner_id = str(learner_id).strip()
+    normalized_question_id = str(question_id).strip()
+    normalized_composition_id = str(composition_id).strip()
+
+    try:
+        _ensure_feedback_record_result_composition_column(db)
+
+        exists, has_scoring = _resolve_composition_scoring_config(
+            db,
+            composition_id=normalized_composition_id,
+        )
+        if not exists:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "COMPOSITION_NOT_FOUND", "message": "composition not found"},
+            )
+
+        timestamp_col = _feedback_record_result_timestamp_column(db)
+        ts_select = f"MAX({timestamp_col}) AS latest_ts," if timestamp_col else "NULL::timestamp AS latest_ts,"
+        stats_row = db.execute(
+            text(
+                f"""
+                SELECT
+                  COUNT(*)::INT AS attempt_count,
+                  MAX(score_given) AS best_score,
+                  MAX(score_maximum) AS best_score_max,
+                  {ts_select}
+                  NOW() AS now_ts
+                FROM feedback_record_result
+                WHERE participant_id = :learner_id
+                  AND question_id = :question_id
+                  AND composition_id = :composition_id
+                """
+            ),
+            {
+                "learner_id": normalized_learner_id,
+                "question_id": normalized_question_id,
+                "composition_id": normalized_composition_id,
+            },
+        ).mappings().first()
+
+        attempt_count = int((stats_row or {}).get("attempt_count") or 0)
+        best_score_raw = (stats_row or {}).get("best_score")
+        best_score_max_raw = (stats_row or {}).get("best_score_max")
+        updated_at_value = (stats_row or {}).get("latest_ts") or (stats_row or {}).get("now_ts")
+        best_score_max = float(best_score_max_raw) if best_score_max_raw is not None and has_scoring else None
+
+        return {
+            "learner_id": normalized_learner_id,
+            "question_id": normalized_question_id,
+            "composition_id": normalized_composition_id,
+            "attempt_count": max(attempt_count, 0),
+            "max_attempts": (3 if has_scoring else None),
+            "is_unlimited": (not has_scoring),
+            "best_score": (float(best_score_raw) if best_score_raw is not None and has_scoring else None),
+            "best_score_max": best_score_max,
+            "max_score": best_score_max,
+            "score_maximum": best_score_max,
+            "updated_at": _to_iso_utc(updated_at_value),
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={"code": "INTERNAL_SERVER_ERROR", "message": str(exc)},
+        ) from exc
 
 
 @router.post("/record_result/{record_id}/audio-usage")
