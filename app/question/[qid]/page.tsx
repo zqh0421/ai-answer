@@ -1615,7 +1615,7 @@ function QuestionWorkspace({
                     </span>
                     {" "}
                     (the score from your first attempt to this question)
-                    <div className="mt-1">Please feel free to dispute the AI score with your instructor or TA if you disagree with it.</div>
+                    <div className="mt-1">Please feel free to dispute the AI scoring with your instructor or TA.</div>
                   </div>
                 ) : null}
                 {attemptsExhausted ? (
