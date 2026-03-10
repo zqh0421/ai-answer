@@ -17,7 +17,7 @@ interface HTMLFeedbackAreaProps {
   maxScore?: string | number;
   isStreaming?: boolean;
   promptVersion?: string | null;
-  recordId?: number | null; // Record ID for saving rating
+  recordId?: string | null; // Record ID for saving rating
 }
 
 // Component to render HTML feedback as a coherent paragraph with inline formatting
@@ -35,38 +35,42 @@ const HTMLFeedbackArea: React.FC<HTMLFeedbackAreaProps> = ({
     null
   );
   const [hasRated, setHasRated] = useState(false);
+  const [isSavingRating, setIsSavingRating] = useState(false);
+  const [ratingError, setRatingError] = useState<string | null>(null);
 
   // Both learner and corrective feedback now show score-based icons
 
   // Handle feedback rating
   const handleFeedbackRating = async (rating: "good" | "bad") => {
-    setFeedbackRating(rating);
-    setHasRated(true);
+    if (!recordId || isSavingRating) {
+      setRatingError("Unable to save feedback rating yet. Please try again in a moment.");
+      return;
+    }
 
-    // Send rating to backend if recordId is available
-    if (recordId) {
-      try {
-        const response = await fetch(`/api/record_result/${recordId}/rating`, {
-          method: "PUT",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            rating: rating === "good",
-          }),
-        });
+    setIsSavingRating(true);
+    setRatingError(null);
+    try {
+      const response = await fetch(`/api/record_result/${encodeURIComponent(String(recordId))}/rating`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          rating: rating === "good",
+        }),
+      });
 
-        if (!response.ok) {
-          throw new Error("Failed to save rating");
-        }
-
-        console.log(`Rating saved successfully: ${rating}`);
-      } catch (error) {
-        console.error("Error saving rating:", error);
-        // Optionally show user feedback about the error
+      if (!response.ok) {
+        throw new Error(`Failed to save rating: HTTP ${response.status}`);
       }
-    } else {
-      console.log(`User rated feedback as: ${rating} (no record ID provided)`);
+
+      setFeedbackRating(rating);
+      setHasRated(true);
+    } catch (error) {
+      console.error("Error saving rating:", error);
+      setRatingError("Failed to save your rating. Please try again.");
+    } finally {
+      setIsSavingRating(false);
     }
   };
 
@@ -75,6 +79,8 @@ const HTMLFeedbackArea: React.FC<HTMLFeedbackAreaProps> = ({
     if (html && !isFeedbackLoading) {
       setFeedbackRating(null);
       setHasRated(false);
+      setIsSavingRating(false);
+      setRatingError(null);
     }
   }, [html, isFeedbackLoading]);
 
@@ -327,8 +333,9 @@ const HTMLFeedbackArea: React.FC<HTMLFeedbackAreaProps> = ({
               <div className="flex items-center gap-1 transition-none">
                 <button
                   onClick={() => handleFeedbackRating("good")}
+                  disabled={isSavingRating}
                   className={`
-                    p-1.5 rounded-md
+                    p-1.5 rounded-md disabled:cursor-not-allowed
                     ${
                       feedbackRating === "good"
                         ? "text-blue-700 transition-none"
@@ -343,8 +350,9 @@ const HTMLFeedbackArea: React.FC<HTMLFeedbackAreaProps> = ({
 
                 <button
                   onClick={() => handleFeedbackRating("bad")}
+                  disabled={isSavingRating}
                   className={`
-                    p-1.5 rounded-md
+                    p-1.5 rounded-md disabled:cursor-not-allowed
                     ${
                       feedbackRating === "bad"
                         ? "text-blue-700 transition-none"
@@ -359,6 +367,11 @@ const HTMLFeedbackArea: React.FC<HTMLFeedbackAreaProps> = ({
               </div>
             </div>
           )}
+          {!isStreaming && ratingError ? (
+            <div className="absolute bottom-12 right-3 text-[11px] text-red-600">
+              {ratingError}
+            </div>
+          ) : null}
         </div>
       ) : isStreaming ? (
         <div className="flex items-center justify-center py-8">

@@ -626,7 +626,7 @@ function QuestionWorkspace({
   const [loadedCount, setLoadedCount] = useState(-1);
   const [totalCount, setTotalCount] = useState(-1);
   const [isFeedbackLoading, setIsFeedbackLoading] = useState(false);
-  const [currentRecordId, setCurrentRecordId] = useState<number | null>(null);
+  const [currentRecordId, setCurrentRecordId] = useState<string | null>(null);
   const [hasSubmitted, setHasSubmitted] = useState(false);
   const [debugLastFeedbackPayload, setDebugLastFeedbackPayload] = useState<unknown>(null);
   const [debugLastSubmissionStatsPayload, setDebugLastSubmissionStatsPayload] = useState<unknown>(null);
@@ -992,6 +992,26 @@ function QuestionWorkspace({
     };
   }, [availableSlides, question.slideIds, question.slideScope]);
 
+  const extractRecordIdFromRecordResult = (value: unknown): string | null => {
+    if (!value || typeof value !== "object") return null;
+    const record = value as Record<string, unknown>;
+    const directCandidate = record.id ?? record.record_id ?? record.recordId;
+    if (typeof directCandidate === "string" || typeof directCandidate === "number") {
+      const normalized = String(directCandidate).trim();
+      if (normalized !== "") return normalized;
+    }
+    const nested = record.data;
+    if (nested && typeof nested === "object") {
+      const nestedRecord = nested as Record<string, unknown>;
+      const nestedCandidate = nestedRecord.id ?? nestedRecord.record_id ?? nestedRecord.recordId;
+      if (typeof nestedCandidate === "string" || typeof nestedCandidate === "number") {
+        const normalized = String(nestedCandidate).trim();
+        if (normalized !== "") return normalized;
+      }
+    }
+    return null;
+  };
+
   const recordResultToDatabase = async (payload: RecordResultInput) => {
     try {
       const response = await axios.post(
@@ -1008,7 +1028,10 @@ function QuestionWorkspace({
           },
         }
       );
-      if (response.data?.id) setCurrentRecordId(response.data.id);
+      const recordId = extractRecordIdFromRecordResult(response.data);
+      if (recordId !== null) {
+        setCurrentRecordId(recordId);
+      }
     } catch (error) {
       console.error("Error recording result to database:", error);
     }
@@ -1169,6 +1192,7 @@ function QuestionWorkspace({
 
     setHasSubmitted(true);
     setIsFeedbackLoading(true);
+    setCurrentRecordId(null);
     setResult("");
     setIsReferenceLoading(true);
     const startTime = Date.now();

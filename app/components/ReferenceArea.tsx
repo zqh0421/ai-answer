@@ -31,7 +31,7 @@ interface ReferenceAreaProps {
   question?: string | Array<{ text?: string; [key: string]: unknown }>; // The question being asked (can be text or array of content)
   options?: string[]; // Multiple choice options if applicable
   correctAnswer?: string; // The correct answer for MCQ
-  recordId?: number | null;
+  recordId?: string | null;
   sessionId?: string;
   participantId?: string | null;
   debugEnabled?: boolean;

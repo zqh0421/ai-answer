@@ -37,7 +37,7 @@ interface LeftFeedbackPanelProps {
   question?: string | any[];
   options?: any[];
   correctAnswer?: string;
-  recordId?: number | null; // Add recordId prop for rating functionality
+  recordId?: string | null; // Add recordId prop for rating functionality
   sessionId?: string;
   participantId?: string | null;
   debugEnabled?: boolean;
