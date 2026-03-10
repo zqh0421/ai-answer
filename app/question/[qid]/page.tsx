@@ -1605,7 +1605,7 @@ function QuestionWorkspace({
                 </div>
                 {isScoringComposition ? (
                   <div className="mt-1">
-                    Final Score:{" "}
+                    Final AI Score:{" "}
                     <span className="font-semibold">
                       {isScoringStatsLoading
                         ? "..."
@@ -1615,6 +1615,7 @@ function QuestionWorkspace({
                     </span>
                     {" "}
                     (the score from your first attempt to this question)
+                    <div className="mt-1">Please feel free to dispute the AI score with your instructor or TA if you disagree with it.</div>
                   </div>
                 ) : null}
                 {attemptsExhausted ? (
