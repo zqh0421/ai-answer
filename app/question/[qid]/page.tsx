@@ -1613,6 +1613,8 @@ function QuestionWorkspace({
                             questionScoreMaximum
                           }`}
                     </span>
+                    {" "}
+                    (the score from your first attempt to this question)
                   </div>
                 ) : null}
                 {attemptsExhausted ? (
