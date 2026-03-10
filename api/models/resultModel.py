@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, List, Literal, Optional
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, StrictBool
 
 
 class RecordResultModel(BaseModel):
@@ -45,7 +45,7 @@ class RecordResultModel(BaseModel):
 
 
 class UpdateRatingModel(BaseModel):
-    rating: bool
+    rating: StrictBool
 
 
 class AudioNarrationUsageEvent(BaseModel):

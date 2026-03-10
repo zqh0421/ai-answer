@@ -347,6 +347,17 @@ def _ensure_feedback_record_result_composition_column(db: Session) -> None:
     )
 
 
+def _ensure_feedback_record_result_rating_column(db: Session) -> None:
+    db.execute(
+        text(
+            """
+            ALTER TABLE feedback_record_result
+            ADD COLUMN IF NOT EXISTS rating BOOLEAN NULL
+            """
+        )
+    )
+
+
 def _resolve_composition_scoring_config(
     db: Session,
     *,
@@ -780,7 +791,7 @@ def record_result(
             )
             lti_grade = {"ok": False, "error": str(e)}
 
-        response = {"id": created_record_id, "message": "Record created successfully"}
+        response = {"id": created_record_id, "record_id": created_record_id, "message": "Record created successfully"}
         if lti_grade is not None:
             response["lti_grade"] = lti_grade
         return response
@@ -962,8 +973,39 @@ def log_audio_narration_usage(record_id: str, _payload: models.AudioNarrationUsa
 
 
 @router.put("/record_result/{record_id}/rating")
-def update_rating(record_id: str, _rating_update: models.UpdateRatingModel, _db: Session = Depends(get_db)):
-    raise HTTPException(
-        status_code=410,
-        detail="Legacy record_result rating endpoint is removed and has no semantic-table replacement yet.",
-    )
+def update_rating(record_id: str, rating_update: models.UpdateRatingModel, _db: Session = Depends(get_db)):
+    normalized_record_id = str(record_id or "").strip()
+    if not normalized_record_id:
+        raise HTTPException(status_code=422, detail="record_id must be a non-empty string")
+
+    try:
+        _ensure_feedback_record_result_rating_column(_db)
+        update_result = _db.execute(
+            text(
+                """
+                UPDATE feedback_record_result
+                SET rating = :rating
+                WHERE record_result_id = :record_result_id
+                """
+            ),
+            {
+                "rating": rating_update.rating,
+                "record_result_id": normalized_record_id,
+            },
+        )
+        if int(update_result.rowcount or 0) == 0:
+            _db.rollback()
+            raise HTTPException(status_code=404, detail="record_result not found")
+
+        _db.commit()
+        return {
+            "id": normalized_record_id,
+            "record_id": normalized_record_id,
+            "rating": rating_update.rating,
+            "message": "Rating updated successfully",
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error updating rating: {str(exc)}") from exc
