@@ -1012,6 +1012,16 @@ def _extract_structured_feedback_from_generated_feedback(raw_feedback: Any) -> s
     return str(structured) if structured is not None else None
 
 
+def _effective_score_payload_from_result(result: dict[str, Any]) -> dict[str, Any]:
+    ai_score_result = result.get("ai_score_result")
+    if isinstance(ai_score_result, dict) and bool(ai_score_result.get("has_score")):
+        return {
+            "score": _safe_float(ai_score_result.get("score")),
+            "max_score": _safe_float(ai_score_result.get("max_score")),
+        }
+    return _extract_score_from_generated_feedback(result.get("static_feedback_text"))
+
+
 def _resolve_human_agent_ai_score_result(
     db: Session,
     *,
@@ -3418,9 +3428,7 @@ def get_question_feedback(
             )
             db.commit()
             feedback_text = _compose_feedback_text_for_client(result)
-            extracted_score = _extract_score_from_generated_feedback(
-                result.get("static_feedback_text") or feedback_text
-            )
+            extracted_score = _effective_score_payload_from_result(result)
             result.update(
                 {
                     "mode": "composition",

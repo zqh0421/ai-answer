@@ -82,20 +82,15 @@ class ScopePatchRequest(BaseModel):
 
 
 def _validate_create_payload(payload: AgentCreateRequest) -> None:
+    if payload.if_score and not payload.score_ai_agent_id:
+        raise HTTPException(status_code=400, detail="score_ai_agent_id is required when if_score=true")
+    if not payload.if_score and payload.score_ai_agent_id:
+        raise HTTPException(status_code=400, detail="score_ai_agent_id must be null when if_score=false")
     if payload.role == "human":
         if payload.prompt_text not in (None, ""):
             raise HTTPException(status_code=400, detail="human agents cannot set prompt_text")
         if payload.is_structured:
             raise HTTPException(status_code=400, detail="human agents cannot set is_structured=true")
-        if payload.if_score and not payload.score_ai_agent_id:
-            raise HTTPException(status_code=400, detail="score_ai_agent_id is required when if_score=true")
-        if not payload.if_score and payload.score_ai_agent_id:
-            raise HTTPException(status_code=400, detail="score_ai_agent_id must be null when if_score=false")
-    else:
-        if payload.if_score:
-            raise HTTPException(status_code=400, detail="if_score is only supported for human agents")
-        if payload.score_ai_agent_id:
-            raise HTTPException(status_code=400, detail="score_ai_agent_id is only supported for human agents")
     if payload.llm_params is not None and payload.role != "ai":
         raise HTTPException(status_code=400, detail="llm_params is only supported for ai agents")
 
@@ -527,7 +522,7 @@ def get_feedback_agent_input_options():
     return {
         "ok": True,
         "template_variable_syntax": "{{{key}}}",
-        "human_score_options": {
+        "score_override_options": {
             "if_score": {"type": "boolean", "default": False},
             "score_ai_agent_id": {
                 "type": "string",
@@ -570,7 +565,7 @@ def create_feedback_agent(payload: AgentCreateRequest, db: Session = Depends(get
     _validate_create_payload(payload)
     if not _user_exists(db, payload.created_by):
         raise HTTPException(status_code=400, detail="created_by user_id not found")
-    if payload.role == "human" and payload.if_score and payload.score_ai_agent_id:
+    if payload.if_score and payload.score_ai_agent_id:
         _validate_score_ai_agent_id(db, payload.score_ai_agent_id)
 
     try:

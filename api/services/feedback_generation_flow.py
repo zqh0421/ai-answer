@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor
 import json
 import re
 from threading import Lock
@@ -10,6 +11,7 @@ from fastapi import HTTPException
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from ..database import SessionLocal
 from ..routers.feedback_links import _get_agent as _get_feedback_agent
 from .feedback_link_generation_jobs import (
     generate_static_feedback_for_feedback_link,
@@ -452,26 +454,28 @@ def _resolve_human_agent_ai_score_result(
     db: Session,
     *,
     question_version_id: str,
-    human_agent_id: str,
+    source_agent_id: str,
     selected_option_id: str | None,
     runtime_inputs: dict[str, Any],
 ) -> dict[str, Any] | None:
-    profile = _feedback_agent_runtime_profile(db, human_agent_id)
+    profile = _feedback_agent_runtime_profile(db, source_agent_id)
     if not profile:
         return None
-    if str(profile.get("role") or "") != "human":
+    source_role = str(profile.get("role") or "").strip().lower()
+    if source_role not in {"human", "ai"}:
         return None
     if not bool(profile.get("if_score")):
         return None
 
     ai_agent_id = str(profile.get("score_ai_agent_id") or "").strip()
     if not ai_agent_id:
+        role_label = "Human" if source_role == "human" else "AI"
         return {
             "enabled": True,
             "has_score": False,
             "code": "AI_SCORE_AGENT_NOT_CONFIGURED",
             "reason": "missing_score_ai_agent_id",
-            "message": "Human scoring agent is enabled, but score_ai_agent_id is not configured.",
+            "message": f"{role_label} scoring override is enabled, but score_ai_agent_id is not configured.",
         }
 
     ai_feedback_link_id = _runtime_feedback_link_id_for_agent(
@@ -535,6 +539,8 @@ def _resolve_human_agent_ai_score_result(
     return {
         "enabled": True,
         "has_score": extracted.get("score") is not None,
+        "source_agent_id": source_agent_id,
+        "source_agent_role": source_role,
         "ai_agent_id": ai_agent_id,
         "feedback_link_id": ai_feedback_link_id,
         "without_feedback_link": bool(generated.get("without_feedback_link")),
@@ -548,6 +554,43 @@ def _resolve_human_agent_ai_score_result(
             "user_text": generated.get("resolved_user_text"),
         },
     }
+
+
+def _resolve_ai_agent_score_result_with_fresh_session(
+    *,
+    question_version_id: str,
+    source_agent_id: str,
+    selected_option_id: str | None,
+    runtime_inputs: dict[str, Any],
+) -> dict[str, Any] | None:
+    try:
+        with SessionLocal() as score_db:
+            return _resolve_human_agent_ai_score_result(
+                score_db,
+                question_version_id=question_version_id,
+                source_agent_id=source_agent_id,
+                selected_option_id=selected_option_id,
+                runtime_inputs=runtime_inputs,
+            )
+    except Exception as exc:
+        return {
+            "enabled": True,
+            "has_score": False,
+            "code": "AI_SCORE_GENERATION_FAILED",
+            "reason": "ai_generation_failed",
+            "message": "Score AI generation failed.",
+            "fallback_error": str(exc),
+        }
+
+
+def _effective_score_payload_from_result(result: dict[str, Any]) -> dict[str, Any]:
+    ai_score_result = result.get("ai_score_result")
+    if isinstance(ai_score_result, dict) and bool(ai_score_result.get("has_score")):
+        return {
+            "score": _safe_float(ai_score_result.get("score")),
+            "max_score": _safe_float(ai_score_result.get("max_score")),
+        }
+    return _extract_score_from_generated_feedback(result.get("static_feedback_text"))
 
 
 def _ensure_static_feedback_version_schema(db: Session) -> None:
@@ -1044,7 +1087,7 @@ def run_feedback_generation_flow(
             "ai_score_result": _resolve_human_agent_ai_score_result(
                 db,
                 question_version_id=current_version_id,
-                human_agent_id=agent_id,
+                source_agent_id=agent_id,
                 selected_option_id=selected_option_id,
                 runtime_inputs=runtime_inputs,
             ),
@@ -1055,14 +1098,49 @@ def run_feedback_generation_flow(
             if isinstance(rp, dict):
                 result["rendered_prompt"] = rp
     else:
-        result = generate_static_feedback_for_feedback_link(
-            str(feedback_link_id),
-            persist=not dry_run,
-            enforce_ai_role=True,
-            input_values=runtime_inputs or None,
-            include_debug=include_debug,
-        )
-        result["ai_score_result"] = None
+        ai_profile = _feedback_agent_runtime_profile(db, agent_id) or {}
+        ai_score_enabled = bool(ai_profile.get("if_score"))
+        ai_score_agent_id = str(ai_profile.get("score_ai_agent_id") or "").strip()
+        ai_score_result: dict[str, Any] | None = None
+
+        if ai_score_enabled and not ai_score_agent_id:
+            ai_score_result = {
+                "enabled": True,
+                "has_score": False,
+                "code": "AI_SCORE_AGENT_NOT_CONFIGURED",
+                "reason": "missing_score_ai_agent_id",
+                "message": "AI scoring override is enabled, but score_ai_agent_id is not configured.",
+            }
+
+        if ai_score_enabled and ai_score_agent_id:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                feedback_future = pool.submit(
+                    generate_static_feedback_for_feedback_link,
+                    str(feedback_link_id),
+                    persist=not dry_run,
+                    enforce_ai_role=True,
+                    input_values=runtime_inputs or None,
+                    include_debug=include_debug,
+                )
+                score_future = pool.submit(
+                    _resolve_ai_agent_score_result_with_fresh_session,
+                    question_version_id=current_version_id,
+                    source_agent_id=agent_id,
+                    selected_option_id=selected_option_id,
+                    runtime_inputs=runtime_inputs,
+                )
+                result = feedback_future.result()
+                ai_score_result = score_future.result()
+        else:
+            result = generate_static_feedback_for_feedback_link(
+                str(feedback_link_id),
+                persist=not dry_run,
+                enforce_ai_role=True,
+                input_values=runtime_inputs or None,
+                include_debug=include_debug,
+            )
+
+        result["ai_score_result"] = ai_score_result
         result["structured_feedback_text"] = _extract_structured_feedback_from_generated_feedback(
             result.get("static_feedback_text")
         )
@@ -1070,6 +1148,10 @@ def run_feedback_generation_flow(
             "system_prompt": result.get("resolved_system_prompt"),
             "user_text": result.get("resolved_user_text"),
         }
+
+    effective_score = _effective_score_payload_from_result(result)
+    result["score"] = effective_score.get("score")
+    result["max_score"] = effective_score.get("max_score")
 
     created_version: dict[str, Any] | None = None
     if snapshot_on_persist and agent_role == "ai" and not dry_run and bool(updated_by) and result.get("ok") and not result.get("skipped"):
