@@ -127,8 +127,6 @@ const extractFeedbackFromUnknown = (
   structuredFeedback?: string;
   textFeedback?: string;
   isStructured?: boolean;
-  score?: number;
-  maxScore?: number;
 } => {
   if (value === null || value === undefined || depth > 4) return {};
 
@@ -157,8 +155,6 @@ const extractFeedbackFromUnknown = (
     textFeedback: readFirstString(directTextFeedback, nestedExtracted?.textFeedback),
     isStructured:
       typeof record.is_structured === "boolean" ? record.is_structured : nestedExtracted?.isStructured,
-    score: toFiniteNumber(record.score) ?? nestedExtracted?.score,
-    maxScore: toFiniteNumber(record.max_score) ?? nestedExtracted?.maxScore,
   };
 };
 
@@ -223,22 +219,8 @@ const normalizeFeedbackResult = (raw: any): FeedbackResultPayload => {
   );
   const structuredFeedback = readFirstString(extracted.structuredFeedback, raw?.structured_feedback, raw?.feedback_html);
   const textFeedback = readFirstString(extracted.textFeedback, raw?.text_feedback, raw?.feedback, raw?.output, raw?.result);
-  const scoreCandidate =
-    toFiniteNumber(raw?.score) ??
-    toFiniteNumber(raw?.score_given) ??
-    toFiniteNumber(raw?.ai_score_result?.score_given) ??
-    extracted.score;
-  const maxScoreCandidate =
-    toFiniteNumber(raw?.max_score) ??
-    toFiniteNumber(raw?.score_maximum) ??
-    toFiniteNumber(raw?.score_max) ??
-    toFiniteNumber(raw?.maxScore) ??
-    extracted.maxScore;
-  const aiScore = toFiniteNumber(raw?.ai_score_result?.score);
-  const aiMaxScore = toFiniteNumber(raw?.ai_score_result?.max_score);
-  const aiHasScore = Boolean(raw?.ai_score_result?.has_score) || aiScore !== undefined;
-  const effectiveScore = scoreCandidate ?? (aiHasScore ? aiScore : undefined);
-  const effectiveMaxScore = maxScoreCandidate ?? (aiHasScore ? aiMaxScore : undefined);
+  const effectiveScore = toFiniteNumber(raw?.score);
+  const effectiveMaxScore = toFiniteNumber(raw?.max_score);
   const uiStructuredFeedback = structuredFeedback;
   const uiTextFeedback = textFeedback;
   const uiFeedback = hideStructuredFeedbackInUI
@@ -1205,7 +1187,6 @@ function QuestionWorkspace({
     try {
       const response = await axios.post(`/api/questions/${encodeURIComponent(targetQuestionId)}/feedback`, payload);
       const feedbackData = response.data || {};
-      const extractedFromFeedbackField = extractFeedbackFromUnknown(feedbackData?.feedback);
       if (debugModeEnabled) {
         setDebugLastFeedbackPayload({
           request: payload,
@@ -1239,13 +1220,7 @@ function QuestionWorkspace({
       const feedbackSource = readFirstString(feedbackData?.feedback_source);
       const hasAnyScoreSignal =
         toFiniteNumber(feedbackData?.score) !== undefined ||
-        toFiniteNumber(feedbackData?.score_given) !== undefined ||
-        toFiniteNumber(feedbackData?.max_score) !== undefined ||
-        toFiniteNumber(feedbackData?.score_maximum) !== undefined ||
-        extractedFromFeedbackField.score !== undefined ||
-        extractedFromFeedbackField.maxScore !== undefined ||
-        Boolean(feedbackData?.ai_score_result?.has_score) ||
-        toFiniteNumber(feedbackData?.ai_score_result?.score) !== undefined;
+        toFiniteNumber(feedbackData?.max_score) !== undefined;
       const hasScoringOnlySignal = Boolean(feedbackData?.scoring_only) || Boolean(feedbackData?.hide_structured_feedback_in_ui);
       const shouldBypassNoFeedbackGate = hasAnyScoreSignal || hasScoringOnlySignal;
 
@@ -1276,24 +1251,15 @@ function QuestionWorkspace({
       } else {
         const explicitScore =
           toFiniteNumber((normalizedResult as any)?.score) ??
-          toFiniteNumber(feedbackData?.score) ??
-          toFiniteNumber(feedbackData?.score_given) ??
-          extractedFromFeedbackField.score;
+          toFiniteNumber(feedbackData?.score);
         const explicitMaxScore =
           toFiniteNumber((normalizedResult as any)?.max_score) ??
-          toFiniteNumber(feedbackData?.max_score) ??
-          toFiniteNumber(feedbackData?.score_maximum) ??
-          extractedFromFeedbackField.maxScore;
-        const aiScore = toFiniteNumber(feedbackData?.ai_score_result?.score);
-        const aiMaxScore = toFiniteNumber(feedbackData?.ai_score_result?.max_score);
-        const aiHasScore = Boolean(feedbackData?.ai_score_result?.has_score) || aiScore !== undefined;
-        const effectiveExplicitScore = explicitScore ?? (aiHasScore ? aiScore : undefined);
-        const effectiveExplicitMaxScore = explicitMaxScore ?? (aiHasScore ? aiMaxScore : undefined);
-        if (effectiveExplicitScore !== undefined) {
+          toFiniteNumber(feedbackData?.max_score);
+        if (explicitScore !== undefined) {
           setResult({
             ...normalizedResult,
-            score: effectiveExplicitScore,
-            max_score: effectiveExplicitMaxScore ?? (isScoringComposition ? questionScoreMaximum : 1),
+            score: explicitScore,
+            max_score: explicitMaxScore ?? (isScoringComposition ? questionScoreMaximum : 1),
           });
         } else if (isMCQ && !isScoringComposition) {
           const selected = question.options[selectedOptionIndex ?? 0];
@@ -1330,32 +1296,15 @@ function QuestionWorkspace({
         typeof normalizedResult === "object" && normalizedResult !== null
           ? (normalizedResult as Record<string, unknown>)
           : null;
-      const aiScoreCandidate = toFiniteNumber((feedbackData as any)?.ai_score_result?.score);
-      const aiScoreGivenCandidate = toFiniteNumber((feedbackData as any)?.ai_score_result?.score_given);
-      const aiMaxScoreCandidate =
-        toFiniteNumber((feedbackData as any)?.ai_score_result?.max_score) ??
-        toFiniteNumber((feedbackData as any)?.ai_score_result?.score_maximum);
       const finalScore =
         toFiniteNumber(normalizedResultRecord?.score) ??
         toFiniteNumber((feedbackData as any)?.score) ??
-        toFiniteNumber((feedbackData as any)?.score_given) ??
-        extractedFromFeedbackField.score ??
-        aiScoreCandidate ??
-        aiScoreGivenCandidate ??
         (!isScoringComposition && selected ? (selected.isCorrect ? 1 : 0) : undefined);
       const finalMaxScore =
         toFiniteNumber(normalizedResultRecord?.max_score) ??
         toFiniteNumber((feedbackData as any)?.max_score) ??
-        toFiniteNumber((feedbackData as any)?.score_maximum) ??
-        extractedFromFeedbackField.maxScore ??
-        aiMaxScoreCandidate ??
         (finalScore !== undefined ? (isScoringComposition ? questionScoreMaximum : 1) : undefined);
-      const scoreGivenRaw =
-        readFirstString(
-          (feedbackData as any)?.score_given_raw,
-          (feedbackData as any)?.ai_score_result?.score_raw,
-          (feedbackData as any)?.ai_score_result?.raw_score
-        ) || (finalScore !== undefined ? String(finalScore) : "");
+      const scoreGivenRaw = readFirstString((feedbackData as any)?.score_given_raw) || (finalScore !== undefined ? String(finalScore) : "");
 
       const recordPayload: RecordResultInput = {
         learner_id: effectiveLearnerId,

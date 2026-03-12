@@ -660,8 +660,8 @@ const buildFormStateFromAgent = (agent: FeedbackAgent): AgentFormState => {
     title: agent.title ?? '',
     role,
     apply_question_type: (agent.apply_question_type as ApplyQuestionType) || 'all',
-    if_score: role === 'human' ? Boolean(agent.if_score) : false,
-    score_ai_agent_id: role === 'human' ? String(agent.score_ai_agent_id ?? '') : '',
+    if_score: Boolean(agent.if_score),
+    score_ai_agent_id: String(agent.score_ai_agent_id ?? ''),
     is_structured: role === 'human' ? false : Boolean(agent.is_structured),
     provider: agent.provider ?? '',
     model: agent.model ?? '',
@@ -705,6 +705,9 @@ export default function AgentManagementPage() {
   const [dryRunResolvedUserText, setDryRunResolvedUserText] = useState('');
   const [dryRunOutput, setDryRunOutput] = useState('');
   const [dryRunAiScoreResult, setDryRunAiScoreResult] = useState<Record<string, unknown> | null>(null);
+  const [dryRunBaseAgentResult, setDryRunBaseAgentResult] = useState<Record<string, unknown> | null>(null);
+  const [dryRunScoreAgentResult, setDryRunScoreAgentResult] = useState<Record<string, unknown> | null>(null);
+  const [dryRunFullResponse, setDryRunFullResponse] = useState<Record<string, unknown> | null>(null);
   const [dryRunStructuredFeedbackText, setDryRunStructuredFeedbackText] = useState('');
   const [compositions, setCompositions] = useState<FeedbackComposition[]>([]);
   const [isCompositionPanelOpen, setIsCompositionPanelOpen] = useState(false);
@@ -1334,8 +1337,7 @@ export default function AgentManagementPage() {
       }
       values[key] = null;
     }
-    const isHumanAgent = String(agent.role ?? '').toLowerCase() === 'human';
-    if (isHumanAgent && Boolean(agent.if_score)) {
+    if (Boolean(agent.if_score)) {
       if (!('answer_text' in values)) {
         values.answer_text = answerText;
       }
@@ -1366,6 +1368,9 @@ export default function AgentManagementPage() {
     setDryRunResolvedUserText('');
     setDryRunOutput('');
     setDryRunAiScoreResult(null);
+    setDryRunBaseAgentResult(null);
+    setDryRunScoreAgentResult(null);
+    setDryRunFullResponse(null);
     setDryRunStructuredFeedbackText('');
     setDryRunError(null);
     setIsDryRunRunning(true);
@@ -1421,6 +1426,11 @@ export default function AgentManagementPage() {
         }
       );
       const response = res.data ?? {};
+      const responseRecord =
+        response && typeof response === 'object' && !Array.isArray(response)
+          ? (response as Record<string, unknown>)
+          : null;
+      setDryRunFullResponse(responseRecord);
       const resolvedFromBackend =
         response?.resolved_input_values ?? response?.resolvedInputValues ?? response?.resolved_inputs ?? null;
       const effectiveResolvedInputs =
@@ -1451,6 +1461,46 @@ export default function AgentManagementPage() {
           ? (response.ai_score_result as Record<string, unknown>)
           : null;
       setDryRunAiScoreResult(aiScoreResult);
+      const baseResultCandidateKeys = [
+        'feedback_result',
+        'ai_feedback_result',
+        'base_agent_result',
+        'base_ai_result',
+        'main_agent_result',
+        'agent_result',
+      ] as const;
+      const baseResultCandidate =
+        baseResultCandidateKeys
+          .map((key) => responseRecord?.[key])
+          .find((value) => value && typeof value === 'object' && !Array.isArray(value)) ?? null;
+      const defaultBaseResult: Record<string, unknown> = {
+        feedback: response?.feedback,
+        text_feedback: response?.text_feedback,
+        structured_feedback_text: response?.structured_feedback_text,
+        static_feedback_text: response?.static_feedback_text,
+        output: response?.output,
+        result: response?.result,
+        score: response?.score,
+        max_score: response?.max_score,
+        feedback_source: response?.feedback_source,
+        has_feedback: response?.has_feedback,
+        resolved_system_prompt: response?.resolved_system_prompt ?? response?.resolvedSystemPrompt,
+        resolved_user_text: response?.resolved_user_text ?? response?.resolvedUserText,
+      };
+      const hasDefaultBaseContent = Object.values(defaultBaseResult).some((value) => value !== undefined && value !== null);
+      setDryRunBaseAgentResult(
+        baseResultCandidate
+          ? (baseResultCandidate as Record<string, unknown>)
+          : hasDefaultBaseContent
+            ? defaultBaseResult
+            : null
+      );
+      const scoreResultCandidateKeys = ['ai_score_result', 'score_agent_result', 'scoring_agent_result'] as const;
+      const scoreResultCandidate =
+        scoreResultCandidateKeys
+          .map((key) => responseRecord?.[key])
+          .find((value) => value && typeof value === 'object' && !Array.isArray(value)) ?? null;
+      setDryRunScoreAgentResult(scoreResultCandidate ? (scoreResultCandidate as Record<string, unknown>) : null);
       const structuredFeedbackText = readFirstString(response?.structured_feedback_text);
       setDryRunStructuredFeedbackText(structuredFeedbackText);
       const output = readFirstString(
@@ -1537,28 +1587,28 @@ export default function AgentManagementPage() {
     const normalizedScoreAiAgentId =
       typeof form.score_ai_agent_id === 'string' ? form.score_ai_agent_id.trim() : '';
 
+    const ifScore = Boolean(form.if_score);
+    if (ifScore && !normalizedScoreAiAgentId) {
+      return { errorMessage: 'score_ai_agent_id is required when if_score=true' };
+    }
+    if (!ifScore && normalizedScoreAiAgentId) {
+      return { errorMessage: 'score_ai_agent_id must be null when if_score=false' };
+    }
+    if (ifScore) {
+      const selectedScoreAgent = agents.find((agent) => agent.agent_id === normalizedScoreAiAgentId);
+      if (!selectedScoreAgent || String(selectedScoreAgent.role ?? '').toLowerCase() !== 'ai') {
+        return { errorMessage: 'score_ai_agent_id must reference an ai agent' };
+      }
+    }
+
     if (form.role === 'human') {
-      const humanIfScore = Boolean(form.if_score);
-      const humanScoreAiAgentId = normalizedScoreAiAgentId;
-      if (humanIfScore && !humanScoreAiAgentId) {
-        return { errorMessage: 'score_ai_agent_id is required when if_score=true' };
-      }
-      if (!humanIfScore && humanScoreAiAgentId) {
-        return { errorMessage: 'score_ai_agent_id must be null when if_score=false' };
-      }
-      if (humanIfScore) {
-        const selectedScoreAgent = agents.find((agent) => agent.agent_id === humanScoreAiAgentId);
-        if (!selectedScoreAgent || String(selectedScoreAgent.role ?? '').toLowerCase() !== 'ai') {
-          return { errorMessage: 'score_ai_agent_id must reference an ai agent' };
-        }
-      }
       const payload = {
         name: title,
         title,
         role: 'human',
         apply_question_type: form.apply_question_type || 'all',
-        if_score: humanIfScore,
-        score_ai_agent_id: humanIfScore ? humanScoreAiAgentId : null,
+        if_score: ifScore,
+        score_ai_agent_id: ifScore ? normalizedScoreAiAgentId : null,
         prompt_text: '',
         is_structured: false,
         provider: null,
@@ -1578,13 +1628,6 @@ export default function AgentManagementPage() {
     if (!form.model.trim()) {
       return { errorMessage: 'Model is required for AI agent.' };
     }
-    if (form.if_score) {
-      return { errorMessage: 'if_score is only supported for human agents' };
-    }
-    if (normalizedScoreAiAgentId) {
-      return { errorMessage: 'score_ai_agent_id is only supported for human agents' };
-    }
-
     let parsedLlmParams: Record<string, unknown> | null = null;
     if (form.llm_params_json.trim()) {
       try {
@@ -1621,6 +1664,8 @@ export default function AgentManagementPage() {
       title,
       role: 'ai',
       apply_question_type: form.apply_question_type || 'all',
+      if_score: ifScore,
+      score_ai_agent_id: ifScore ? normalizedScoreAiAgentId : null,
       prompt_text: form.feedback_generation_block.trim() || null,
       is_structured: Boolean(form.is_structured),
       provider: form.provider.trim(),
@@ -2331,6 +2376,32 @@ export default function AgentManagementPage() {
                 </div>
               )}
 
+              {(dryRunBaseAgentResult || dryRunScoreAgentResult || dryRunFullResponse) && (
+                <div className="rounded-xl border border-slate-200 bg-white p-3">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Dual-Agent Full Output Compare</div>
+                  <div className="mt-3 grid gap-3 md:grid-cols-2">
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                      <div className="text-xs font-semibold text-slate-700">Base Agent Result</div>
+                      <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words text-xs text-slate-700">
+                        {dryRunBaseAgentResult ? JSON.stringify(dryRunBaseAgentResult, null, 2) : '(not returned)'}
+                      </pre>
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                      <div className="text-xs font-semibold text-slate-700">Scoring Agent Result</div>
+                      <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words text-xs text-slate-700">
+                        {dryRunScoreAgentResult ? JSON.stringify(dryRunScoreAgentResult, null, 2) : '(not returned)'}
+                      </pre>
+                    </div>
+                  </div>
+                  <div className="mt-3 rounded-lg border border-slate-200 bg-white p-3">
+                    <div className="text-xs font-semibold text-slate-700">Full Backend Response</div>
+                    <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words text-xs text-slate-700">
+                      {dryRunFullResponse ? JSON.stringify(dryRunFullResponse, null, 2) : '(not returned)'}
+                    </pre>
+                  </div>
+                </div>
+              )}
+
               <div className="grid gap-3 md:grid-cols-2">
                 <div className="rounded-lg border border-slate-200 bg-white p-3">
                   <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Resolved Input Values</div>
@@ -2495,7 +2566,7 @@ export default function AgentManagementPage() {
                       <option value="essay">Essay</option>
                     </select>
                   </div>
-                  {form.role === 'human' && (
+                  {(form.role === 'human' || form.role === 'ai') && (
                     <div className="rounded-xl border border-slate-200 p-3">
                       <label className="inline-flex items-center gap-2 text-sm text-slate-700">
                         <input
