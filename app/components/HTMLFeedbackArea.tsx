@@ -1,4 +1,6 @@
 import React, { useState, useCallback } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   MessageSquare,
   Loader2,
@@ -19,6 +21,17 @@ interface HTMLFeedbackAreaProps {
   promptVersion?: string | null;
   recordId?: string | null; // Record ID for saving rating
 }
+
+const normalizeMarkdownFeedback = (value: string): string =>
+  value
+    .replace(/\\\s+/g, "\n")
+    .replace(/\\<br\s*\/?\\?>/gi, "\n\n")
+    .replace(/&lt;br\s*\/?&gt;/gi, "\n\n")
+    .replace(/<br\s*\/?>/gi, "\n\n")
+    .replace(/\r?\n/g, "  \n");
+
+const containsStructuredHtmlTag = (value: string): boolean =>
+  /<\/?(statement|explanation|advice|term)(\s[^>]*)?>/i.test(value);
 
 // Component to render HTML feedback as a coherent paragraph with inline formatting
 const HTMLFeedbackArea: React.FC<HTMLFeedbackAreaProps> = ({
@@ -207,6 +220,21 @@ const HTMLFeedbackArea: React.FC<HTMLFeedbackAreaProps> = ({
     return Array.from(tempDiv.childNodes).flatMap(processNode);
   };
 
+  const renderFeedbackContent = (value: string) => {
+    if (!containsStructuredHtmlTag(value)) {
+      return (
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          className="prose prose-slate max-w-none break-words text-slate-700 [&_p]:my-2 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5"
+        >
+          {normalizeMarkdownFeedback(value)}
+        </ReactMarkdown>
+      );
+    }
+
+    return renderHTMLFeedback(value);
+  };
+
   // Determine icon color and icon based on score and feedback type
   const getIconStyle = () => {
     const scoreNumber =
@@ -313,7 +341,7 @@ const HTMLFeedbackArea: React.FC<HTMLFeedbackAreaProps> = ({
                     <span className="inline-block w-2 h-5 bg-blue-500 ml-1 animate-pulse"></span>
                   </span>
                 ) : html ? (
-                  renderHTMLFeedback(html)
+                  renderFeedbackContent(html)
                 ) : (
                   <span className="text-slate-500">
                     Score: {Number.isFinite(normalizedScore) ? normalizedScore : "-"} /{" "}
