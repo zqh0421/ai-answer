@@ -2081,6 +2081,7 @@ def _ensure_question_embedding_columns(db: Session) -> None:
 
 def _build_question_embedding_text(payload: QuestionCreateRequest | QuestionVersionCreateRequest) -> str:
     lines: list[str] = []
+    include_prompt_text = payload.question_type not in {"free_text", "essay"}
     for block in payload.content_blocks:
         if block.block_type == "image":
             content = (block.alt_text or block.media_url or "").strip()
@@ -2090,8 +2091,11 @@ def _build_question_embedding_text(payload: QuestionCreateRequest | QuestionVers
             lines.append(content)
     for interaction in sorted(payload.interactions, key=lambda x: x.interaction_order):
         prompt = (interaction.prompt_text or "").strip()
-        if prompt:
+        if include_prompt_text and prompt:
             lines.append(prompt)
+        reference_answer = (interaction.reference_answer_text or "").strip()
+        if payload.question_type in {"free_text", "essay"} and reference_answer:
+            lines.append(f"Reference answer: {reference_answer}")
         if interaction.options:
             for idx, opt in enumerate(interaction.options, start=1):
                 value = (opt.option_label or opt.option_value or "").strip()
