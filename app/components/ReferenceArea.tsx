@@ -97,6 +97,7 @@ export default function ReferenceArea({
     [reference?.most_relevant_slide_embed_url_error]
   );
   const slideOpenUrl = useMemo(() => slideEmbedUrl, [slideEmbedUrl]);
+  const shouldShowSlideEmbedUrlError = Boolean(slideEmbedUrlError) && !slideEmbedUrl;
   const debugQueryParams = useMemo(() => {
     if (typeof window === "undefined") return {};
     return Object.fromEntries(new URLSearchParams(window.location.search).entries());
@@ -779,7 +780,7 @@ export default function ReferenceArea({
                 className="flex items-center justify-between text-sm text-slate-600"
               >
                 <div className="flex flex-wrap items-center gap-3">
-                  {slideEmbedUrlError ? (
+                  {shouldShowSlideEmbedUrlError ? (
                     <span className="text-rose-600">
                       Embed URL error: {slideEmbedUrlError}
                     </span>
