@@ -456,6 +456,42 @@ const extractFeedbackLinksForDraftPrefill = (value: unknown): QuestionFeedbackLi
     .filter(Boolean) as QuestionFeedbackLinkDraftSource[];
 };
 
+const resolveQuestionVersionId = (raw: any): string | undefined => {
+  const direct = readFirstString(
+    raw?.question_version_id,
+    raw?.current_question_version_id,
+    raw?.version_id,
+    raw?.current_version_id,
+    raw?.latest_question_version_id,
+    raw?.published_question_version_id,
+    raw?.question_version?.question_version_id,
+    raw?.question_version?.version_id,
+    raw?.question_version?.id,
+    raw?.current_version?.question_version_id,
+    raw?.current_version?.version_id,
+    raw?.current_version?.id,
+    raw?.latest_version?.question_version_id,
+    raw?.latest_version?.version_id,
+    raw?.latest_version?.id
+  );
+  if (direct) return direct;
+
+  const versions = [
+    ...(Array.isArray(raw?.versions) ? raw.versions : []),
+    ...(Array.isArray(raw?.question_versions) ? raw.question_versions : []),
+  ];
+  for (const version of versions) {
+    const resolved = readFirstString(
+      version?.question_version_id,
+      version?.version_id,
+      version?.id
+    );
+    if (resolved) return resolved;
+  }
+
+  return undefined;
+};
+
 const extractQuestionSlideScope = (value: unknown): QuestionSlideScopeEntry[] => {
   if (!Array.isArray(value)) return [];
   const seen = new Set<string>();
@@ -774,13 +810,7 @@ const parseSemanticQuestion = (raw: any): Question => {
 
   return {
     question_id: String(raw?.question_id ?? raw?.id ?? ""),
-    question_version_id:
-      readFirstString(
-        raw?.question_version_id,
-        raw?.current_question_version_id,
-        raw?.current_version?.question_version_id,
-        raw?.current_version?.id
-      ) || undefined,
+    question_version_id: resolveQuestionVersionId(raw),
     type: normalizeQuestionType(raw?.question_type ?? raw?.type),
     question_type_raw:
       typeof raw?.question_type === "string"
@@ -1413,6 +1443,7 @@ const QuestionOverview = () => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [isRefreshingVectors, setIsRefreshingVectors] = useState(false);
   const [isFetchingQuestions, setIsFetchingQuestions] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState<"all" | string>("all");
@@ -2171,6 +2202,59 @@ const QuestionOverview = () => {
       alert(error instanceof Error ? error.message : "Failed to delete selected questions.");
     } finally {
       setDeleting(null);
+    }
+  };
+
+  const handleBulkRefreshVectors = async () => {
+    const selectedRows = selectedQuestions;
+    if (selectedRows.length === 0) return;
+    if (!manageUserId) {
+      alert("Missing user ID. Please refresh and try again.");
+      return;
+    }
+
+    const refreshableRows = selectedRows
+      .map((question) => ({
+        question_id: question.question_id,
+        question_version_id: resolveQuestionVersionId(question),
+      }))
+      .filter((question) => question.question_id && question.question_version_id);
+    const skippedCount = selectedRows.length - refreshableRows.length;
+    if (refreshableRows.length === 0) {
+      alert("Selected questions are missing question_version_id. Refresh the list and try again.");
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Refresh vectors for ${refreshableRows.length} selected question${refreshableRows.length === 1 ? "" : "s"}?`
+    );
+    if (!confirmed) return;
+
+    setIsRefreshingVectors(true);
+    setMessage(null);
+    try {
+      const res = await axios.post<BatchQuestionMutationResponse>("/api/questions/batch/refresh-vectors", {
+        updated_by: manageUserId,
+        items: refreshableRows,
+      });
+
+      const summary = summarizeBatchQuestionMutation("Refresh vectors", res.data, selectedRows.length);
+      const failures = (res.data.failed ?? [])
+        .map((item) => `${item.question_id ?? "unknown"} (${item.message ?? item.code ?? "request failed"})`);
+      const parts = [summary];
+      if (skippedCount > 0) parts.push(`${skippedCount} skipped (missing question_version_id).`);
+      const failurePreview = failures.slice(0, 3).join(", ");
+      if (failurePreview) {
+        parts.push(`Failed: ${failurePreview}${failures.length > 3 ? ", ..." : ""}.`);
+      }
+      setMessage(parts.join(" "));
+      setSelectedQuestionIds(new Set());
+      await fetchQuestions();
+    } catch (error) {
+      console.error("Error refreshing selected question vectors:", error);
+      alert(error instanceof Error ? error.message : "Failed to refresh selected question vectors.");
+    } finally {
+      setIsRefreshingVectors(false);
     }
   };
 
@@ -3530,6 +3614,16 @@ const QuestionOverview = () => {
                           disabled={selectedCount === 0}
                         >
                           Unpublish
+                        </ActionButton>
+                        <ActionButton
+                          type="button"
+                          variant="secondary"
+                          size="sm"
+                          className="rounded-lg"
+                          onClick={handleBulkRefreshVectors}
+                          disabled={selectedCount === 0 || isRefreshingVectors}
+                        >
+                          {isRefreshingVectors ? "Refreshing Vectors..." : "Refresh Vectors"}
                         </ActionButton>
                         <ActionButton
                           type="button"
