@@ -275,13 +275,13 @@ def _load_scoped_pages_for_question_version(db, question_version_id: str) -> lis
               p.text,
               p.image_text,
               s.slide_title,
-              s.slide_google_id
+              s.slide_google_id,
+              qs.page_start,
+              qs.page_end
             FROM content_question_slide_scope qs
             JOIN page p ON p.slide_id = qs.slide_id
             LEFT JOIN slide s ON s.id = p.slide_id
             WHERE qs.question_version_id = :question_version_id
-              AND (qs.page_start IS NULL OR p.page_number >= qs.page_start)
-              AND (qs.page_end IS NULL OR p.page_number <= qs.page_end)
             ORDER BY p.slide_id ASC, p.page_number ASC
             """
         ),
@@ -289,6 +289,17 @@ def _load_scoped_pages_for_question_version(db, question_version_id: str) -> lis
     ).mappings().all()
     dedup: dict[str, dict[str, Any]] = {}
     for row in rows:
+        raw_page_number = int(row.get("page_number") or 0)
+        if raw_page_number < 0:
+            continue
+        # `page.page_number` is stored 0-based; question slide scopes are 1-based.
+        page_number = raw_page_number + 1
+        page_start = row.get("page_start")
+        page_end = row.get("page_end")
+        if page_start is not None and page_number < int(page_start):
+            continue
+        if page_end is not None and page_number > int(page_end):
+            continue
         page_id = str(row["page_id"])
         if page_id not in dedup:
             dedup[page_id] = dict(row)

@@ -186,6 +186,10 @@ class VisibilityPatchRequest(BaseModel):
     updated_by: str = Field(min_length=16, max_length=16)
 
 
+class QuestionVectorRefreshRequest(BaseModel):
+    updated_by: str = Field(min_length=16, max_length=16)
+
+
 class BatchQuestionIdsRequest(BaseModel):
     question_ids: list[str] = Field(min_length=1)
     updated_by: str = Field(min_length=16, max_length=16)
@@ -2167,6 +2171,67 @@ def _create_question_vectors(
     return question_vector, question_answer_vector
 
 
+def _build_question_version_payload_from_detail(
+    detail: dict[str, Any],
+    *,
+    actor_user_id: str,
+) -> QuestionVersionCreateRequest:
+    version = detail.get("question_version") or {}
+    return QuestionVersionCreateRequest(
+        question_type=version["question_type"],
+        title=version.get("title"),
+        content_blocks=[
+            ContentBlockIn(
+                block_type=block["block_type"],
+                text_content=block.get("text_content"),
+                media_url=block.get("media_url"),
+                alt_text=block.get("alt_text"),
+            )
+            for block in (detail.get("content_blocks") or [])
+        ],
+        interactions=[
+            InteractionIn(
+                interaction_type=interaction["interaction_type"],
+                interaction_order=int(interaction["interaction_order"]),
+                prompt_text=interaction.get("prompt_text"),
+                is_required=bool(interaction.get("is_required", True)),
+                max_score=interaction.get("max_score"),
+                reference_answer_text=interaction.get("reference_answer_text"),
+                reference_answer_meta=interaction.get("reference_answer_meta"),
+                options=[
+                    InteractionOptionIn(
+                        option_order=int(option["option_order"]),
+                        option_value=option["option_value"],
+                        option_label=option.get("option_label") or "",
+                        is_correct=bool(option.get("is_correct", False)),
+                    )
+                    for option in (interaction.get("options") or [])
+                ],
+            )
+            for interaction in (detail.get("interactions") or [])
+        ],
+        randomize_option_order=bool(version.get("randomize_option_order", True)),
+        slide_scope=[
+            SlideScopeIn(
+                slide_id=scope["slide_id"],
+                page_start=scope.get("page_start"),
+                page_end=scope.get("page_end"),
+            )
+            for scope in (detail.get("slide_scope") or [])
+        ],
+        scoring_policy=ScoringPolicyIn(
+            score_maximum=version["score_maximum"],
+            score_input_format=version.get("score_input_format", "fraction"),
+            score_normalize_to_maximum=bool(version.get("score_normalize_to_maximum", True)),
+            score_rounding_mode=version.get("score_rounding_mode", "none"),
+            score_rounding_step=version.get("score_rounding_step") or 1,
+        ),
+        created_by=actor_user_id,
+        change_note="Refresh question vectors",
+        copy_feedback_links_from_previous=False,
+    )
+
+
 def _insert_question_version_bundle(
     db: Session,
     *,
@@ -2470,6 +2535,76 @@ def create_semantic_question(payload: QuestionCreateRequest, db: Session = Depen
         "question_id": question_id,
         "current_version_id": version_bundle["question_version_id"],
         "version_no": 1,
+        "item": detail,
+    }
+
+
+@router.post("/questions/{question_id}/versions/{question_version_id}/refresh-vectors")
+def refresh_semantic_question_vectors(
+    question_id: str,
+    question_version_id: str,
+    payload: QuestionVectorRefreshRequest,
+    db: Session = Depends(get_db),
+):
+    if not _user_exists(db, payload.updated_by):
+        raise HTTPException(status_code=400, detail="updated_by user_id not found")
+
+    version_row = db.execute(
+        text(
+            """
+            SELECT question_version_id, question_id
+            FROM content_question_version
+            WHERE question_version_id = :question_version_id
+            """
+        ),
+        {"question_version_id": question_version_id},
+    ).mappings().first()
+    if not version_row:
+        raise HTTPException(status_code=404, detail="question version not found")
+    if str(version_row["question_id"]) != question_id:
+        raise HTTPException(status_code=404, detail="question version not found for question")
+
+    detail = get_semantic_question_version_detail(db, question_version_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="question version detail not found")
+
+    refresh_payload = _build_question_version_payload_from_detail(detail, actor_user_id=payload.updated_by)
+    try:
+        _ensure_question_embedding_columns(db)
+        question_vector, question_answer_vector = _create_question_vectors(refresh_payload)
+        db.execute(
+            text(
+                """
+                UPDATE content_question_version
+                SET question_vector = :question_vector,
+                    question_answer_vector = :question_answer_vector
+                WHERE question_version_id = :question_version_id
+                """
+            ),
+            {
+                "question_version_id": question_version_id,
+                "question_vector": question_vector,
+                "question_answer_vector": question_answer_vector,
+            },
+        )
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+    detail = get_semantic_question_version_detail(db, question_version_id)
+    if detail is not None:
+        detail["interactions"] = _apply_option_order_policy(
+            detail.get("interactions") or [],
+            randomize_option_order=bool(detail["question_version"].get("randomize_option_order", True)),
+        )
+    return {
+        "ok": True,
+        "question_id": question_id,
+        "question_version_id": question_version_id,
         "item": detail,
     }
 
@@ -3462,6 +3597,12 @@ def get_question_feedback(
             )
             if slide_mode == "most_relevant_slide_page":
                 resolved_input_values = result.get("resolved_input_values")
+                if not isinstance(resolved_input_values, dict):
+                    ai_score_result = result.get("ai_score_result")
+                    if isinstance(ai_score_result, dict):
+                        ai_resolved_inputs = ai_score_result.get("resolved_input_values")
+                        if isinstance(ai_resolved_inputs, dict):
+                            resolved_input_values = ai_resolved_inputs
                 retrieved_pages: list[dict[str, Any]] = []
                 if isinstance(resolved_input_values, dict):
                     raw_pages = resolved_input_values.get("retrieved_slide_pages")

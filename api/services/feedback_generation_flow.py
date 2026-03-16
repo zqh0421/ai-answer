@@ -549,6 +549,7 @@ def _resolve_human_agent_ai_score_result(
         "structured_feedback": structured_feedback,
         "scoring_only": True,
         "hide_structured_feedback_in_ui": True,
+        "resolved_input_values": generated.get("resolved_input_values"),
         "rendered_prompt": {
             "system_prompt": generated.get("resolved_system_prompt"),
             "user_text": generated.get("resolved_user_text"),
