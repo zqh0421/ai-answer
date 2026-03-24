@@ -11,6 +11,7 @@ from sqlalchemy import text
 from ..config import get_settings
 from ..database import SessionLocal
 from .ids import generate_short_id
+from .question_formatter import format_question
 
 _PROMPT_VAR_RE = re.compile(r"\{\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}\}")
 
@@ -208,6 +209,59 @@ def _default_question_content_blocks_text(question_payload: dict[str, Any]) -> s
     if not lines:
         return None
     return "\n".join(lines)
+
+
+def _build_multimodal_question_input(question_payload: dict[str, Any]) -> list[dict[str, Any]] | None:
+    content: list[dict[str, Any]] = []
+
+    raw_blocks = question_payload.get("blocks") or []
+    question_blocks: list[dict[str, str]] = []
+    for block in raw_blocks:
+        block_type = str(block.get("block_type") or "text").strip().lower()
+        if block_type == "image":
+            media_url = str(block.get("media_url") or "").strip()
+            if media_url:
+                question_blocks.append({"type": "image", "content": media_url})
+            alt_text = str(block.get("alt_text") or "").strip()
+            if alt_text:
+                question_blocks.append({"type": "text", "content": f"Image alt text: {alt_text}"})
+            continue
+        text_content = str(block.get("text_content") or block.get("media_url") or "").strip()
+        if text_content:
+            question_blocks.append({"type": "text", "content": text_content})
+
+    if question_blocks:
+        content.extend(format_question(question_blocks))
+
+    interactions = question_payload.get("interactions") or []
+    interaction_lines: list[str] = []
+    pending_correct_answers: list[str] = []
+    for interaction in interactions:
+        interaction_type = str(interaction.get("interaction_type") or "").strip().lower()
+        prompt_text = str(interaction.get("prompt_text") or "").strip()
+        if prompt_text:
+            interaction_lines.append(prompt_text)
+        correct_options: list[str] = []
+        for idx, option in enumerate(interaction.get("options") or [], start=1):
+            label = str(option.get("option_label") or option.get("option_value") or "").strip()
+            if not label:
+                continue
+            interaction_lines.append(f"Option {idx}: {label}")
+            if bool(option.get("is_correct")):
+                correct_options.append(label)
+        if correct_options:
+            pending_correct_answers.append(f"Correct Answer: {'; '.join(correct_options)}")
+        reference_answer_text = str(interaction.get("reference_answer_text") or "").strip()
+        if interaction_type in {"free_text", "essay"} and reference_answer_text:
+            pending_correct_answers.append(f"Correct Answer: {reference_answer_text}")
+
+    interaction_lines.extend(pending_correct_answers)
+    if interaction_lines:
+        content.append({"type": "input_text", "text": "\n".join(interaction_lines)})
+
+    if not content:
+        return None
+    return [{"role": "user", "content": content}]
 
 
 def _cosine_similarity(vec_a: list[float], vec_b: list[float]) -> float:
@@ -714,6 +768,7 @@ def _call_feedback(
     system_prompt: str,
     user_text: str,
     llm_params: dict[str, Any] | None = None,
+    user_input: Any | None = None,
 ) -> str:
     normalized_provider = (provider or "openai").strip().lower()
     if normalized_provider not in {"", "openai"}:
@@ -737,9 +792,7 @@ def _call_feedback(
         "reasoning": {"effort": effort},
         "text": {"verbosity": verbosity},
         "instructions": system_prompt,
-        # Responses API requires non-empty `input`. Keep logical user prompt empty
-        # while sending a minimal transport placeholder.
-        "input": (user_text if user_text != "" else " "),
+        "input": user_input if user_input is not None else (user_text if user_text != "" else " "),
     }
     if max_output_tokens is not None:
         request_payload["max_output_tokens"] = max_output_tokens
@@ -812,12 +865,14 @@ def _generate_feedback_text_from_context(
 
     # Keep user prompt empty; all context should be encoded via system prompt template variables.
     user_text = ""
+    user_input = _build_multimodal_question_input(fallback_question_payload)
     generated = _call_feedback(
         provider=provider,
         model=model,
         system_prompt=system_prompt,
         user_text=user_text,
         llm_params=llm_params,
+        user_input=user_input,
     )
     
     if not generated:
@@ -826,6 +881,7 @@ def _generate_feedback_text_from_context(
         "resolved_input_values": effective_input_values,
         "resolved_system_prompt": system_prompt,
         "resolved_user_text": user_text,
+        "resolved_user_input": user_input,
         "resolved_question_type": question_type,
         "resolved_max_score": max_score,
         "resolved_score_hint": score_hint,

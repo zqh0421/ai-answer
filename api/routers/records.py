@@ -1,3 +1,5 @@
+import base64
+import binascii
 import json
 import re
 from datetime import datetime, timezone
@@ -439,6 +441,89 @@ def _to_iso_utc(value: datetime | None) -> str:
     else:
         dt = dt.astimezone(timezone.utc)
     return dt.isoformat().replace("+00:00", "Z")
+
+
+def _encode_learning_records_cursor(*, submitted_at: datetime, record_id: str) -> str:
+    payload = {
+        "submitted_at": _to_iso_utc(submitted_at),
+        "record_id": str(record_id or "").strip(),
+    }
+    raw = json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _decode_learning_records_cursor(cursor: str | None) -> tuple[datetime, str] | None:
+    normalized = str(cursor or "").strip()
+    if not normalized:
+        return None
+    padding = "=" * (-len(normalized) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode(normalized + padding).decode("utf-8")
+        payload = json.loads(decoded)
+    except (ValueError, TypeError, binascii.Error, UnicodeDecodeError, json.JSONDecodeError):
+        raise HTTPException(status_code=400, detail={"code": "INVALID_CURSOR", "message": "cursor is invalid"})
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail={"code": "INVALID_CURSOR", "message": "cursor is invalid"})
+
+    submitted_at_raw = str(payload.get("submitted_at") or "").strip()
+    record_id = str(payload.get("record_id") or "").strip()
+    if not submitted_at_raw or not record_id:
+        raise HTTPException(status_code=400, detail={"code": "INVALID_CURSOR", "message": "cursor is invalid"})
+
+    try:
+        submitted_at = datetime.fromisoformat(submitted_at_raw.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "INVALID_CURSOR", "message": "cursor is invalid"},
+        ) from exc
+
+    if submitted_at.tzinfo is None:
+        submitted_at = submitted_at.replace(tzinfo=timezone.utc)
+    else:
+        submitted_at = submitted_at.astimezone(timezone.utc)
+    return submitted_at, record_id
+
+
+def _trim_question_preview(value: object, limit: int = 180) -> str | None:
+    text_value = str(value or "").strip()
+    if not text_value:
+        return None
+    compact = " ".join(text_value.split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: max(limit - 1, 1)].rstrip() + "..."
+
+
+def _serialize_learning_record_item(row: dict[str, object]) -> dict[str, object]:
+    submitted_at = row.get("submitted_at")
+    submitted_iso = _to_iso_utc(submitted_at if isinstance(submitted_at, datetime) else None)
+    score = _safe_float(row.get("score"))
+    max_score = _safe_float(row.get("max_score"))
+    final_score = _safe_float(row.get("final_score"))
+    final_score_max = _safe_float(row.get("final_score_max"))
+    return {
+        "record_id": str(row.get("record_id") or ""),
+        "course_id": str(row.get("course_id") or ""),
+        "course_title": str(row.get("course_title") or ""),
+        "module_id": str(row.get("module_id") or ""),
+        "module_title": str(row.get("module_title") or ""),
+        "slide_id": str(row.get("slide_id") or ""),
+        "slide_title": str(row.get("slide_title") or ""),
+        "question_id": str(row.get("question_id") or ""),
+        "question_preview": _trim_question_preview(row.get("question_preview")) or "",
+        "learner_id": str(row.get("learner_id") or ""),
+        "learner_name": str(row.get("learner_name") or row.get("learner_id") or ""),
+        "answer": str(row.get("answer") or ""),
+        "feedback": str(row.get("feedback") or ""),
+        "score": score,
+        "max_score": max_score,
+        "final_score": final_score,
+        "final_score_max": final_score_max,
+        "status": str(row.get("status") or "completed"),
+        "submitted_at": submitted_iso,
+    }
 
 
 def _ensure_feedback_runtime_prompt_cache_schema(db: Session) -> None:
@@ -962,6 +1047,191 @@ def get_submission_stats(
             status_code=500,
             detail={"code": "INTERNAL_SERVER_ERROR", "message": str(exc)},
         ) from exc
+
+
+@router.get("/learning-records")
+def get_learning_records(
+    course_id: str = Query(..., min_length=1),
+    cursor: str | None = Query(default=None),
+    page_size: int = Query(default=20, ge=1, le=100),
+    status: str | None = Query(default=None),
+    search: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    normalized_course_id = str(course_id or "").strip()
+    if not normalized_course_id:
+        raise HTTPException(status_code=400, detail={"code": "INVALID_PARAMS", "message": "course_id is required"})
+
+    normalized_status = str(status or "").strip().lower()
+    if normalized_status and normalized_status not in {"completed"}:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "INVALID_PARAMS", "message": "status only supports 'completed' for now"},
+        )
+
+    cursor_values = _decode_learning_records_cursor(cursor)
+    normalized_search = str(search or "").strip()
+    timestamp_col = _feedback_record_result_timestamp_column(db)
+    submitted_expr = f"fr.{timestamp_col}" if timestamp_col else "NOW()"
+
+    params: dict[str, object] = {
+        "course_id": normalized_course_id,
+        "limit": int(page_size) + 1,
+        "search": f"%{normalized_search}%" if normalized_search else None,
+    }
+    filters = ["ctx.course_id = :course_id"]
+    if normalized_status:
+        filters.append("ctx.status = :status")
+        params["status"] = normalized_status
+    if normalized_search:
+        filters.append(
+            """
+            (
+              COALESCE(ctx.learner_name, '') ILIKE :search
+              OR COALESCE(ctx.learner_id, '') ILIKE :search
+              OR COALESCE(ctx.question_preview, '') ILIKE :search
+              OR COALESCE(ctx.answer, '') ILIKE :search
+            )
+            """
+        )
+    if cursor_values is not None:
+        cursor_ts, cursor_record_id = cursor_values
+        params["cursor_submitted_at"] = cursor_ts
+        params["cursor_record_id"] = cursor_record_id
+        filters.append(
+            """
+            (
+              ctx.submitted_at < :cursor_submitted_at
+              OR (ctx.submitted_at = :cursor_submitted_at AND ctx.record_id < :cursor_record_id)
+            )
+            """
+        )
+
+    where_clause = " AND ".join(part.strip() for part in filters)
+    rows = db.execute(
+        text(
+            f"""
+            WITH scoped_records AS (
+              SELECT
+                fr.record_result_id::text AS record_id,
+                fr.question_id::text AS question_id,
+                fr.question_version_id::text AS question_version_id,
+                fr.participant_id::text AS learner_id,
+                fr.answer_text AS answer,
+                COALESCE(fr.structured_feedback_text, fr.feedback_text, '') AS feedback,
+                fr.score_given AS score,
+                fr.score_maximum AS max_score,
+                {submitted_expr} AS submitted_at
+              FROM feedback_record_result fr
+            ),
+            decorated AS (
+              SELECT
+                sr.record_id,
+                scope.course_id,
+                scope.course_title,
+                scope.module_id,
+                scope.module_title,
+                scope.slide_id,
+                scope.slide_title,
+                sr.question_id,
+                preview.question_preview,
+                sr.learner_id,
+                learner.learner_name,
+                sr.answer,
+                sr.feedback,
+                sr.score,
+                sr.max_score,
+                'completed'::text AS status,
+                sr.submitted_at,
+                FIRST_VALUE(sr.score) OVER (
+                  PARTITION BY sr.learner_id, sr.question_id, scope.course_id
+                  ORDER BY sr.submitted_at DESC, sr.record_id DESC
+                ) AS final_score,
+                FIRST_VALUE(sr.max_score) OVER (
+                  PARTITION BY sr.learner_id, sr.question_id, scope.course_id
+                  ORDER BY sr.submitted_at DESC, sr.record_id DESC
+                ) AS final_score_max
+              FROM scoped_records sr
+              JOIN LATERAL (
+                SELECT
+                  m.course_id::text AS course_id,
+                  c.course_title,
+                  sl.module_id::text AS module_id,
+                  m.module_title,
+                  sl.id::text AS slide_id,
+                  sl.slide_title
+                FROM content_question_slide_scope qs
+                JOIN slide sl ON sl.id = qs.slide_id
+                JOIN module m ON m.module_id = sl.module_id
+                JOIN course c ON c.course_id = m.course_id
+                WHERE qs.question_version_id = sr.question_version_id
+                ORDER BY qs.created_at ASC, qs.slide_scope_id ASC
+                LIMIT 1
+              ) scope ON TRUE
+              LEFT JOIN LATERAL (
+                SELECT
+                  COALESCE(
+                    NULLIF(TRIM(qb.text_content), ''),
+                    NULLIF(TRIM(qi.prompt_text), ''),
+                    sr.question_id
+                  ) AS question_preview
+                FROM content_question_version qv
+                LEFT JOIN LATERAL (
+                  SELECT text_content
+                  FROM content_question_content_block
+                  WHERE question_version_id = qv.question_version_id
+                    AND NULLIF(TRIM(text_content), '') IS NOT NULL
+                  ORDER BY block_order ASC
+                  LIMIT 1
+                ) qb ON TRUE
+                LEFT JOIN LATERAL (
+                  SELECT prompt_text
+                  FROM content_question_interaction
+                  WHERE question_version_id = qv.question_version_id
+                    AND NULLIF(TRIM(prompt_text), '') IS NOT NULL
+                  ORDER BY interaction_order ASC
+                  LIMIT 1
+                ) qi ON TRUE
+                WHERE qv.question_version_id = sr.question_version_id
+                LIMIT 1
+              ) preview ON TRUE
+              LEFT JOIN LATERAL (
+                SELECT COALESCE(NULLIF(TRIM(u.name), ''), NULLIF(TRIM(u.email), ''), sr.learner_id) AS learner_name
+                FROM users u
+                WHERE u.user_id = sr.learner_id OR u.id = sr.learner_id
+                ORDER BY CASE WHEN u.user_id = sr.learner_id THEN 0 ELSE 1 END, u.id ASC
+                LIMIT 1
+              ) learner ON TRUE
+            )
+            SELECT *
+            FROM decorated ctx
+            WHERE {where_clause}
+            ORDER BY ctx.submitted_at DESC, ctx.record_id DESC
+            LIMIT :limit
+            """
+        ),
+        params,
+    ).mappings().all()
+
+    has_more = len(rows) > int(page_size)
+    page_rows = rows[: int(page_size)]
+    items = [_serialize_learning_record_item(dict(row)) for row in page_rows]
+
+    next_cursor = None
+    if has_more and page_rows:
+        last_row = dict(page_rows[-1])
+        submitted_at = last_row.get("submitted_at")
+        if isinstance(submitted_at, datetime):
+            next_cursor = _encode_learning_records_cursor(
+                submitted_at=submitted_at,
+                record_id=str(last_row.get("record_id") or ""),
+            )
+
+    return {
+        "items": items,
+        "next_cursor": next_cursor,
+        "has_more": has_more,
+    }
 
 
 @router.post("/record_result/{record_id}/audio-usage")
