@@ -15,6 +15,7 @@ import { formatDateTimeForUser } from '@/app/utils/datetime';
 import { buildStaticPageTitle } from '@/app/utils/title';
 
 type RecordView = 'records' | 'learner' | 'question' | 'learner-question';
+type QuizLinkedFilter = 'all' | 'quiz-linked-only' | 'nonquiz-linked-only';
 
 interface LearningRecordItem {
   record_id: string;
@@ -170,7 +171,7 @@ export default function RecordManagementPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [activeView, setActiveView] = useState<RecordView>('records');
   const [selectedLearnerId, setSelectedLearnerId] = useState('all');
-  const [showQuizLinkedOnly, setShowQuizLinkedOnly] = useState(false);
+  const [quizLinkedFilter, setQuizLinkedFilter] = useState<QuizLinkedFilter>('all');
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [hasMoreRecords, setHasMoreRecords] = useState(false);
   const creatorEmail = session?.user?.email;
@@ -321,11 +322,12 @@ export default function RecordManagementPage() {
       if (!matchesLearner) return false;
 
       const isQuizLinked = Boolean(record.slide_id && QUIZ_LINKED_SLIDE_IDS.has(record.slide_id));
-      if (showQuizLinkedOnly && !isQuizLinked) return false;
+      if (quizLinkedFilter === 'quiz-linked-only' && !isQuizLinked) return false;
+      if (quizLinkedFilter === 'nonquiz-linked-only' && isQuizLinked) return false;
 
       return true;
     });
-  }, [records, selectedLearnerId, showQuizLinkedOnly]);
+  }, [records, quizLinkedFilter, selectedLearnerId]);
 
   const learnerGroups = useMemo<LearnerGroup[]>(() => {
     const grouped = new Map<string, LearnerGroup>();
@@ -564,7 +566,7 @@ export default function RecordManagementPage() {
     setSearchQuery('');
     setActiveView('records');
     setSelectedLearnerId('all');
-    setShowQuizLinkedOnly(false);
+    setQuizLinkedFilter('all');
     setRecords([]);
     setNextCursor(null);
     setHasMoreRecords(false);
@@ -575,7 +577,7 @@ export default function RecordManagementPage() {
     setSearchQuery('');
     setActiveView('records');
     setSelectedLearnerId('all');
-    setShowQuizLinkedOnly(false);
+    setQuizLinkedFilter('all');
     setRecords([]);
     setNextCursor(null);
     setHasMoreRecords(false);
@@ -852,15 +854,15 @@ export default function RecordManagementPage() {
                     </option>
                   ))}
                 </select>
-                <label className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 shadow-sm">
-                  <input
-                    type="checkbox"
-                    checked={showQuizLinkedOnly}
-                    onChange={(e) => setShowQuizLinkedOnly(e.target.checked)}
-                    className="h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-300"
-                  />
-                  <span>Quiz Linked Only</span>
-                </label>
+                <select
+                  value={quizLinkedFilter}
+                  onChange={(e) => setQuizLinkedFilter(e.target.value as QuizLinkedFilter)}
+                  className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 shadow-sm outline-none focus:border-slate-300"
+                >
+                  <option value="all">All</option>
+                  <option value="quiz-linked-only">Quiz Linked Only</option>
+                  <option value="nonquiz-linked-only">NonQuiz Linked Only</option>
+                </select>
                 <ActionButton onClick={handleCourseReset} variant="neutral" size="sm" className="rounded-xl">
                   Change Course
                 </ActionButton>

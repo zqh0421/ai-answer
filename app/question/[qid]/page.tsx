@@ -37,7 +37,7 @@ type NormalizedQuestion = {
   questionType: "single_choice" | "free_text" | "unknown";
   scoreMaximum: number;
   content: QuestionContentItem[];
-  options: Array<{ text: string; isCorrect: boolean }>;
+  options: Array<{ text: string; isCorrect: boolean; optionId: string; originalIndex: number }>;
   slideIds: string[];
   slideScope: Array<Record<string, unknown>>;
 };
@@ -329,10 +329,17 @@ const normalizeQuestion = (raw: QuestionPayload, fallbackQuestionId: string): No
   const normalizedContent =
     content.length > 0 ? content : fallbackContentText ? [{ type: "text", content: fallbackContentText }] : [];
 
-  const collectOptions = (source: any[]): Array<{ text: string; isCorrect: boolean }> =>
+  const collectOptions = (source: any[]): Array<{ text: string; isCorrect: boolean; optionId: string; originalIndex: number }> =>
     source
-      .map((option: any) => {
-        if (typeof option === "string") return { text: option.trim(), isCorrect: false };
+      .map((option: any, index: number) => {
+        if (typeof option === "string") {
+          return {
+            text: option.trim(),
+            isCorrect: false,
+            optionId: `option-${index}`,
+            originalIndex: index,
+          };
+        }
         const text = readFirstString(
           option?.text,
           option?.option_text,
@@ -343,6 +350,12 @@ const normalizeQuestion = (raw: QuestionPayload, fallbackQuestionId: string): No
         return {
           text,
           isCorrect: Boolean(option?.isCorrect ?? option?.is_correct ?? option?.correct),
+          optionId: readFirstString(
+            option?.interaction_option_id,
+            option?.option_id,
+            option?.id
+          ) || `option-${index}`,
+          originalIndex: index,
         };
       })
       .filter((item) => Boolean(item.text));
@@ -597,6 +610,7 @@ function QuestionWorkspace({
   const [isAndrewModalOpen, setIsAndrewModalOpen] = useState(false);
 
   const [answerText, setAnswerText] = useState(() => (qid ? answers[qid] || "" : draftAnswer || ""));
+  const [selectedOptionId, setSelectedOptionId] = useState<string>("");
   const [saveStatus, setSaveStatus] = useState("Saved");
 
   const [result, setResult] = useState<FeedbackResultPayload>("");
@@ -1020,6 +1034,17 @@ function QuestionWorkspace({
   };
 
   const isMCQ = question.questionType === "single_choice";
+  useEffect(() => {
+    if (!isMCQ) {
+      setSelectedOptionId("");
+      return;
+    }
+    const matchedOption = question.options.find((option) => option.optionId === selectedOptionId);
+    if (matchedOption && matchedOption.text === answerText) return;
+    const fallbackOption = question.options.find((option) => option.text === answerText);
+    setSelectedOptionId(fallbackOption?.optionId || "");
+  }, [answerText, isMCQ, question.options, selectedOptionId]);
+
   const questionScoreMaximum = useMemo(
     () => toFiniteNumber(question.scoreMaximum) ?? defaultScoreMaximumForQuestionType(question.questionType),
     [question.questionType, question.scoreMaximum]
@@ -1144,15 +1169,14 @@ function QuestionWorkspace({
       return;
     }
 
-    const selectedOptionIndex = isMCQ
-      ? (() => {
-          const idx = question.options.findIndex((item) => item.text === answerText);
-          return idx >= 0 ? idx : undefined;
-        })()
+    const selectedOption = isMCQ
+      ? question.options.find((item) => item.optionId === selectedOptionId) ??
+        question.options.find((item) => item.text === answerText)
       : undefined;
+    const selectedOptionIndex = selectedOption?.originalIndex;
     const normalizedAnswerText = isMCQ
       ? selectedOptionIndex !== undefined
-        ? answerText
+        ? selectedOption?.text || answerText
         : ""
       : isValidInput(answerText)
       ? answerText
@@ -1262,7 +1286,7 @@ function QuestionWorkspace({
             max_score: explicitMaxScore ?? (isScoringComposition ? questionScoreMaximum : 1),
           });
         } else if (isMCQ && !isScoringComposition) {
-          const selected = question.options[selectedOptionIndex ?? 0];
+          const selected = selectedOption ?? question.options[selectedOptionIndex ?? 0];
           const score = selected?.isCorrect ? 1 : 0;
           setResult({
             ...normalizedResult,
@@ -1291,7 +1315,7 @@ function QuestionWorkspace({
       }
 
       const endTime = Date.now();
-      const selected = isMCQ ? question.options[selectedOptionIndex ?? 0] : null;
+      const selected = isMCQ ? selectedOption ?? question.options[selectedOptionIndex ?? 0] : null;
       const normalizedResultRecord =
         typeof normalizedResult === "object" && normalizedResult !== null
           ? (normalizedResult as Record<string, unknown>)
@@ -1473,9 +1497,9 @@ function QuestionWorkspace({
                   <div className="space-y-3">
                     {question.options.map((option, index) => {
                       const optionText = option.text;
-                      const isSelected = answerText === optionText;
+                      const isSelected = selectedOptionId === option.optionId;
                       return (
-                        <div key={index} className="space-y-2">
+                        <div key={option.optionId || index} className="space-y-2">
                           <label
                             className={`flex cursor-pointer items-center rounded-lg border p-4 transition-colors duration-200 ${
                               isSelected ? "border-blue-500 bg-blue-50" : "border-slate-200 hover:bg-slate-50"
@@ -1484,10 +1508,11 @@ function QuestionWorkspace({
                             <input
                               type="radio"
                               name="mcq-option"
-                              value={optionText}
+                              value={option.optionId}
                               checked={isSelected}
-                              onChange={(e) => {
-                                handleAnswerChange(e.target.value);
+                              onChange={() => {
+                                setSelectedOptionId(option.optionId);
+                                handleAnswerChange(optionText);
                               }}
                               className="mr-3 text-blue-600 focus:ring-blue-500"
                             />
