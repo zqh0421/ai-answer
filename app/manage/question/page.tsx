@@ -1139,6 +1139,9 @@ const parseImageRefsFromMarkdown = (markdown: string) => {
   return imageMap;
 };
 
+const IMAGE_REF_INLINE_REGEX = /!\[\]\[([^\]]+)\]/g;
+const DATA_URL_REGEX = /^data:([^;,]+)?(;base64)?,/i;
+
 const buildContentBlocksFromStem = (stem: string, imageMap: Record<string, string>): ContentBlockDraft[] => {
   const blocks: ContentBlockDraft[] = [];
   const normalizedStem = stem.replace(/<br\s*\/?>/gi, "\n\n");
@@ -1157,9 +1160,95 @@ const buildContentBlocksFromStem = (stem: string, imageMap: Record<string, strin
         continue;
       }
     }
-    blocks.push({ block_type: "text", text_content: part });
+
+    let lastIndex = 0;
+    let foundInlineImage = false;
+    for (const match of part.matchAll(IMAGE_REF_INLINE_REGEX)) {
+      const matchIndex = match.index ?? 0;
+      const leadingText = part.slice(lastIndex, matchIndex).trim();
+      if (leadingText) {
+        blocks.push({ block_type: "text", text_content: leadingText });
+      }
+
+      const imageKey = match[1]?.trim() || "";
+      const mediaUrl = imageMap[imageKey];
+      if (mediaUrl) {
+        blocks.push({ block_type: "image", media_url: mediaUrl, alt_text: imageKey });
+        foundInlineImage = true;
+      } else {
+        const rawMarker = match[0]?.trim();
+        if (rawMarker) {
+          blocks.push({ block_type: "text", text_content: rawMarker });
+        }
+      }
+
+      lastIndex = matchIndex + match[0].length;
+    }
+
+    const trailingText = part.slice(lastIndex).trim();
+    if (trailingText) {
+      blocks.push({ block_type: "text", text_content: trailingText });
+      continue;
+    }
+
+    if (!foundInlineImage && lastIndex === 0) {
+      blocks.push({ block_type: "text", text_content: part });
+    }
   }
   return blocks;
+};
+
+const mimeTypeToExtension = (mimeType: string) => {
+  const normalized = mimeType.toLowerCase();
+  if (normalized === "image/jpeg") return "jpg";
+  if (normalized === "image/png") return "png";
+  if (normalized === "image/gif") return "gif";
+  if (normalized === "image/webp") return "webp";
+  if (normalized === "image/svg+xml") return "svg";
+  return "bin";
+};
+
+const uploadImageDataUrl = async (dataUrl: string, indexHint: number): Promise<string> => {
+  const mimeMatch = dataUrl.match(DATA_URL_REGEX);
+  const mimeType = mimeMatch?.[1]?.trim() || "application/octet-stream";
+  const blob = await fetch(dataUrl).then((res) => {
+    if (!res.ok) throw new Error("Failed to decode image data URL.");
+    return res.blob();
+  });
+  const extension = mimeTypeToExtension(blob.type || mimeType);
+  const file = new File([blob], `batch-upload-${indexHint}.${extension}`, {
+    type: blob.type || mimeType,
+  });
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const res = await fetch("/api/s3upload", {
+    method: "POST",
+    body: formData,
+  });
+  if (!res.ok) {
+    let errorDetail = "";
+    try {
+      const contentType = res.headers.get("content-type") || "";
+      if (contentType.includes("application/json")) {
+        const errorData = await res.json();
+        errorDetail =
+          typeof errorData?.detail === "string"
+            ? errorData.detail
+            : JSON.stringify(errorData?.detail ?? errorData);
+      } else {
+        errorDetail = await res.text();
+      }
+    } catch {
+      // Ignore parse failures and fall back to status text.
+    }
+    throw new Error(errorDetail || `Image upload failed (${res.status}).`);
+  }
+
+  const data = await res.json();
+  const imageUrl = String(data?.url ?? "").trim();
+  if (!imageUrl) throw new Error("Image upload succeeded but no URL was returned.");
+  return imageUrl;
 };
 
 const parseKeyValueTablesFromMarkdown = (markdown: string): Array<Record<string, string>> => {
@@ -2854,6 +2943,7 @@ const QuestionOverview = () => {
     const resultLines: string[] = [];
     let successCount = 0;
     let shouldCloseModalAfterSuccess = false;
+    const uploadedImageUrlCache = new Map<string, string>();
 
     try {
       for (let i = 0; i < parsedBatchDrafts.length; i += 1) {
@@ -2900,13 +2990,28 @@ const QuestionOverview = () => {
             }
           }
 
-          const normalizedContentBlocks = draft.contentBlocks.map((block, idx) => ({
-            block_type: block.block_type,
-            text_content: block.text_content?.trim() || null,
-            media_url: block.media_url?.trim() || null,
-            alt_text: block.alt_text?.trim() || null,
-            block_order: idx + 1,
-          }));
+          const normalizedContentBlocks = await Promise.all(
+            draft.contentBlocks.map(async (block, idx) => {
+              const rawMediaUrl = block.media_url?.trim() || "";
+              let mediaUrl: string | null = rawMediaUrl || null;
+
+              if (rawMediaUrl && DATA_URL_REGEX.test(rawMediaUrl)) {
+                if (!uploadedImageUrlCache.has(rawMediaUrl)) {
+                  const uploadedUrl = await uploadImageDataUrl(rawMediaUrl, idx + 1);
+                  uploadedImageUrlCache.set(rawMediaUrl, uploadedUrl);
+                }
+                mediaUrl = uploadedImageUrlCache.get(rawMediaUrl) || null;
+              }
+
+              return {
+                block_type: block.block_type,
+                text_content: block.text_content?.trim() || null,
+                media_url: mediaUrl,
+                alt_text: block.alt_text?.trim() || null,
+                block_order: idx + 1,
+              };
+            })
+          );
           const normalizedInteractions = [
             {
               interaction_type: questionType,

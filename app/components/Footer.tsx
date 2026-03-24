@@ -46,7 +46,7 @@ export default function Footer() {
           <div className="flex items-center space-x-4 text-sm text-slate-600">
             <div className="flex items-center space-x-1">
               <Calendar className="w-4 h-4" />
-              <span>Updated Mar. 16, 2026</span>
+              <span>Updated Mar. 20, 2026</span>
             </div>
             <div className="flex items-center space-x-1">
               <Mail className="w-4 h-4" />

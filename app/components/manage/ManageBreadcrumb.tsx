@@ -14,6 +14,7 @@ const SEGMENT_LABELS: Record<string, string> = {
   course: "Courses",
   question: "Questions",
   agent: "Agents",
+  record: "Records",
   login: "Sign In",
   noPermission: "No Permission",
 };

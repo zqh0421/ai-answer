@@ -1386,13 +1386,14 @@ function QuestionWorkspace({
             question.content.map((item, index) => (
               <div
                 key={`header-content-${item.type}-${index}`}
-                className={item.type === "image" ? "rounded-lg border border-slate-200 bg-slate-50 p-3" : ""}
+                className={item.type === "image" ? "p-1" : ""}
               >
                 {item.type === "image" ? (
                   <DynamicImage
                     src={item.content}
                     alt={`question-header-content-${index + 1}`}
-                    className="max-h-64 w-auto rounded-md object-contain"
+                    className="min-w-[min(400px,100%)] w-auto object-contain"
+                    disableHoverShadow
                   />
                 ) : (
                   <ReactMarkdown
