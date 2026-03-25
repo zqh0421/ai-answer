@@ -211,7 +211,11 @@ def _default_question_content_blocks_text(question_payload: dict[str, Any]) -> s
     return "\n".join(lines)
 
 
-def _build_multimodal_question_input(question_payload: dict[str, Any]) -> list[dict[str, Any]] | None:
+def _build_multimodal_question_input(
+    question_payload: dict[str, Any],
+    *,
+    answer_text: str | None = None,
+) -> list[dict[str, Any]] | None:
     content: list[dict[str, Any]] = []
 
     raw_blocks = question_payload.get("blocks") or []
@@ -258,6 +262,9 @@ def _build_multimodal_question_input(question_payload: dict[str, Any]) -> list[d
     interaction_lines.extend(pending_correct_answers)
     if interaction_lines:
         content.append({"type": "input_text", "text": "\n".join(interaction_lines)})
+    answer_text_value = str(answer_text or "").strip()
+    if answer_text_value:
+        content.append({"type": "input_text", "text": f"Student's Response: {answer_text_value}"})
 
     if not content:
         return None
@@ -541,6 +548,49 @@ def _build_formatting_instructions_text(*, is_structured: bool, max_score: float
         f"- Additional formatting instructions: {extra}\n"
         "- Final output must be only the JSON object."
     )
+
+
+def _normalize_additional_formatting_instructions(
+    *,
+    question_type: str,
+    max_score: float,
+    additional: str,
+) -> str:
+    text_value = (additional or "").strip()
+    if not text_value:
+        return ""
+
+    q = (question_type or "").strip().lower()
+    is_open_ended = q in {"free_text", "essay", "open-ended", "open_ended"}
+    is_single_choice = q in {"single_choice", "dropdown", "true_false"}
+
+    filtered_lines: list[str] = []
+    for raw_line in text_value.splitlines():
+        line = raw_line.strip()
+        normalized = line.lower()
+        if not line:
+            filtered_lines.append(raw_line)
+            continue
+        if "max_score" in normalized:
+            continue
+        if "0 for incorrect" in normalized:
+            continue
+        if "1 for partially correct" in normalized:
+            continue
+        if "1 for correct" in normalized:
+            continue
+        if "2 for fully correct" in normalized:
+            continue
+        if "2 for correct" in normalized:
+            continue
+        filtered_lines.append(raw_line)
+
+    if is_open_ended and abs(float(max_score) - 2.0) < 1e-9:
+        filtered_lines.append("- Use score 0 for incorrect, 1 for partially correct, and 2 for correct.")
+    elif is_single_choice and abs(float(max_score) - 1.0) < 1e-9:
+        filtered_lines.append("- Use score 0 for incorrect and 1 for correct.")
+
+    return "\n".join(filtered_lines).strip()
 
 
 def _build_system_prompt_from_blocks(
@@ -843,7 +893,11 @@ def _generate_feedback_text_from_context(
     question_type = str(prompt_ctx["question_type"])
     max_score = float(prompt_ctx["max_score"])
     generation_block = str(llm_params.get("feedback_generation_block") or (ctx.get("prompt_text") or "").strip() or DEFAULT_GENERATION_BLOCK)
-    additional_formatting_instructions = str(llm_params.get("additional_formatting_instructions_block") or "")
+    additional_formatting_instructions = _normalize_additional_formatting_instructions(
+        question_type=question_type,
+        max_score=max_score,
+        additional=str(llm_params.get("additional_formatting_instructions_block") or ""),
+    )
     score_hint = _score_hint_for_question_type(question_type, max_score)
     output_schema_json = _build_output_schema_json_block(
         is_structured=bool(ctx.get("is_structured")),
@@ -865,7 +919,26 @@ def _generate_feedback_text_from_context(
 
     # Keep user prompt empty; all context should be encoded via system prompt template variables.
     user_text = ""
-    user_input = _build_multimodal_question_input(fallback_question_payload)
+    user_input = _build_multimodal_question_input(
+        fallback_question_payload,
+        answer_text=str(effective_input_values.get("answer_text") or "").strip() or None,
+    )
+    print(
+        "Final feedback LLM prompt payload before request:\n"
+        ,
+        json.dumps(
+            {
+                "provider": provider,
+                "model": model,
+                "system_prompt": system_prompt,
+                "user_text": user_text,
+                "user_input": user_input,
+            },
+            ensure_ascii=False,
+            default=str,
+        ),
+        flush=True,
+    )
     generated = _call_feedback(
         provider=provider,
         model=model,
@@ -973,7 +1046,11 @@ def resolve_feedback_prompt_for_feedback_link(
             or (ctx.get("prompt_text") or "").strip()
             or DEFAULT_GENERATION_BLOCK
         )
-        additional_formatting_instructions = str(llm_params.get("additional_formatting_instructions_block") or "")
+        additional_formatting_instructions = _normalize_additional_formatting_instructions(
+            question_type=question_type,
+            max_score=max_score,
+            additional=str(llm_params.get("additional_formatting_instructions_block") or ""),
+        )
         score_hint = _score_hint_for_question_type(question_type, max_score)
         output_schema_json = _build_output_schema_json_block(
             is_structured=bool(ctx.get("is_structured")),
@@ -994,6 +1071,10 @@ def resolve_feedback_prompt_for_feedback_link(
         system_prompt = _render_prompt_template(system_prompt, effective_input_values)
 
         user_text = ""
+        user_input = _build_multimodal_question_input(
+            fallback_question_payload,
+            answer_text=str(effective_input_values.get("answer_text") or "").strip() or None,
+        )
 
         return {
             "ok": True,
@@ -1001,6 +1082,7 @@ def resolve_feedback_prompt_for_feedback_link(
             "resolved_input_values": effective_input_values,
             "resolved_system_prompt": system_prompt,
             "resolved_user_text": user_text,
+            "resolved_user_input": user_input,
             "resolved_question_type": question_type,
             "resolved_max_score": max_score,
             "resolved_score_hint": score_hint,
