@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, use, useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, use, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 import { debounce } from "lodash";
 import { useDispatch, useSelector } from "react-redux";
@@ -612,6 +612,10 @@ function QuestionWorkspace({
   const [answerText, setAnswerText] = useState(() => (qid ? answers[qid] || "" : draftAnswer || ""));
   const [selectedOptionId, setSelectedOptionId] = useState<string>("");
   const [saveStatus, setSaveStatus] = useState("Saved");
+  const answerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const isSubmittingRef = useRef(false);
+  const activeSubmitRequestIdRef = useRef(0);
+  const [isAnswerComposing, setIsAnswerComposing] = useState(false);
 
   const [result, setResult] = useState<FeedbackResultPayload>("");
   const [promptVersion, setPromptVersion] = useState<string | null>(null);
@@ -1065,11 +1069,7 @@ function QuestionWorkspace({
   const attemptsExhausted =
     isScoringComposition &&
     !canSubmitByStats;
-  const submitDisabled = questionLoading || isFeedbackLoading || !hasAnswer || attemptsExhausted;
-  const isValidInput = (input: string): boolean => {
-    const alphanumericRegex = /[a-zA-Z0-9]/;
-    return input.trim() !== "" && alphanumericRegex.test(input);
-  };
+  const submitDisabled = questionLoading || isFeedbackLoading || isAnswerComposing || !hasAnswer || attemptsExhausted;
 
   const fetchSubmissionStats = useCallback(async () => {
     if (!normalizedCompositionId) return;
@@ -1083,17 +1083,10 @@ function QuestionWorkspace({
         question_id: targetQuestionId,
         composition_id: normalizedCompositionId,
       });
-      let statsRes = await fetch(`/api/submission_stats?${qs.toString()}`, {
+      let statsRes = await fetch(`/api/submission-stats?${qs.toString()}`, {
         method: "GET",
         credentials: "include",
       });
-      if (!statsRes.ok && statsRes.status === 404) {
-        // Backward compatibility with older route naming.
-        statsRes = await fetch(`/api/submission-stats?${qs.toString()}`, {
-          method: "GET",
-          credentials: "include",
-        });
-      }
       if (!statsRes.ok) {
         throw new Error(`Failed to fetch submission stats: HTTP ${statsRes.status}`);
       }
@@ -1155,6 +1148,7 @@ function QuestionWorkspace({
 
   const handleSubmit = async () => {
     if (submitDisabled) return;
+    if (isSubmittingRef.current) return;
     if (!ensureLearnerIdReady()) return;
 
     const targetQuestionId = question.questionId || qid;
@@ -1174,13 +1168,19 @@ function QuestionWorkspace({
         question.options.find((item) => item.text === answerText)
       : undefined;
     const selectedOptionIndex = selectedOption?.originalIndex;
+    const latestFreeTextAnswer = answerTextareaRef.current?.value ?? answerText;
     const normalizedAnswerText = isMCQ
       ? selectedOptionIndex !== undefined
         ? selectedOption?.text || answerText
         : ""
-      : isValidInput(answerText)
-      ? answerText
-      : "The student haven't provided any answer yet.";
+      : latestFreeTextAnswer.trim();
+
+    if (!normalizedAnswerText) return;
+
+    isSubmittingRef.current = true;
+    const submitRequestId = activeSubmitRequestIdRef.current + 1;
+    activeSubmitRequestIdRef.current = submitRequestId;
+    const isStaleSubmit = () => activeSubmitRequestIdRef.current !== submitRequestId;
 
     const payload: Record<string, unknown> = {
       mode: "composition",
@@ -1210,6 +1210,7 @@ function QuestionWorkspace({
 
     try {
       const response = await axios.post(`/api/questions/${encodeURIComponent(targetQuestionId)}/feedback`, payload);
+      if (isStaleSubmit()) return;
       const feedbackData = response.data || {};
       if (debugModeEnabled) {
         setDebugLastFeedbackPayload({
@@ -1304,6 +1305,7 @@ function QuestionWorkspace({
       else setPromptVersion(null);
 
       const hasRuntimeReference = await applyReferenceFromRuntimeResponse(feedbackData);
+      if (isStaleSubmit()) return;
       if (!hasRuntimeReference) {
         const fallbackReference = buildQuestionLevelReference();
         if (fallbackReference) {
@@ -1353,6 +1355,7 @@ function QuestionWorkspace({
       };
       await recordResultToDatabase(recordPayload);
     } catch (error: any) {
+      if (isStaleSubmit()) return;
       console.error("Failed to fetch feedback:", error);
       const detail = error?.response?.data?.detail ?? error?.detail ?? null;
       console.error("Feedback error detail:", detail);
@@ -1379,16 +1382,19 @@ function QuestionWorkspace({
       setReference(undefined);
       setImages(null);
     } finally {
-      if (normalizedCompositionId) {
+      if (!isStaleSubmit() && normalizedCompositionId) {
         try {
           await fetchSubmissionStats();
         } catch (statsRefreshError) {
           console.error("Failed to refresh submission stats after submit:", statsRefreshError);
         }
       }
-      setIsFeedbackLoading(false);
-      setIsReferenceLoading(false);
-      setIsImageLoading(false);
+      if (!isStaleSubmit()) {
+        isSubmittingRef.current = false;
+        setIsFeedbackLoading(false);
+        setIsReferenceLoading(false);
+        setIsImageLoading(false);
+      }
     }
   };
 
@@ -1529,8 +1535,14 @@ function QuestionWorkspace({
                 )
               ) : question.questionType === "free_text" ? (
                 <textarea
+                  ref={answerTextareaRef}
                   value={answerText}
                   onChange={(event) => handleAnswerChange(event.target.value)}
+                  onCompositionStart={() => setIsAnswerComposing(true)}
+                  onCompositionEnd={(event) => {
+                    setIsAnswerComposing(false);
+                    handleAnswerChange(event.currentTarget.value);
+                  }}
                   placeholder="Enter your answer here..."
                   className="min-h-32 w-full resize-none rounded-lg border border-slate-300 px-3 py-3 transition-all duration-200 focus:border-transparent focus:ring-2 focus:ring-blue-500"
                   rows={1}
@@ -1587,7 +1599,13 @@ function QuestionWorkspace({
                 <div className="absolute inset-0 origin-left -skew-x-6 scale-x-0 bg-white opacity-0 transition-all duration-500 group-hover:scale-x-100 group-hover:opacity-10" />
               ) : null}
               <div className="relative z-10 flex items-center justify-center">
-                {isFeedbackLoading ? "Evaluating..." : attemptsExhausted ? "Submission Limit Reached" : "Submit Answer"}
+                {isFeedbackLoading
+                  ? "Evaluating..."
+                  : isAnswerComposing
+                  ? "Finish Typing First"
+                  : attemptsExhausted
+                  ? "Submission Limit Reached"
+                  : "Submit Answer"}
               </div>
             </button>
             {normalizedCompositionId ? (

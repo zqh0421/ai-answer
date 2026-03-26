@@ -23,6 +23,18 @@ body {
   font-family: var(--font-inter), Arial, Helvetica, sans-serif;
 }
 
+input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='file']):not([type='color']),
+textarea,
+select {
+  color: #0f172a;
+  background-color: #ffffff;
+}
+
+input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='file']):not([type='color'])::placeholder,
+textarea::placeholder {
+  color: #94a3b8;
+}
+
 @layer utilities {
   .text-balance {
     text-wrap: balance;
